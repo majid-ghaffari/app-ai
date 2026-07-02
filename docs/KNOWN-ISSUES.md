@@ -18,7 +18,7 @@ Padding the prompt to clear the floor would cost more than it saves. See
 
 ### `count_tokens` pre-flight is advisory only
 
-`handlers/messages.js` calls the free `count_tokens` endpoint for large payloads
+`handlers/messages.ts` calls the free `count_tokens` endpoint for large payloads
 and logs the estimate (warning past a soft threshold). It NEVER gates or rejects
 the live request — it is wrapped in try/catch and a failure is swallowed with a
 log line. So a payload that would exceed the model's context window is not
@@ -60,3 +60,27 @@ gracefully no-ops to a plain upload: uploads keep working, but identical bytes
 mint fresh `file_id`s and the placement file-block cache entry won't be shared
 across calls (each upload is a distinct cache key). Not a failure mode — a
 degradation that the code handles silently.
+
+## Preview-environment only (production unaffected)
+
+### Grey-clouded `preview.personalizer.io` origin → "Too many redirects" (500)
+
+Production is not subject to this. `wrangler.toml [vars] BRAIN_API_URL` points at
+`https://personalizer.io`, which is Cloudflare-fronted end to end, so the worker's
+server-side subrequest reaches Brain over real HTTPS with no redirect loop.
+
+The loop only appears when the worker's `BRAIN_API_URL` targets the grey-clouded
+preview Azure origin (`https://preview.personalizer.io`): the `personalizer.io`
+Cloudflare zone's SSL/TLS mode is **"Flexible"**, so Cloudflare connects to that
+origin over **HTTP** even when the Worker's `fetch` asks for HTTPS. The preview
+Azure app has **HTTPS-Only** on → it 308-redirects HTTP→HTTPS to the same URL →
+the Worker follows → still HTTP → 308 → loops until "Too many redirects", which
+`lib/auth.ts`'s throw-to-500 maps to HTTP 500. Browsers/curl reach the CF edge as
+real HTTPS → 200, so only the server-side Worker subrequest loops. The clean fix
+for a preview target is a **"Full"** zone SSL/TLS mode, or dropping the preview
+app's `HTTPS-Only` / `UseHttpsRedirection()`. Pointing at the raw Azure hostname
+is a dead end — the cert is for `preview.personalizer.io`.
+
+For fully-local development the worker talks to Brain over plain HTTP
+(`.dev.vars`: `BRAIN_API_URL=http://127.0.0.1:5000`) — see lib
+`packages/storefront/src/admin/docs/LOCAL-AI-DEV.md`.

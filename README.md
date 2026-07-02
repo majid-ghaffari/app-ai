@@ -12,15 +12,21 @@ npm install
 
 ### 2. Configure Environment
 
-Create a `.dev.vars` file for local development (gitignored):
+Create a `.dev.vars` file for local development (gitignored) from the committed
+example, then fill in your API key:
 
 ```bash
-echo "CLAUDE_API_KEY=sk-ant-api03-your-key-here" > .dev.vars
+cp .dev.vars.example .dev.vars
 ```
 
 Get your API key from [Anthropic Console](https://console.anthropic.com/) → API Keys.
+`.dev.vars` carries EVERY local configuration value (Brain URL, Anthropic origin,
+CORS allowlist, model choices, the key) — the worker throws on a missing variable,
+naming it; there are no fallback defaults (see docs/CODE-PATTERNS.md → "No
+Hardcoded Config Values").
 
-**Note:** `.dev.vars` is gitignored and never committed. Production uses Cloudflare encrypted secrets.
+**Note:** `.dev.vars` is gitignored and never committed. Production uses
+`wrangler.toml` `[vars]` + Cloudflare encrypted secrets.
 
 ### 3. Start Development Server
 
@@ -55,27 +61,52 @@ All endpoints except `/health` require `X-Personalizer-Context-ID` header for au
 
 ### `POST /chat` — Studio AI agent runtime
 
-The chat/onboarding/placement runtime for LimeSpot Studio. Runs the Anthropic
+The Studio AI runtime for LimeSpot Studio. Runs the Anthropic
 tool-use **agent loop** (model ↔ tool iterations, capped at `MAX_ITERATIONS`=8)
-and streams the result as **Server-Sent Events**. Tool calls are dispatched
-server→server to Brain's read-only AI tool proxy (`/v2/ai-tools/*`), forwarding
-the merchant's `X-Personalizer-Context-ID`. The Anthropic key never leaves the
-worker.
+and streams the result as **Server-Sent Events**. The endpoint's tool surface
+is composed per request by the toolset registry (`src/toolsets/registry.ts`)
+from its explicit allowlist (`['personalizer']` — see
+[docs/TOOLSETS.md](docs/TOOLSETS.md)). The personalizer toolset dispatches
+tool calls server→server to Brain — the read-only AI tool proxy
+(`/v2/ai-tools/*`) for the data-query tools, the per-record admin endpoints
+(`src/toolsets/personalizer/entity-context.ts`) for `get_entity_context`
+record derefs — forwarding the merchant's `X-Personalizer-Context-ID`. The
+Anthropic key never leaves the worker.
 
 - **`X-Personalizer-System-Prompt`** selects the server-side prompt: `chat`
-  (default), `onboarding`, or `placement`.
+  (default), `onboarding`, `placement`, `proposals` (per-store onboarding setup
+  proposer, tool-use), or `analytics-insights` (one-shot JSON insights over
+  grounding data, no tools).
 - **`Accept: text/event-stream`** → SSE (events: `text`, `tool_call`,
   `tool_result`, `done`, `error`). Otherwise → a single JSON object (same shape
   as the `done` payload).
 - Request body: `{ messages, context?, model?, max_tokens?, fileIds? }`.
   `messages` is the full history the client wants the model to see (the client
   owns history; persistence lives in Brain). `context` carries grounding
-  (`hostPage`, validated placement `candidates`, best-practice `grounding`).
+  (`hostPage`, validated placement `candidates`, best-practice `grounding`,
+  entity `refs`).
+- **Referencing (`context.refs`)** — up to 5 entity references
+  (`{ type, id?, label?, metadata? }`; types `campaign` / `segment` /
+  `progress-bar` / `bundle` / `analytics-metric` / `analytics-tab`) anchoring
+  the chat to specific entities. Record refs are eagerly resolved worker-side
+  by `src/toolsets/personalizer/entity-context.ts`: per-refType fetchers over Brain's per-record
+  admin endpoints (discount/html/image campaigns, subscriber segments,
+  progress-bar campaigns, plus `v2/accounts/subscriber` for the tenant
+  re-check and currency), normalized into the frozen `AiToolEntityContext`
+  shape. Analytics refs resolve from their own `metadata` (no Brain call). The
+  results render as the frozen `## Referenced Entities` system block (final,
+  uncached; a failed ref degrades to `(could not load)`), and the
+  `get_entity_context` tool lets the model re-deref any referenced entity
+  mid-conversation. Block grammar + dispatch table: `src/lib/references.ts`
+  and the lib repo CONTRACTS.md §8. Requests without refs are unaffected.
 
 The frozen cross-repo contract is in the lib repo at
-`packages/storefront/src/admin/ai/CONTRACTS.md` (§1 SSE protocol, §2 tools).
-Source: `src/handlers/chat.js` (agent loop + SSE), `src/tools.js` (tool defs +
-Brain dispatch), `src/prompts.js` (system prompts). Tests: `test/chat.test.js`
+`packages/storefront/src/admin/ai/CONTRACTS.md` (§1 SSE protocol, §2 tools,
+§8 referencing). Source: `src/handlers/chat.ts` (agent loop + SSE),
+`src/toolsets/` (toolset registry + the personalizer toolset's tool defs,
+Brain dispatch, and entity-context normalizer), `src/lib/references.ts` (refs
+intake + Referenced-Entities block), `src/prompts.ts` (system prompts).
+Tests: `test/chat.test.ts`, `test/toolsets.test.ts`, `test/references.test.ts`
 (`npm test`).
 
 ### Headers
@@ -117,36 +148,51 @@ curl http://localhost:8787/health
 ```
 app-ai/
 ├── src/
-│   ├── index.js              # Entry + router only (CORS, OPTIONS, auth, dispatch)
+│   ├── index.ts              # Entry + router only (CORS, OPTIONS, auth, dispatch)
+│   ├── config.ts             # Typed Env + fail-fast config accessors (the ONE binding reader)
+│   ├── types/markdown.d.ts   # Ambient type: .md imports resolve to raw text
 │   ├── handlers/
-│   │   ├── health.js         # GET  /health
-│   │   ├── files.js          # POST/GET /files, DELETE /files/{id}
-│   │   ├── messages.js       # POST /messages (single-shot proxy)
-│   │   └── chat.js           # POST /chat (Studio AI agent loop + SSE)
+│   │   ├── health.ts         # GET  /health
+│   │   ├── files.ts          # POST/GET /files, DELETE /files/{id}
+│   │   ├── messages.ts       # POST /messages (single-shot proxy)
+│   │   └── chat.ts           # POST /chat (Studio AI agent loop + SSE)
 │   ├── lib/
-│   │   ├── anthropic.js      # The Anthropic client (files + messages + streaming + count_tokens)
-│   │   ├── auth.js           # Context-ID validation against Brain
-│   │   ├── cors.js           # CORS headers
-│   │   ├── responses.js      # JSON / error response helpers
-│   │   ├── cache-control.js  # 4-block prompt-cache management + 1h extended-TTL const
-│   │   ├── agent-cache.js    # /chat conversation-turn cache breakpoints (≤3, ~15-block intervals)
-│   │   ├── file-dedup.js     # Files API SHA-256 → file_id dedup (KV-backed, graceful no-op)
-│   │   └── logger.js         # Scoped console logger
-│   ├── prompts.js            # System-prompt registry (name → text + metadata)
-│   ├── prompts/*.md          # Prompt text (one .md per prompt, bundled at build time)
-│   └── tools.js              # /chat tool definitions + Brain dispatch
+│   │   ├── anthropic.ts      # The Anthropic client (files + messages + streaming + count_tokens)
+│   │   ├── auth.ts           # Context-ID validation against Brain
+│   │   ├── cors.ts           # CORS headers
+│   │   ├── responses.ts      # JSON helpers + the Brain-shaped error format ({ Message, ExceptionType, MessageDetail? })
+│   │   ├── cache-control.ts  # 4-block prompt-cache management + 1h extended-TTL const
+│   │   ├── agent-cache.ts    # /chat conversation-turn cache breakpoints (≤3, ~15-block intervals)
+│   │   ├── file-dedup.ts     # Files API SHA-256 → file_id dedup (KV-backed, graceful no-op)
+│   │   ├── references.ts     # /chat context.refs intake + Referenced-Entities system block
+│   │   └── logger.ts         # Scoped console logger
+│   ├── toolsets/             # AI-tool layer: named toolsets + registry (docs/TOOLSETS.md)
+│   │   ├── registry.ts       # composeToolsets(allowlist, authContext) — per-request tool surface
+│   │   ├── types.ts          # Toolset seam types (ToolsetDescriptor / ToolsetComposition)
+│   │   └── personalizer/     # Brain-backed toolset: tool defs + /v2/ai-tools/* dispatch (index.ts)
+│   │       └── entity-context.ts # Record-ref resolution via Brain's per-record admin endpoints
+│   ├── prompts.ts            # System-prompt registry (name → text + metadata)
+│   ├── prompts/*.md          # Simple prompt text (one .md per prompt, bundled at build time)
+│   └── prompts/<name>/       # Multi-file prompt: prompt.md + sample.md (attachment); maintenance doc in docs/prompts/<name>.md
 ├── test/
-│   ├── chat.test.js          # /chat agent loop + SSE
-│   ├── proxy.test.js         # files/messages/health + anthropic client + cors/auth/cache
-│   └── token-saving.test.js  # caching/dedup/count_tokens/effort levers
+│   ├── chat.test.ts          # /chat agent loop + SSE + refs/get_entity_context dispatch
+│   ├── toolsets.test.ts      # registry composition + allowlist + credential seam + tool-contract snapshot
+│   ├── references.test.ts    # context.refs intake + Referenced-Entities block (frozen snapshot)
+│   ├── entity-context.test.ts # per-refType fetchers + AiToolEntityContext shape parity
+│   ├── proxy.test.ts         # files/messages/health + anthropic client + cors/auth/cache
+│   ├── token-saving.test.ts  # caching/dedup/count_tokens/effort levers
+│   ├── config.test.ts        # config no-fallback contract + production [vars] pins
+│   ├── architecture.test.ts  # fitness scans (allowlists, credentials, error shape, config rule)
+│   └── helpers.ts            # shared typed fixtures (Env, fetch mock, SSE parser, KV mock)
 ├── scripts/
 │   └── verify-caching.mjs    # live token-savings GATE (npm run verify:caching) — see docs/TESTING.md
-├── docs/                     # Standalone-project docs (TESTING / DECISIONS / KNOWN-ISSUES)
+├── docs/                     # Standalone-project docs (CODE-PATTERNS / TESTING / TOOLSETS / DECISIONS / KNOWN-ISSUES / PROMPT-AUTHORING / prompts/<name>.md)
 ├── CONTRIBUTING.md           # Commit convention + push-to-main deploy rule + validate loop
-├── prompts/                  # Prompt-authoring drafts (NOT bundled; see note below)
-├── wrangler.toml             # Configuration + the `[[rules]] type = "Text"` prompt-bundling rule
-├── vitest.config.js          # Inline Vite plugin loading .md prompts as raw text in tests
-├── .dev.vars                 # Local secrets (gitignored)
+├── wrangler.toml             # Configuration ([vars] + KV binding) + the `[[rules]] type = "Text"` prompt-bundling rule
+├── tsconfig.json             # Strict TypeScript (full strict family; tsc --noEmit gate)
+├── vitest.config.ts          # Inline Vite plugin loading .md prompts as raw text in tests
+├── .dev.vars.example         # Documents every local config knob (copy to .dev.vars)
+├── .dev.vars                 # Local config + secrets (gitignored)
 └── package.json
 ```
 
@@ -154,44 +200,72 @@ Architecture detail lives in [CLAUDE.md](CLAUDE.md).
 
 ### Environment Variables
 
+All configuration is read through the typed accessors in
+[src/config.ts](src/config.ts) — one `Env` interface, fail-fast on a missing
+variable, no fallback defaults.
+
 **Local Development:**
 
-- Public config in `wrangler.toml` `[env.dev.vars]` section
-- Secrets in `.dev.vars` file (gitignored):
-  ```bash
-  CLAUDE_API_KEY=sk-ant-api03-...
-  ```
+- Everything in `.dev.vars` (gitignored; overrides `[vars]` under
+  `wrangler dev`). Copy [.dev.vars.example](.dev.vars.example) — it documents
+  every knob.
 
 **Production:**
 
-- Public config in `wrangler.toml` `[vars]` section (default)
+- Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `BRAIN_API_URL`,
+  `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
+  `MODEL_PLACEMENT` (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
 
 ### Updating System Prompts
 
-Each system prompt is a **registry entry** in [src/prompts.js](src/prompts.js) whose
-TEXT lives in a sibling `.md` file under [src/prompts/](src/prompts/). The registry maps
-`name → { prompt, model, maxTokens, usesTools, description, attachments, effort? }` and is
+Each system prompt is a **registry entry** in [src/prompts.ts](src/prompts.ts) whose
+TEXT lives under [src/prompts/](src/prompts/) — the ONE and only prompt location. The registry
+maps `name → { prompt, model, maxTokens, usesTools, description, attachments, effort? }` and is
 the single source of truth for each prompt's model / token / tool choices (consumed by both
-`handlers/chat.js` and `handlers/messages.js`). `effort` is optional — see Token-Saving below.
+`handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-> The top-level `prompts/` directory (`prompts/image-selection/*.md`) holds prompt-authoring
-> drafts. It is NOT imported by the worker and NOT bundled — the live prompt text the worker
-> bundles lives only under `src/prompts/`.
+The six registered prompts:
 
-To change a prompt's wording: edit its `.md` file (e.g. `src/prompts/chat.md`) — pure text.
-To add a prompt: create a `prompts/<name>.md` file and add a registry entry that imports it.
+| Name                 | Endpoint    | Tools | Purpose                                                                       |
+| -------------------- | ----------- | ----- | ----------------------------------------------------------------------------- |
+| `image-selection`    | `/messages` | No    | HTML + screenshot → CSS selectors (JSON-only). LIVE smart-image.              |
+| `chat`               | `/chat`     | Yes   | General conversational Studio assistant (agent loop).                         |
+| `onboarding`         | `/chat`     | Yes   | New-merchant onboarding assistant (agent loop, best-practice defaults).       |
+| `placement`          | `/chat`     | No    | Structured placement proposer; one-shot JSON, faster model.                   |
+| `proposals`          | `/chat`     | Yes   | Per-store onboarding setup proposer; grounds in real store data (agent loop). |
+| `analytics-insights` | `/chat`     | No    | One-shot analytics insights JSON over the tab's real data (grounding).        |
+
+**Single vs. multi-file convention** — a prompt is one of two shapes, both resolving to the
+same registry entry:
+
+- **Simple** → one file `src/prompts/<name>.md` (e.g. `chat.md`). Import and use as `prompt`.
+- **Multi-file** → a folder `src/prompts/<name>/` (e.g. `image-selection/`): a required
+  `prompt.md` (main system prompt) + optional non-underscore context part(s) composed in via
+  the `composePrompt(...)` helper + a `sample.md`-style file wired as an `attachments` entry
+  (uploaded and prepended to the first message; image-selection only). Underscore-prefixed
+  files (`_*.md`) in a prompt folder remain a supported exclusion convention — never imported,
+  never bundled, never sent to the API. Per-prompt design/maintenance docs live at
+  [docs/prompts/<name>.md](docs/prompts/) (workflow: [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md)).
+
+`image-selection` is the one multi-file prompt today: `prompt.md` is its system text, `sample.md`
+its training-examples attachment, [docs/prompts/image-selection.md](docs/prompts/image-selection.md)
+its design/maintenance doc.
+
+To change a prompt's wording: edit its `.md` file(s) under `src/prompts/` — pure text.
+To add a prompt: create `src/prompts/<name>.md` (simple) or a `src/prompts/<name>/` folder
+(multi-file) and add a registry entry that imports it.
 To change a prompt's model / token budget / whether it uses tools: edit the metadata in
-`src/prompts.js`.
+`src/prompts.ts`.
 
 The `.md` files are bundled at **build time** (Workers have no runtime filesystem) — the
-`[[rules]] type = "Text"` rule in `wrangler.toml` makes `import x from './prompts/x.md'`
-resolve to the file's string contents; `vitest.config.js` mirrors this for tests with the
-same import specifier.
+`[[rules]] type = "Text"` rule in `wrangler.toml` (glob `**/*.md`, so nested multi-file
+prompts bundle too) makes `import x from './prompts/x.md'` resolve to the file's string
+contents; `vitest.config.ts` mirrors this for tests with the same import specifier.
 
-1. Edit the `.md` text and/or the `src/prompts.js` metadata
+1. Edit the `.md` text and/or the `src/prompts.ts` metadata
 2. `npx vitest run` and `npx wrangler deploy --dry-run` to verify
 3. Commit and push to GitHub (auto-deploys to production)
 
@@ -222,11 +296,11 @@ Cost-reduction is additive and never changes external request/response shapes.
 - **Extended 1h prompt cache.** Stable prefixes (the system prompt, reused file
   attachments, the `/chat` base prompt block) carry `cache_control: { type: 'ephemeral', ttl:
 '1h' }` (GA — no beta header). Conversation turns use the 5-minute default. See
-  `src/lib/cache-control.js` (`EXTENDED_CACHE_CONTROL`).
-- **Agent-loop breakpoints.** `src/lib/agent-cache.js` re-applies ≤3 conversation breakpoints
+  `src/lib/cache-control.ts` (`EXTENDED_CACHE_CONTROL`).
+- **Agent-loop breakpoints.** `src/lib/agent-cache.ts` re-applies ≤3 conversation breakpoints
   each iteration (last block + ~every-15-blocks); the system base block holds the 4th, so the
   total never exceeds Anthropic's 4-block limit.
-- **Files API checksum dedup.** `src/lib/file-dedup.js` hashes upload bytes (SHA-256) and, when
+- **Files API checksum dedup.** `src/lib/file-dedup.ts` hashes upload bytes (SHA-256) and, when
   the optional `FILES_KV` namespace is bound, reuses the stored `file_id` instead of
   re-uploading (the Files API does NOT dedup by content). **Graceful no-op until KV is
   provisioned** — uploads still work.
@@ -234,30 +308,22 @@ Cost-reduction is additive and never changes external request/response shapes.
   never gates the request).
 - **Opt-in output effort (model-gated).** A registry entry may set `effort` → handlers add
   `output_config: { effort }` **only when the resolved model supports it** (`supportsEffort` in
-  `lib/anthropic.js`: Fable 5, Opus 4.8/4.7/4.6/4.5, Sonnet 4.6). On a model that doesn't support
+  `lib/anthropic.ts`: Fable 5, Opus 4.8/4.7/4.6/4.5, Sonnet 4.6). On a model that doesn't support
   effort (e.g. Haiku 4.5, Sonnet 4.5) the worker omits it — sending it returns a 400. `placement`
   runs on Haiku 4.5, so it carries no `effort`.
 
-**Provisioning `FILES_KV`** (one-time — dedup no-ops until then):
-
-```bash
-npx wrangler kv namespace create FILES_KV
-npx wrangler kv namespace create FILES_KV --preview
-```
-
-Then uncomment the `[[kv_namespaces]]` stanza in `wrangler.toml` and paste the returned ids.
-
-**Needs live validation:** the 1h `ttl` and `count_tokens` are offline-verified only (tests +
-dry-run). A real deploy is required to confirm the Anthropic API accepts them in production.
-`output_config.effort` is live-validated via the placement smoke test.
+`FILES_KV` is bound in `wrangler.toml` (`[[kv_namespaces]]`), so dedup is active in
+production; the code no-ops gracefully to a plain upload if the binding is ever absent.
+The 1h cache and the placement file-block prefix are live-verified by the token-savings
+gate (`npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)).
 
 ### CORS Configuration
 
-Allowed origins live in [src/lib/cors.js](src/lib/cors.js). The AI endpoints carry no
-cookies (auth is the `X-Personalizer-Context-ID` header, validated against Brain), so any
-merchant Origin is echoed back without credentials; the `CREDENTIALED_ORIGINS` allowlist
-additionally permits known dev origins to send credentialed requests. Update that allowlist
-to add a credentialed dev origin.
+The AI endpoints carry no cookies (auth is the `X-Personalizer-Context-ID` header,
+validated against Brain), so any merchant Origin is echoed back without credentials
+(`src/lib/cors.ts`). The `CREDENTIALED_ORIGINS` configuration variable (wrangler
+`[vars]` / `.dev.vars`, comma-separated) additionally permits known dev origins to send
+credentialed requests — add a credentialed dev origin there, not in code.
 
 ## Deployment
 
@@ -299,23 +365,23 @@ npm run tail
 
 All configured in [wrangler.toml](wrangler.toml):
 
-- **Local** (`wrangler dev --env dev` or `npm run dev`): `http://localhost:8787`
+- **Local** (`wrangler dev` via `npm run dev`): `http://localhost:8787`
 
-  - Config: `wrangler.toml` `[env.dev.vars]` section
-  - Secrets: `.dev.vars` file (gitignored)
-  - Brain API: `https://local.personalizer.io`
+  - Config + secrets: `.dev.vars` (gitignored; see `.dev.vars.example`)
+  - Brain API: `http://127.0.0.1:5000` (plain HTTP — workerd's `fetch` can't
+    accept nginx's self-signed cert on `https://local.personalizer.io`, so the
+    local worker talks to the same Brain process over HTTP)
 
 - **Production** (Cloudflare auto-deploy): `https://app-ai.personalizer.io`
-  - Config: `wrangler.toml` `[vars]` section (default)
+  - Config: `wrangler.toml` `[vars]`
   - Secrets: Cloudflare Dashboard (encrypted)
   - Brain API: `https://personalizer.io`
   - Auto-deploys from `main` branch
 
-Each environment configuration includes:
-
-- `ENVIRONMENT` - Environment name
-- `BRAIN_API_URL` - Backend API URL
-- `CLAUDE_API_KEY` - Anthropic API key
+Every environment provides the full variable set — `ENVIRONMENT`,
+`BRAIN_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
+`MODEL_PLACEMENT`, and the `CLAUDE_API_KEY` secret. `src/config.ts` throws on
+any missing one.
 
 ### View Live Logs
 
@@ -337,7 +403,8 @@ npm run tail
 
 2. **CORS**
 
-   - The allow-listed first-party origins (`lib/cors.js`) receive
+   - The allow-listed first-party origins (the `CREDENTIALED_ORIGINS` config
+     variable, consumed by `lib/cors.ts`) receive
      `Access-Control-Allow-Credentials: true`.
    - Other origins (embedded merchant storefronts) are echoed back **without**
      credentials, with `Vary: Origin`. These endpoints are authenticated by the
@@ -348,11 +415,13 @@ npm run tail
 3. **Context Validation**
 
    - All protected endpoints validate the context ID against the Brain API
-     before dispatch (`lib/auth.js`).
-   - A failed validation (missing ID, Brain unreachable, or a non-2xx Brain
-     response) throws; the router maps the throw to **HTTP 500** with an
-     `{ error: { message } }` body. Brain's own status (e.g. 401/403) and detail
-     are preserved in the message text, not the worker's status code. See
+     before dispatch (`lib/auth.ts`).
+   - Every error response uses Brain's wire shape
+     (`{ "Message": ..., "ExceptionType": ..., "MessageDetail": ... }`) — app-ai
+     errors are structurally identical to Brain errors, so clients keep one
+     parser. A missing context-ID is a **401 `MissingContextIDException`**; a
+     Brain rejection relays Brain's own status + body unchanged; an unreachable
+     Brain is a **500 `BrainUnreachableException`**. See
      [docs/DECISIONS.md](docs/DECISIONS.md) #7.
 
 4. **Input Validation**
@@ -399,7 +468,7 @@ kill -9 <PID>
 
 ### CORS errors
 
-- Verify app origin in allowed list ([src/lib/cors.js](src/lib/cors.js))
+- Verify the app origin is in the `CREDENTIALED_ORIGINS` config variable (wrangler `[vars]` / `.dev.vars`)
 - Restart dev server after changes
 - Check browser console for specific error
 
@@ -426,8 +495,11 @@ wrangler tail
 
 ```bash
 # Development
-npm run dev              # Start local server (port 8787)
-npm run test             # Run tests
+npm run dev              # Start local server (port 8787; config from .dev.vars)
+npm run test             # Run tests (watch); one-shot: npx vitest run
+npm run typecheck        # tsc --noEmit (strict)
+npm run lint             # ESLint over the whole repo
+npm run format-check     # Prettier check (exclusions documented in .prettierignore)
 
 # Deployment (Manual - for testing only)
 npm run deploy           # Deploy to default environment
@@ -466,10 +538,18 @@ wrangler whoami          # Check authentication
 - [CLAUDE.md](CLAUDE.md) — architecture + the documentation-propagation rule
 - [CONTRIBUTING.md](CONTRIBUTING.md) — commit convention, the push-to-main
   deploy rule, the validate-before-push loop
-- [docs/TESTING.md](docs/TESTING.md) — the four test layers + the live
-  token-savings gate
+- [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md) — coding standards (strict
+  TypeScript, clean code, error handling, No Hardcoded Config Values)
+- [docs/TESTING.md](docs/TESTING.md) — the five test layers, the gate set, and
+  the live token-savings gate
 - [docs/DECISIONS.md](docs/DECISIONS.md) — numbered decision log
 - [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — current limitations
+- [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) — prompt
+  authoring/iteration workflow
+- [docs/TOOLSETS.md](docs/TOOLSETS.md) — toolset standards: the registry, the
+  credential seam + security standards, the platform-toolset roadmap seam
+- [docs/prompts/](docs/prompts/) — per-prompt design/maintenance docs
+  (e.g. [image-selection.md](docs/prompts/image-selection.md))
 
 ---
 

@@ -1,0 +1,46 @@
+{
+  // ==========================================================================
+  // app-ai — strict TypeScript configuration (worker + tests).
+  //
+  // The full strict family is ON (mirroring the lib repo's Studio admin
+  // tsconfig, adapted for a Cloudflare Worker). `npx tsc --noEmit` is a
+  // required gate (CLAUDE.md → Definition of Done); wrangler/esbuild does the
+  // actual transpilation at deploy time, vitest at test time — tsc is the
+  // type-checker only.
+  //
+  // Globals come from @cloudflare/workers-types (the Workers runtime) plus
+  // vite/client (import.meta.glob, used by the architecture fitness tests to
+  // static-scan src/ without Node fs APIs).
+  // ==========================================================================
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "vite/client"],
+
+    // Strict family — all ON.
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "useUnknownInCatchVariables": true,
+
+    // Beyond-strict correctness flags.
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*", "test/**/*", "vitest.config.ts"]
+}

@@ -20,35 +20,57 @@
  *   - Missing creds / target  → THROW with setup instructions (exit 1).
  *   - `cache_read` is 0 on a repeat call → THROW (a caching regression).
  *
- * Credentials + target resolution (first match wins):
- *   - Context-ID: `APP_AI_CONTEXT_ID` env, else the cached master context at
- *     `/tmp/storefront-test/shop-context.lsdev1.myshopify.com.json` (the same
- *     master-login fixture the lib E2E suite mints — see the lib admin
- *     `studio-e2e-auth` notes). Context-IDs are subscriber-scoped; this gate
- *     targets the lsdev1 dev store.
- *   - Target worker: `APP_AI_TARGET` env, else the production worker URL.
+ * Configuration — all EXPLICIT, per the No Hardcoded Config Values rule
+ * (docs/CODE-PATTERNS.md): a missing variable throws, naming it; the script
+ * carries no default target and no default fixture path.
+ *   - `APP_AI_TARGET` (required) — the deployed worker base URL to gate
+ *     (the production worker URL is documented in README → Environments).
+ *   - `APP_AI_CONTEXT_ID`, or `APP_AI_CONTEXT_FILE` pointing at a
+ *     `shop-context` fixture JSON (`{ "contextID": ... }`, as minted by the
+ *     lib E2E suite's aidin@limespot.com master login) — context-IDs are
+ *     subscriber-scoped, so use a dev store (lsdev1).
  */
 
 import { readFileSync } from 'node:fs';
 
-const DEFAULT_TARGET = 'https://app-ai.personalizer.io';
-const DEFAULT_CONTEXT_FILE = '/tmp/storefront-test/shop-context.lsdev1.myshopify.com.json';
 const REQUEST_TIMEOUT_MS = 120000;
 
-/** Resolve the deployed worker base URL (env override, else production). */
+/**
+ * Read one required environment variable; throw an actionable error naming it
+ * when absent (no fallback defaults — docs/CODE-PATTERNS.md).
+ */
+function requireEnv(name, guidance) {
+  const value = process.env[name];
+  if (value && value.trim()) {
+    return value.trim();
+  }
+  throw new Error(`Missing required environment variable ${name}. ${guidance}`);
+}
+
+/** Resolve the deployed worker base URL to gate (explicit, never defaulted). */
 function resolveTarget() {
-  return (process.env.APP_AI_TARGET || DEFAULT_TARGET).replace(/\/$/, '');
+  return requireEnv(
+    'APP_AI_TARGET',
+    'Set it to the deployed worker base URL to gate — the production worker URL is documented in README → Environments.',
+  ).replace(/\/$/, '');
 }
 
 /**
- * Resolve a master context-ID. Throws (with actionable instructions) when none
- * is available — never returns a placeholder, never silently skips.
+ * Resolve a master context-ID — from APP_AI_CONTEXT_ID, or from the fixture
+ * file APP_AI_CONTEXT_FILE points at. Throws (with actionable instructions)
+ * when neither is set — never returns a placeholder, never silently skips.
  */
 function resolveContextId() {
   if (process.env.APP_AI_CONTEXT_ID) {
     return process.env.APP_AI_CONTEXT_ID;
   }
-  const file = process.env.APP_AI_CONTEXT_FILE || DEFAULT_CONTEXT_FILE;
+  const file = requireEnv(
+    'APP_AI_CONTEXT_FILE',
+    'The caching gate needs a valid X-Personalizer-Context-ID for a dev store: ' +
+      'set APP_AI_CONTEXT_ID=<id>, or point APP_AI_CONTEXT_FILE at a shop-context ' +
+      'fixture JSON ({ "contextID": ... }) minted by the lib E2E suite via the ' +
+      'aidin@limespot.com master login.',
+  );
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
     if (parsed && parsed.contextID) {
@@ -57,12 +79,9 @@ function resolveContextId() {
     throw new Error(`no "contextID" field in ${file}`);
   } catch (error) {
     throw new Error(
-      `No master context-ID available. The caching gate needs a valid ` +
-        `X-Personalizer-Context-ID for a dev store.\n` +
-        `  • Set APP_AI_CONTEXT_ID=<id>, or\n` +
-        `  • Provide a context fixture at ${file} (the lib E2E suite mints these ` +
-        `via the aidin@limespot.com master login).\n` +
-        `Underlying error: ${error.message}`,
+      `Could not read a master context-ID from APP_AI_CONTEXT_FILE (${file}). ` +
+        `Set APP_AI_CONTEXT_ID=<id> directly, or point APP_AI_CONTEXT_FILE at a valid ` +
+        `shop-context fixture.\nUnderlying error: ${error.message}`,
     );
   }
 }
@@ -89,8 +108,9 @@ async function chat(target, contextId, promptName, body) {
   } catch {
     throw new Error(`POST /chat (${promptName}) returned non-JSON: ${text.slice(0, 200)}`);
   }
-  if (parsed.error) {
-    throw new Error(`POST /chat (${promptName}) error: ${parsed.error.message || text}`);
+  if (parsed.Message && parsed.ExceptionType) {
+    // The worker's Brain-shaped error envelope ({ Message, ExceptionType, ... }).
+    throw new Error(`POST /chat (${promptName}) error: ${parsed.Message}`);
   }
   return parsed;
 }

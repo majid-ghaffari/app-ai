@@ -7,10 +7,10 @@ name: Verify Caching (pre-release gate)
 # only when the required repo secret is configured (the guard step exits the job
 # cleanly otherwise, so a fork or unconfigured repo never fails here).
 #
-# Required repo secret:
+# Required repo secrets (the gate script takes NO defaults — No Hardcoded
+# Config Values, docs/CODE-PATTERNS.md):
 #   APP_AI_CONTEXT_ID  — a valid master context-ID for a dev store (lsdev1).
-# Optional:
-#   APP_AI_TARGET      — worker base URL (defaults to the production worker).
+#   APP_AI_TARGET      — the deployed worker base URL to gate.
 
 on:
   workflow_dispatch:
@@ -21,13 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — require APP_AI_CONTEXT_ID secret
+      - name: Guard — require the APP_AI_CONTEXT_ID + APP_AI_TARGET secrets
         env:
           APP_AI_CONTEXT_ID: ${{ secrets.APP_AI_CONTEXT_ID }}
+          APP_AI_TARGET: ${{ secrets.APP_AI_TARGET }}
         run: |
-          if [ -z "$APP_AI_CONTEXT_ID" ]; then
-            echo "APP_AI_CONTEXT_ID secret is not configured — skipping the caching gate."
-            echo "Add it under Settings → Secrets to enable this workflow."
+          if [ -z "$APP_AI_CONTEXT_ID" ] || [ -z "$APP_AI_TARGET" ]; then
+            echo "APP_AI_CONTEXT_ID and/or APP_AI_TARGET secret is not configured — skipping the caching gate."
+            echo "Add both under Settings → Secrets to enable this workflow."
             exit 0
           fi
           echo "ok=true" >> "$GITHUB_OUTPUT"

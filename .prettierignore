@@ -1,4 +1,15 @@
+# Build / dependency artifacts.
 node_modules
 .wrangler
 dist
 package-lock.json
+
+# Prompt text is a byte-frozen contract (CLAUDE.md → Hard rules: prompt .md
+# text must match the intended prompt byte-for-byte) — formatting would change
+# the shipped prompt bytes.
+src/prompts/**/*.md
+
+# Frozen model-visible tool-schema snapshot — a byte-for-byte contract artifact
+# (test/toolsets.test.ts); it changes only through a deliberate contract bump,
+# never through a formatter.
+test/__snapshots__/

@@ -1,0 +1,102 @@
+[
+  {
+    "name": "get_store_analytics",
+    "description": "Get the merchant's store performance over a date window: order count, total revenue, average order value (AOV), and conversion rate. Call this when the merchant asks about sales, revenue, AOV, or when you need the AOV to recommend a progress-bar threshold.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "fromDate": {
+          "type": "string",
+          "description": "Start date, YYYY-MM-DD. Optional; defaults to 90 days ago."
+        },
+        "toDate": {
+          "type": "string",
+          "description": "End date, YYYY-MM-DD. Optional; defaults to today."
+        }
+      }
+    }
+  },
+  {
+    "name": "list_segments",
+    "description": "List the merchant's existing audience segments and their status. Call this before recommending which segments to activate so you don't suggest ones that already exist or are already active.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "Active",
+            "Inactive",
+            "All"
+          ],
+          "description": "Filter by status. Optional; defaults to All."
+        },
+        "keyword": {
+          "type": "string",
+          "description": "Optional keyword to filter segment titles."
+        }
+      }
+    }
+  },
+  {
+    "name": "list_campaigns",
+    "description": "List the merchant's existing campaigns (discount, progress bar, HTML, image) and their status. Call this before recommending a new campaign so you reflect what's already set up.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "discount",
+            "progressbar",
+            "html",
+            "image",
+            "all"
+          ],
+          "description": "Which kind of campaign to list. Optional; defaults to all."
+        },
+        "keyword": {
+          "type": "string",
+          "description": "Optional keyword to filter campaign titles."
+        }
+      }
+    }
+  },
+  {
+    "name": "get_store_config",
+    "description": "Get the merchant's store configuration: platform, industry, currency, and the recommendation-box types currently configured per page. Call this to understand the store's setup and industry before tailoring recommendations.",
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "get_entity_context",
+    "description": "Fetch full detail for a referenced entity by type and id. Use it for deeper detail on a referenced campaign, segment, progress bar, or bundle, or to re-read an analytics reference already attached to this conversation.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "campaign",
+            "segment",
+            "progress-bar",
+            "bundle",
+            "analytics-metric",
+            "analytics-tab"
+          ],
+          "description": "The referenced entity type."
+        },
+        "id": {
+          "type": "string",
+          "description": "Entity Guid for campaign/segment/progress-bar/bundle. For analytics types, the category path: analytics/{tab} or analytics/{tab}/{metricKey}."
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    }
+  }
+]

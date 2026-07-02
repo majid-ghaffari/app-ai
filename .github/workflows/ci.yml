@@ -25,5 +25,13 @@ jobs:
       - name: Format check
         run: npm run format-check
 
+      - name: Type check
+        run: npm run typecheck
+
       - name: Test
         run: npx vitest run
+
+      # Builds the worker bundle without deploying — verifies imports and the
+      # wrangler [[rules]] Text rule resolve. Needs no Cloudflare credentials.
+      - name: Bundle (dry run)
+        run: npx wrangler deploy --dry-run

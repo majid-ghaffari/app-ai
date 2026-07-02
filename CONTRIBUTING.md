@@ -32,13 +32,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ## Validate before you push
 
 Run the full offline gate locally — it mirrors CI
-(`.github/workflows/ci.yml`), which runs lint → format-check → `vitest run` on
-every push and PR:
+(`.github/workflows/ci.yml`), which runs lint → format-check → typecheck →
+`vitest run` → `wrangler deploy --dry-run` on every push and PR:
 
 ```bash
-npm run lint            # ESLint over src/** + test/**  (must be 0)
-npm run format-check    # Prettier check
-npx vitest run          # unit + integration + contract (must be green)
+npm run lint            # ESLint over the whole repo (must be 0)
+npm run format-check    # Prettier check (whole repo; exclusions in .prettierignore)
+npm run typecheck       # tsc --noEmit (strict; must be 0)
+npx vitest run          # unit + integration + contract + fitness (must be green)
 npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
 ```
 
@@ -66,14 +67,19 @@ present-state only — describe what the code IS, never what it was (no
 
 ## Hard rules
 
-- **No new npm dependencies. No TypeScript.** (JSDoc for types.)
-- **The Anthropic API key never leaves the worker** — only `lib/anthropic.js`
-  reads `env.CLAUDE_API_KEY`.
+- **Strict TypeScript, no `any`, no `@ts-*` suppressions** — see
+  [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md). No new production npm
+  dependencies (the bundle stays dependency-free).
+- **No Hardcoded Config Values** — URLs and deploy-time tunables live in
+  wrangler `[vars]` / `.dev.vars` behind `src/config.ts`; missing config
+  throws; no inline fallbacks (fitness-tested).
+- **The Anthropic API key never leaves the worker** — only `lib/anthropic.ts`
+  reads it, via `claudeApiKey(env)` from `src/config.ts`.
 - **The live surface is a stable external contract.** `/files`, `/messages`
   (image-selection), `/chat`, context validation, CORS, and `cache_control`
   serve production — routes, request/response shapes, headers, and status codes
   stay identical.
 - **Brain is the source of truth** for the `/v2/ai-tools/*` and
   validate-context-id request/response shapes — mirror Brain's C# exactly
-  (verify in the `brain` repo); never invent fields in `tools.js` / `auth.js`.
+  (verify in the `brain` repo); never invent fields in `toolsets/personalizer/` / `auth.ts`.
 - Prompt `.md` text must match the intended prompt byte-for-byte.

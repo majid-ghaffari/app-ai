@@ -1,8 +1,19 @@
-# Cloudflare Workers Configuration
+# Cloudflare Workers configuration
 # Documentation: https://developers.cloudflare.com/workers/wrangler/configuration/
+#
+# Configuration channels (docs/CODE-PATTERNS.md → "No Hardcoded Config Values"):
+#   • Production non-secrets → [vars] below (Cloudflare auto-deploys from main
+#     with this file, so [vars] IS the production configuration).
+#   • Production secrets     → Cloudflare Dashboard encrypted secrets
+#     (CLAUDE_API_KEY — never in this file).
+#   • Local dev              → .dev.vars (gitignored; overrides [vars] under
+#     `wrangler dev`). Every knob is documented in .dev.vars.example.
+# The worker reads all of these ONLY through the typed accessors in
+# src/config.ts — a missing variable throws, naming the variable and the
+# channel to set it in. No fallback defaults exist anywhere.
 
 name = "app-ai"
-main = "src/index.js"
+main = "src/index.ts"
 compatibility_date = "2024-11-27"
 # Compatibility flags for latest Workers runtime features (none needed yet).
 # Must be a top-level key — placing it under a [table] mis-parses as that table's field.
@@ -21,68 +32,44 @@ ip = "127.0.0.1"
 port = 8787
 local_protocol = "http"
 
-# Production variables (default - used by Cloudflare auto-deploy from GitHub)
-# CLAUDE_API_KEY set via Cloudflare Dashboard (encrypted secret)
+# Production variables (used by Cloudflare auto-deploy from GitHub).
+# CLAUDE_API_KEY is set via the Cloudflare Dashboard (encrypted secret).
 [vars]
 ENVIRONMENT = "production"
 BRAIN_API_URL = "https://personalizer.io"
-
-# Local development environment (used by wrangler dev --env dev)
-# CLAUDE_API_KEY loaded from .dev.vars file (gitignored)
-[env.dev.vars]
-ENVIRONMENT = "local"
-BRAIN_API_URL = "http://localhost:5000"
-
-# Route configuration (optional - uncomment and configure for custom domains)
-# routes = [
-#   { pattern = "app-ai.personalizer.io/*", zone_name = "personalizer.io" }
-# ]
-
-# Staging environment (commented out - not in use)
-# [env.staging]
-# name = "app-ai-staging"
-# vars = { ENVIRONMENT = "staging", BRAIN_API_URL = "https://staging.personalizer.io" }
+ANTHROPIC_API_BASE = "https://api.anthropic.com"
+# Dev origins allowed to send credentialed CORS requests (comma-separated).
+# Every other Origin is echoed WITHOUT credentials — see src/lib/cors.ts.
+CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,http://localhost:3000"
+# Deploy-time model choices for the prompt registry (src/prompts.ts):
+# MODEL_DEFAULT drives chat/onboarding/proposals/analytics-insights/image-selection;
+# MODEL_PLACEMENT drives the latency-sensitive structured placement prompt.
+MODEL_DEFAULT = "claude-opus-4-8"
+MODEL_PLACEMENT = "claude-haiku-4-5"
 
 # Observability
 [observability]
 enabled = true
 
-# Build configuration
-[build]
-command = ""
-
 # Bundle system-prompt .md files as raw text at build time.
 # Workers have no runtime filesystem, so `import x from './prompts/chat.md'`
-# must resolve to the file's string contents during esbuild. This Text rule
-# makes that import return the raw markdown. vitest mirrors it with an inline
-# Vite plugin in vitest.config.js (same import specifier, no `?raw` suffix).
+# (and nested multi-file prompts like `./prompts/image-selection/prompt.md`)
+# must resolve to the file's string contents during esbuild. The `**/*.md` glob
+# matches prompt files at any depth, so both single-file and multi-file prompts
+# under src/prompts/ are bundled. This Text rule makes that import return the
+# raw markdown. vitest mirrors it with an inline Vite plugin in vitest.config.ts
+# (same import specifier, no `?raw` suffix).
 [[rules]]
 type = "Text"
 globs = ["**/*.md"]
 fallthrough = true
 
-# Note: Configuration and secrets management
-# Local dev: Public config in [env.dev.vars], secrets in .dev.vars (gitignored)
-# Production: Public config in [vars], secrets via Cloudflare Dashboard (encrypted)
-
-# KV Namespaces (optional - for storing prompts dynamically)
-# Uncomment if you want to use KV storage for system prompts
-# [[kv_namespaces]]
-# binding = "PROMPTS_KV"
-# id = "your-kv-namespace-id"
-# preview_id = "your-preview-kv-namespace-id"
-
-# Files API content-hash dedup store (src/lib/file-dedup.js): maps
+# Files API content-hash dedup store (src/lib/file-dedup.ts): maps
 # SHA-256(content) → { fileId, createdAt } so identical HTML/screenshot bytes
 # reuse an existing Anthropic file_id instead of re-uploading (the Files API
-# does not dedup by content). The code no-ops when this binding is absent.
+# does not dedup by content). The code no-ops when this binding is absent —
+# the one deliberately OPTIONAL binding (src/config.ts).
 [[kv_namespaces]]
 binding = "FILES_KV"
 id = "eb048ab9979f46ce93d8b0dfcdb9d58f"
 preview_id = "b524e2d6d53d482ead49f7ea60881dbd"
-
-# R2 Buckets (optional - for storing large files)
-# [[r2_buckets]]
-# binding = "FILES_BUCKET"
-# bucket_name = "app-ai-files"
-# preview_bucket_name = "app-ai-files-preview"

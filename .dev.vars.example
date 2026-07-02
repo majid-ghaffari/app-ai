@@ -1,0 +1,29 @@
+# Local development configuration for `wrangler dev` (npm run dev).
+#
+# Copy this file to `.dev.vars` (gitignored) and fill in the secret. Values
+# here OVERRIDE the production `[vars]` in wrangler.toml for the local worker.
+# Every variable is REQUIRED unless marked otherwise — src/config.ts throws on
+# a missing one (no fallback defaults). See docs/CODE-PATTERNS.md →
+# "No Hardcoded Config Values".
+
+# Deployment metadata (dashboard/tail context only; code never branches on it).
+ENVIRONMENT=local
+
+# Brain (Personalizer API) base URL, no trailing slash. Miniflare/workerd fetch
+# can't accept nginx's self-signed cert on https://local.personalizer.io, so
+# the LOCAL worker talks to Brain over plain HTTP (same Brain process; nginx
+# just fronts it with TLS for the browser).
+BRAIN_API_URL=http://127.0.0.1:5000
+
+# Anthropic API origin, no trailing slash.
+ANTHROPIC_API_BASE=https://api.anthropic.com
+
+# Origins allowed to send credentialed CORS requests (comma-separated).
+CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http://localhost:3000
+
+# Deploy-time model choices for the prompt registry (src/prompts.ts).
+MODEL_DEFAULT=claude-opus-4-8
+MODEL_PLACEMENT=claude-haiku-4-5
+
+# SECRET — your Anthropic API key. Never commit the real value.
+CLAUDE_API_KEY=sk-ant-your-key-here
