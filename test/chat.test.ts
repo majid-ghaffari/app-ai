@@ -26,9 +26,10 @@ import {
   type FetchMock,
 } from './helpers';
 
-// The /chat tool surface, composed through the registry exactly as the
-// handler does (allowlist ['personalizer']).
-const TOOL_DEFINITIONS = composeToolsets(['personalizer'], {
+// The /chat tool surface, composed through the registry exactly as the handler
+// does for a subscriber with no third-party integration parties — just the
+// always-active personalizer toolset.
+const TOOL_DEFINITIONS = composeToolsets([], {
   contextId: 'ctx',
   env: ENV,
 }).definitions;
@@ -40,7 +41,7 @@ const executeTool = (
   contextId: string,
   env: Env,
   refs: EntityReference[] = [],
-) => composeToolsets(['personalizer'], { contextId, env }).execute(name, input, { refs });
+) => composeToolsets([], { contextId, env }).execute(name, input, { refs });
 
 interface SseBlockSpec {
   type: 'text' | 'tool_use';

@@ -4,8 +4,9 @@
  * docs/TOOLSETS.md). Each scan names the rule it enforces; weakening one is a
  * deliberate contract change, not a cleanup.
  *
- *   1. Explicit endpoint toolset allowlists — every composeToolsets call site
- *      in a handler passes a locally-declared *_TOOLSETS literal.
+ *   1. Party-driven composition — every composeToolsets call site in a handler
+ *      passes the subscriber's available parties, never a static toolset-name
+ *      allowlist literal; only handlers + the toolset layer touch the registry.
  *   2. Credentials never logged — no log/console call references a credential
  *      identifier; the model-visible system builder never sees the context-ID.
  *   3. One error shape — the retired `{ error: { message } }` envelope pattern
@@ -70,20 +71,23 @@ function callArguments(source: string, calleePattern: RegExp): string[] {
   return results;
 }
 
-describe('fitness: explicit endpoint toolset allowlists', () => {
-  it('every handler composing toolsets declares a *_TOOLSETS literal and passes it', () => {
+describe('fitness: party-driven composition', () => {
+  it('every handler composing toolsets drives it from the subscriber parties, not a static allowlist', () => {
     let composingHandlers = 0;
     for (const [path, source] of Object.entries(handlerModules)) {
       if (!source.includes('composeToolsets(')) continue;
       composingHandlers += 1;
-      expect(source, `${path}: declare an explicit const <NAME>_TOOLSETS allowlist`).toMatch(
-        /const [A-Z_]+_TOOLSETS = \[/,
-      );
-      expect(source, `${path}: pass the declared allowlist to composeToolsets`).toMatch(
-        /composeToolsets\([A-Z_]+_TOOLSETS/,
+      // Composition is data-driven off the subscriber's available parties — the
+      // static endpoint toolset-name allowlist model is retired.
+      expect(
+        source,
+        `${path}: composition must be party-driven — no static const <NAME>_TOOLSETS allowlist`,
+      ).not.toMatch(/const [A-Z_]+_TOOLSETS = \[/);
+      expect(source, `${path}: pass the subscriber's availableParties to composeToolsets`).toMatch(
+        /composeToolsets\(\s*availableParties/,
       );
     }
-    // /chat is the one composing endpoint — a new one must land with its own allowlist.
+    // /chat is the one composing endpoint — a new one must land party-driven too.
     expect(composingHandlers).toBeGreaterThanOrEqual(1);
   });
 
@@ -98,7 +102,14 @@ describe('fitness: explicit endpoint toolset allowlists', () => {
 });
 
 describe('fitness: credentials never enter logs or model context', () => {
-  const CREDENTIAL_IDENTIFIERS = ['contextId', 'credentials', 'CLAUDE_API_KEY', 'apiKey'];
+  const CREDENTIAL_IDENTIFIERS = [
+    'contextId',
+    'credentials',
+    'CLAUDE_API_KEY',
+    'apiKey',
+    'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
+    'serviceToken',
+  ];
 
   it('no log/console call references a credential identifier', () => {
     for (const [path, source] of Object.entries(sourceModules)) {
@@ -200,7 +211,7 @@ describe('fitness: No Hardcoded Config Values', () => {
       // FILES_KV is the one documented OPTIONAL binding (graceful dedup no-op)
       // and may be read off the typed Env directly.
       expect(code, `${path}: read config via the src/config.ts accessors`).not.toMatch(
-        /\benv\.(BRAIN_API_URL|ANTHROPIC_API_BASE|CLAUDE_API_KEY|CREDENTIALED_ORIGINS|ENVIRONMENT)\b/,
+        /\benv\.(PERSONALIZER_API_URL|ANTHROPIC_API_BASE|CLAUDE_API_KEY|PERSONALIZER_INTEGRATION_BRIDGE_TOKEN|CREDENTIALED_ORIGINS|ENVIRONMENT)\b/,
       );
     }
   });

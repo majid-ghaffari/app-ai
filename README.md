@@ -20,7 +20,7 @@ cp .dev.vars.example .dev.vars
 ```
 
 Get your API key from [Anthropic Console](https://console.anthropic.com/) → API Keys.
-`.dev.vars` carries EVERY local configuration value (Brain URL, Anthropic origin,
+`.dev.vars` carries EVERY local configuration value (Personalizer URL, Anthropic origin,
 CORS allowlist, model choices, the key) — the worker throws on a missing variable,
 naming it; there are no fallback defaults (see docs/CODE-PATTERNS.md → "No
 Hardcoded Config Values").
@@ -67,11 +67,18 @@ and streams the result as **Server-Sent Events**. The endpoint's tool surface
 is composed per request by the toolset registry (`src/toolsets/registry.ts`)
 from its explicit allowlist (`['personalizer']` — see
 [docs/TOOLSETS.md](docs/TOOLSETS.md)). The personalizer toolset dispatches
-tool calls server→server to Brain — the read-only AI tool proxy
+tool calls server→server to Personalizer — the read-only AI tool proxy
 (`/v2/ai-tools/*`) for the data-query tools, the per-record admin endpoints
 (`src/toolsets/personalizer/entity-context.ts`) for `get_entity_context`
 record derefs — forwarding the merchant's `X-Personalizer-Context-ID`. The
-Anthropic key never leaves the worker.
+registry also holds the four platform toolsets (`shopify`, `bigcommerce`,
+`klaviyo`, `google-ads`) — transparent passthroughs to the merchant's platform
+APIs through Personalizer's integration bridge (`v2/integration-bridge/*`): app-ai
+resolves only a call channel (context-ID + the `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` Workers
+Secret), never a platform token, and the `X-Ls-Integration-Bridge-Error` response header
+discriminates platform responses (surfaced verbatim to the model, any status)
+from LimeSpot-layer failures (degraded). No endpoint allowlist names the
+platform toolsets. The Anthropic key never leaves the worker.
 
 - **`X-Personalizer-System-Prompt`** selects the server-side prompt: `chat`
   (default), `onboarding`, `placement`, `proposals` (per-store onboarding setup
@@ -82,18 +89,18 @@ Anthropic key never leaves the worker.
   as the `done` payload).
 - Request body: `{ messages, context?, model?, max_tokens?, fileIds? }`.
   `messages` is the full history the client wants the model to see (the client
-  owns history; persistence lives in Brain). `context` carries grounding
+  owns history; persistence lives in Personalizer). `context` carries grounding
   (`hostPage`, validated placement `candidates`, best-practice `grounding`,
   entity `refs`).
 - **Referencing (`context.refs`)** — up to 5 entity references
   (`{ type, id?, label?, metadata? }`; types `campaign` / `segment` /
   `progress-bar` / `bundle` / `analytics-metric` / `analytics-tab`) anchoring
   the chat to specific entities. Record refs are eagerly resolved worker-side
-  by `src/toolsets/personalizer/entity-context.ts`: per-refType fetchers over Brain's per-record
+  by `src/toolsets/personalizer/entity-context.ts`: per-refType fetchers over Personalizer's per-record
   admin endpoints (discount/html/image campaigns, subscriber segments,
   progress-bar campaigns, plus `v2/accounts/subscriber` for the tenant
   re-check and currency), normalized into the frozen `AiToolEntityContext`
-  shape. Analytics refs resolve from their own `metadata` (no Brain call). The
+  shape. Analytics refs resolve from their own `metadata` (no Personalizer call). The
   results render as the frozen `## Referenced Entities` system block (final,
   uncached; a failed ref degrades to `(could not load)`), and the
   `get_entity_context` tool lets the model re-deref any referenced entity
@@ -104,14 +111,14 @@ The frozen cross-repo contract is in the lib repo at
 `packages/storefront/src/admin/ai/CONTRACTS.md` (§1 SSE protocol, §2 tools,
 §8 referencing). Source: `src/handlers/chat.ts` (agent loop + SSE),
 `src/toolsets/` (toolset registry + the personalizer toolset's tool defs,
-Brain dispatch, and entity-context normalizer), `src/lib/references.ts` (refs
+Personalizer dispatch, and entity-context normalizer), `src/lib/references.ts` (refs
 intake + Referenced-Entities block), `src/prompts.ts` (system prompts).
-Tests: `test/chat.test.ts`, `test/toolsets.test.ts`, `test/references.test.ts`
-(`npm test`).
+Tests: `test/chat.test.ts`, `test/toolsets.test.ts`,
+`test/platform-toolsets.test.ts`, `test/references.test.ts` (`npm test`).
 
 ### Headers
 
-- **`X-Personalizer-Context-ID`** (required for protected endpoints): Authentication token validated against Brain API
+- **`X-Personalizer-Context-ID`** (required for protected endpoints): Authentication token validated against Personalizer API
 - **`X-Personalizer-System-Prompt`** (optional): System prompt name (e.g., "image-selection")
 
 ### Example Request
@@ -158,7 +165,7 @@ app-ai/
 │   │   └── chat.ts           # POST /chat (Studio AI agent loop + SSE)
 │   ├── lib/
 │   │   ├── anthropic.ts      # The Anthropic client (files + messages + streaming + count_tokens)
-│   │   ├── auth.ts           # Context-ID validation against Brain
+│   │   ├── auth.ts           # Context-ID validation against Personalizer
 │   │   ├── cors.ts           # CORS headers
 │   │   ├── responses.ts      # JSON helpers + the Brain-shaped error format ({ Message, ExceptionType, MessageDetail? })
 │   │   ├── cache-control.ts  # 4-block prompt-cache management + 1h extended-TTL const
@@ -169,14 +176,20 @@ app-ai/
 │   ├── toolsets/             # AI-tool layer: named toolsets + registry (docs/TOOLSETS.md)
 │   │   ├── registry.ts       # composeToolsets(allowlist, authContext) — per-request tool surface
 │   │   ├── types.ts          # Toolset seam types (ToolsetDescriptor / ToolsetComposition)
-│   │   └── personalizer/     # Brain-backed toolset: tool defs + /v2/ai-tools/* dispatch (index.ts)
-│   │       └── entity-context.ts # Record-ref resolution via Brain's per-record admin endpoints
+│   │   ├── integration-bridge.ts # Platform-toolset call channel + X-Ls-Integration-Bridge-Error discrimination
+│   │   ├── personalizer/     # Personalizer-backed toolset: tool defs + /v2/ai-tools/* dispatch (index.ts)
+│   │   │   └── entity-context.ts # Record-ref resolution via Personalizer's per-record admin endpoints
+│   │   ├── shopify/          # shopify_rest_request + shopify_graphql (Personalizer's integration bridge)
+│   │   ├── bigcommerce/      # bigcommerce_rest_request (version-prefixed paths)
+│   │   ├── klaviyo/          # klaviyo_rest_request (api/… paths, JSON:API paging)
+│   │   └── google-ads/       # google_ads_gaql_query (GAQL SELECT — read-only)
 │   ├── prompts.ts            # System-prompt registry (name → text + metadata)
 │   ├── prompts/*.md          # Simple prompt text (one .md per prompt, bundled at build time)
 │   └── prompts/<name>/       # Multi-file prompt: prompt.md + sample.md (attachment); maintenance doc in docs/prompts/<name>.md
 ├── test/
 │   ├── chat.test.ts          # /chat agent loop + SSE + refs/get_entity_context dispatch
 │   ├── toolsets.test.ts      # registry composition + allowlist + credential seam + tool-contract snapshot
+│   ├── platform-toolsets.test.ts # integration-bridge wire shapes + X-Ls-Integration-Bridge-Error discrimination + call channel
 │   ├── references.test.ts    # context.refs intake + Referenced-Entities block (frozen snapshot)
 │   ├── entity-context.test.ts # per-refType fetchers + AiToolEntityContext shape parity
 │   ├── proxy.test.ts         # files/messages/health + anthropic client + cors/auth/cache
@@ -212,12 +225,14 @@ variable, no fallback defaults.
 
 **Production:**
 
-- Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `BRAIN_API_URL`,
+- Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
   `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
   `MODEL_PLACEMENT` (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
+  - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
+    caller-auth token toward Personalizer's integration bridge)
 
 ### Updating System Prompts
 
@@ -320,7 +335,7 @@ gate (`npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)).
 ### CORS Configuration
 
 The AI endpoints carry no cookies (auth is the `X-Personalizer-Context-ID` header,
-validated against Brain), so any merchant Origin is echoed back without credentials
+validated against Personalizer), so any merchant Origin is echoed back without credentials
 (`src/lib/cors.ts`). The `CREDENTIALED_ORIGINS` configuration variable (wrangler
 `[vars]` / `.dev.vars`, comma-separated) additionally permits known dev origins to send
 credentialed requests — add a credentialed dev origin there, not in code.
@@ -337,9 +352,9 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
 
 1. Connect repository to Cloudflare via dashboard
 2. Configure branch-to-environment mapping (`main` → `app-ai`)
-3. Set `CLAUDE_API_KEY` secret in Cloudflare Dashboard:
+3. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
-   - Add secret with key `CLAUDE_API_KEY`
+   - Add secrets with keys `CLAUDE_API_KEY` and `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`
 
 **No manual deployment needed** - push to GitHub and Cloudflare auto-deploys.
 
@@ -368,20 +383,20 @@ All configured in [wrangler.toml](wrangler.toml):
 - **Local** (`wrangler dev` via `npm run dev`): `http://localhost:8787`
 
   - Config + secrets: `.dev.vars` (gitignored; see `.dev.vars.example`)
-  - Brain API: `http://127.0.0.1:5000` (plain HTTP — workerd's `fetch` can't
+  - Personalizer API: `http://127.0.0.1:5000` (plain HTTP — workerd's `fetch` can't
     accept nginx's self-signed cert on `https://local.personalizer.io`, so the
-    local worker talks to the same Brain process over HTTP)
+    local worker talks to the same Personalizer process over HTTP)
 
 - **Production** (Cloudflare auto-deploy): `https://app-ai.personalizer.io`
   - Config: `wrangler.toml` `[vars]`
   - Secrets: Cloudflare Dashboard (encrypted)
-  - Brain API: `https://personalizer.io`
+  - Personalizer API: `https://personalizer.io`
   - Auto-deploys from `main` branch
 
 Every environment provides the full variable set — `ENVIRONMENT`,
-`BRAIN_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
-`MODEL_PLACEMENT`, and the `CLAUDE_API_KEY` secret. `src/config.ts` throws on
-any missing one.
+`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
+`MODEL_PLACEMENT`, and the `CLAUDE_API_KEY` + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets.
+`src/config.ts` throws on any missing one.
 
 ### View Live Logs
 
@@ -414,7 +429,7 @@ npm run tail
 
 3. **Context Validation**
 
-   - All protected endpoints validate the context ID against the Brain API
+   - All protected endpoints validate the context ID against the Personalizer API
      before dispatch (`lib/auth.ts`).
    - Every error response uses Brain's wire shape
      (`{ "Message": ..., "ExceptionType": ..., "MessageDetail": ... }`) — app-ai
@@ -474,8 +489,8 @@ kill -9 <PID>
 
 ### Context validation failing
 
-- Verify context ID is valid in Brain API
-- Check `BRAIN_API_URL` environment variable
+- Verify context ID is valid in Personalizer API
+- Check `PERSONALIZER_API_URL` environment variable
 - Review validation logs in worker output
 
 ### Deployment issues
@@ -531,7 +546,7 @@ wrangler whoami          # Check authentication
 - [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
 - [Anthropic API Docs](https://docs.anthropic.com/)
-- [Brain API](https://personalizer.io)
+- [Personalizer API](https://personalizer.io)
 
 ## Project Docs
 
@@ -547,7 +562,7 @@ wrangler whoami          # Check authentication
 - [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) — prompt
   authoring/iteration workflow
 - [docs/TOOLSETS.md](docs/TOOLSETS.md) — toolset standards: the registry, the
-  credential seam + security standards, the platform-toolset roadmap seam
+  credential seam + security standards, the platform toolsets
 - [docs/prompts/](docs/prompts/) — per-prompt design/maintenance docs
   (e.g. [image-selection.md](docs/prompts/image-selection.md))
 

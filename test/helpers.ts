@@ -11,7 +11,8 @@ import type { Env } from '../src/config';
 export const ENV: Env = {
   ENVIRONMENT: 'test',
   CLAUDE_API_KEY: 'test-key',
-  BRAIN_API_URL: 'https://brain.test',
+  PERSONALIZER_INTEGRATION_BRIDGE_TOKEN: 'svc-token-256bit-opaque',
+  PERSONALIZER_API_URL: 'https://brain.test',
   ANTHROPIC_API_BASE: 'https://api.anthropic.com',
   CREDENTIALED_ORIGINS:
     'https://local-app.limespot.com,http://localhost:4200,http://localhost:3000',

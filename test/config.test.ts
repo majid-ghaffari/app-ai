@@ -12,7 +12,8 @@
 import { describe, it, expect } from 'vitest';
 
 import {
-  brainApiUrl,
+  personalizerApiUrl,
+  personalizerIntegrationBridgeToken,
   anthropicApiBase,
   claudeApiKey,
   credentialedOrigins,
@@ -26,9 +27,10 @@ const EMPTY_ENV: Env = {};
 
 describe('config accessors — present values', () => {
   it('returns the configured values verbatim', () => {
-    expect(brainApiUrl(ENV)).toBe('https://brain.test');
+    expect(personalizerApiUrl(ENV)).toBe('https://brain.test');
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
     expect(claudeApiKey(ENV)).toBe('test-key');
+    expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
     expect(modelDefault(ENV)).toBe('claude-opus-4-8');
     expect(modelPlacement(ENV)).toBe('claude-haiku-4-5');
   });
@@ -43,9 +45,9 @@ describe('config accessors — present values', () => {
 });
 
 describe('config accessors — missing config = error (no fallback defaults)', () => {
-  it('brainApiUrl names BRAIN_API_URL and where to set it', () => {
-    expect(() => brainApiUrl(EMPTY_ENV)).toThrow(
-      /Missing required configuration variable BRAIN_API_URL.*wrangler\.toml/,
+  it('personalizerApiUrl names PERSONALIZER_API_URL and where to set it', () => {
+    expect(() => personalizerApiUrl(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable PERSONALIZER_API_URL.*wrangler\.toml/,
     );
   });
 
@@ -58,6 +60,12 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   it('claudeApiKey names CLAUDE_API_KEY and the secret channels', () => {
     expect(() => claudeApiKey(EMPTY_ENV)).toThrow(
       /Missing required configuration variable CLAUDE_API_KEY.*encrypted secret.*\.dev\.vars/,
+    );
+  });
+
+  it('personalizerIntegrationBridgeToken names PERSONALIZER_INTEGRATION_BRIDGE_TOKEN and the secret channels', () => {
+    expect(() => personalizerIntegrationBridgeToken(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable PERSONALIZER_INTEGRATION_BRIDGE_TOKEN.*encrypted secret.*\.dev\.vars/,
     );
   });
 
@@ -77,8 +85,8 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   });
 
   it('an empty-string variable is treated as missing, not as a value', () => {
-    expect(() => brainApiUrl({ BRAIN_API_URL: '' })).toThrow(
-      /Missing required configuration variable BRAIN_API_URL/,
+    expect(() => personalizerApiUrl({ PERSONALIZER_API_URL: '' })).toThrow(
+      /Missing required configuration variable PERSONALIZER_API_URL/,
     );
   });
 });
@@ -104,7 +112,7 @@ function productionVars(): string {
 
 describe('production [vars] — the deployed configuration values', () => {
   it('routes Brain calls to https://personalizer.io in production', () => {
-    expect(productionVars()).toContain('BRAIN_API_URL = "https://personalizer.io"');
+    expect(productionVars()).toContain('PERSONALIZER_API_URL = "https://personalizer.io"');
   });
 
   it('routes Anthropic calls to https://api.anthropic.com', () => {
@@ -122,10 +130,10 @@ describe('production [vars] — the deployed configuration values', () => {
     );
   });
 
-  it('declares every required variable except the CLAUDE_API_KEY secret (encrypted, dashboard-managed)', () => {
+  it('declares every required variable except the secrets (encrypted, dashboard-managed)', () => {
     const vars = productionVars();
     for (const name of [
-      'BRAIN_API_URL',
+      'PERSONALIZER_API_URL',
       'ANTHROPIC_API_BASE',
       'CREDENTIALED_ORIGINS',
       'MODEL_DEFAULT',
@@ -134,5 +142,6 @@ describe('production [vars] — the deployed configuration values', () => {
       expect(vars).toContain(`${name} = `);
     }
     expect(vars).not.toContain('CLAUDE_API_KEY');
+    expect(vars).not.toContain('PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
   });
 });

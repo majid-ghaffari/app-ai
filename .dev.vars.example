@@ -1,6 +1,6 @@
 # Local development configuration for `wrangler dev` (npm run dev).
 #
-# Copy this file to `.dev.vars` (gitignored) and fill in the secret. Values
+# Copy this file to `.dev.vars` (gitignored) and fill in the secrets. Values
 # here OVERRIDE the production `[vars]` in wrangler.toml for the local worker.
 # Every variable is REQUIRED unless marked otherwise — src/config.ts throws on
 # a missing one (no fallback defaults). See docs/CODE-PATTERNS.md →
@@ -9,11 +9,17 @@
 # Deployment metadata (dashboard/tail context only; code never branches on it).
 ENVIRONMENT=local
 
-# Brain (Personalizer API) base URL, no trailing slash. Miniflare/workerd fetch
-# can't accept nginx's self-signed cert on https://local.personalizer.io, so
-# the LOCAL worker talks to Brain over plain HTTP (same Brain process; nginx
-# just fronts it with TLS for the browser).
-BRAIN_API_URL=http://127.0.0.1:5000
+# Personalizer API base URL, no trailing slash. Miniflare/workerd fetch can't
+# accept nginx's self-signed cert on https://local.personalizer.io, so the
+# LOCAL worker talks to Personalizer over plain HTTP (same Personalizer process;
+# nginx just fronts it with TLS for the browser).
+PERSONALIZER_API_URL=http://127.0.0.1:5000
+
+# SECRET — caller-auth token toward Personalizer's integration bridge (the
+# platform toolsets send it as X-Personalizer-Integration-Bridge-Token;
+# src/toolsets/integration-bridge.ts). Must match a token in the local
+# Personalizer's IntegrationBridge caller map.
+PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=local-dev-integration-bridge-token
 
 # Anthropic API origin, no trailing slash.
 ANTHROPIC_API_BASE=https://api.anthropic.com

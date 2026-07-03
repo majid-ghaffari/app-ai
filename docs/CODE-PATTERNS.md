@@ -29,10 +29,10 @@ correctness flags (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
 ```typescript
 // CORRECT — type-only imports use `import type`
 import type { Env } from '../config';
-import { brainApiUrl } from '../config';
+import { personalizerApiUrl } from '../config';
 
 // WRONG
-import { Env, brainApiUrl } from '../config';
+import { Env, personalizerApiUrl } from '../config';
 ```
 
 `verbatimModuleSyntax` makes this mechanical: a type imported without
@@ -57,7 +57,7 @@ import { Env, brainApiUrl } from '../config';
 
 ### Boundary types, not casts
 
-Untrusted input (client request bodies, Anthropic/Brain responses) enters
+Untrusted input (client request bodies, Anthropic/Personalizer responses) enters
 through a NARROW structural interface (e.g. `ChatRequestBody`,
 `AnthropicStreamEvent`, `ClientMessagesPayload`) and is validated at the
 point of use. A single `as` cast to the narrow view at the boundary is the
@@ -113,19 +113,19 @@ constant, it belongs in configuration (next section). Inline `4`s and
 Every URL and every architecturally sensible deploy-time tunable lives in
 CONFIGURATION, not in code:
 
-| Channel                               | What                                                                            |
-| ------------------------------------- | ------------------------------------------------------------------------------- |
-| wrangler.toml `[vars]`                | Production non-secrets (Brain/Anthropic origins, CORS allowlist, model choices) |
-| Cloudflare Dashboard encrypted secret | `CLAUDE_API_KEY`                                                                |
-| `.dev.vars` (gitignored)              | Local dev values + the local secret — overrides `[vars]` under `wrangler dev`   |
-| `.dev.vars.example` (committed)       | Documents every knob with a working local value                                 |
+| Channel                                | What                                                                                   |
+| -------------------------------------- | -------------------------------------------------------------------------------------- |
+| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/Anthropic origins, CORS allowlist, model choices) |
+| Cloudflare Dashboard encrypted secrets | `CLAUDE_API_KEY`, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`                              |
+| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`         |
+| `.dev.vars.example` (committed)        | Documents every knob with a working local value                                        |
 
 ### The rules
 
 1. **One typed `Env`.** `src/config.ts` declares the single `Env` interface
-   and the accessors (`brainApiUrl`, `anthropicApiBase`, `claudeApiKey`,
-   `credentialedOrigins`, `modelDefault`, `modelPlacement`). Nothing else
-   reads `env.X` for a required variable. The Node scripts (`scripts/`)
+   and the accessors (`personalizerApiUrl`, `anthropicApiBase`, `claudeApiKey`,
+   `personalizerIntegrationBridgeToken`, `credentialedOrigins`, `modelDefault`,
+   `modelPlacement`). Nothing else reads `env.X` for a required variable. The Node scripts (`scripts/`)
    follow the same discipline with explicit REQUIRED environment variables
    (`APP_AI_TARGET`, `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`) — no default
    target, no default fixture path.
@@ -222,7 +222,7 @@ failed.
 - Don't add abstractions for one-time use; three similar lines beat a
   premature helper.
 - Trust internal code — validate at system boundaries (client input,
-  Anthropic/Brain responses), not against impossible internal states.
+  Anthropic/Personalizer responses), not against impossible internal states.
 
 ---
 

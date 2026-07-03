@@ -8,13 +8,13 @@ live integration gate run as a pre-release step.
 
 ## Layers
 
-| Layer                  | Files                                                                                                           | Network | Catches                                                                                                                                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                   | `test/token-saving.test.ts` (pure-fn cases)                                                                     | Mocked  | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                        |
-| Integration (handler)  | `test/chat.test.ts`, `test/proxy.test.ts`, `test/toolsets.test.ts`                                              | Mocked  | Handler wiring: agent loop, SSE protocol, MAX_ITERATIONS, prompt selection, dedup KV, toolset composition/allowlist/credential seam                                                                     |
-| Contract               | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts` | Mocked  | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                     |
-| Fitness (architecture) | `test/architecture.test.ts`, `test/config.test.ts`                                                              | Static  | Invariant erosion: an endpoint bypassing its toolset allowlist, credentials reaching logs/model context, a bespoke error envelope, a hardcoded URL or inline config fallback, production `[vars]` drift |
-| Token-savings gate     | `scripts/verify-caching.mjs`                                                                                    | LIVE    | Prompt caching silently failing to engage against the deployed worker                                                                                                                                   |
+| Layer                  | Files                                                                                                           | Network | Catches                                                                                                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                   | `test/token-saving.test.ts` (pure-fn cases)                                                                     | Mocked  | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                                     |
+| Integration (handler)  | `test/chat.test.ts`, `test/proxy.test.ts`, `test/toolsets.test.ts`, `test/platform-toolsets.test.ts`            | Mocked  | Handler wiring: agent loop, SSE protocol, MAX_ITERATIONS, prompt selection, dedup KV, toolset composition/allowlist/credential seam, integration-bridge wire shapes + `X-Ls-Integration-Bridge-Error` discrimination |
+| Contract               | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts` | Mocked  | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                                  |
+| Fitness (architecture) | `test/architecture.test.ts`, `test/config.test.ts`                                                              | Static  | Invariant erosion: an endpoint bypassing its toolset allowlist, credentials reaching logs/model context, a bespoke error envelope, a hardcoded URL or inline config fallback, production `[vars]` drift              |
+| Token-savings gate     | `scripts/verify-caching.mjs`                                                                                    | LIVE    | Prompt caching silently failing to engage against the deployed worker                                                                                                                                                |
 
 The unit / integration / contract layers mock `fetch` and `env` — no real
 network, no credentials. They run on every push and PR (`.github/workflows/ci.yml`).
@@ -27,7 +27,7 @@ Pick the lowest layer that captures the bug:
    capability check)? Add a case to the relevant `describe` in
    `test/token-saving.test.ts`. Fastest, no handler plumbing.
 2. **Integration next** — does it involve a handler driving the Anthropic client
-   or Brain dispatch (the agent loop, SSE framing, attachment injection,
+   or Personalizer dispatch (the agent loop, SSE framing, attachment injection,
    cache-control distribution)? Add to `test/chat.test.ts` (the `/chat` agent
    loop) or `test/proxy.test.ts` (the `/files` + `/messages` + auth/CORS surface).
    Mock `fetch` to return the Anthropic SSE / JSON the case needs.

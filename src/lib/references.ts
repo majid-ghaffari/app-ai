@@ -5,11 +5,11 @@
  * to an entity or topic. Six types: the four RECORD types (`campaign`,
  * `segment`, `progress-bar`, `bundle` — each carries a DB Guid `id`) resolve
  * via `fetchEntityContext` (the personalizer toolset's entity-context
- * resolver, toolsets/personalizer/entity-context.ts — Brain's per-record
+ * resolver, toolsets/personalizer/entity-context.ts — Personalizer's per-record
  * admin endpoints, normalized worker-side to the frozen AiToolEntityContext
  * shape);
  * the two ANALYTICS types (`analytics-metric`, `analytics-tab` — composite, no
- * Guid) resolve from the ref's own `metadata` with NO Brain call.
+ * Guid) resolve from the ref's own `metadata` with NO Personalizer call.
  *
  * When ≥1 valid ref survives intake, `buildReferencedEntitiesBlock` eagerly
  * prefetches every ref concurrently (`Promise.allSettled`) and renders the
@@ -31,10 +31,10 @@ import type { Env } from '../config';
 /** Max refs accepted per /chat call — extras are silently dropped (first 5 kept). */
 export const MAX_CHAT_REFS = 5;
 
-/** Record ref types — Brain-resolved; entries without an `id` string are dropped. */
+/** Record ref types — Personalizer-resolved; entries without an `id` string are dropped. */
 export const RECORD_REF_TYPES = ['campaign', 'segment', 'progress-bar', 'bundle'] as const;
 
-/** Analytics ref types — resolved from the ref's own `metadata`, no Brain call. */
+/** Analytics ref types — resolved from the ref's own `metadata`, no Personalizer call. */
 export const ANALYTICS_REF_TYPES = ['analytics-metric', 'analytics-tab'] as const;
 
 export type RecordRefType = (typeof RECORD_REF_TYPES)[number];
@@ -89,7 +89,7 @@ export function sanitizeRefs(raw: unknown): EntityReference[] {
 
 /**
  * The deterministic category path a ref anchors (the subject's persistence key
- * in Brain, and the `id` the model passes to `get_entity_context` for
+ * in Personalizer, and the `id` the model passes to `get_entity_context` for
  * analytics refs): record types → `record/{type}`; `analytics-tab` →
  * `analytics/{tab}`; `analytics-metric` → `analytics/{tab}/{metricKey}`.
  */
@@ -102,9 +102,9 @@ export function refCategoryPath(ref: EntityReference): string {
 
 /**
  * Resolve one ref to its single-line JSON payload string. Record types resolve
- * via `fetchEntityContext` (Brain's per-record admin endpoints, forwarding the
+ * via `fetchEntityContext` (Personalizer's per-record admin endpoints, forwarding the
  * merchant's context-ID); analytics types stringify the ref's own `metadata` —
- * NO Brain call. Throws on any fetch failure (the caller degrades the line via
+ * NO Personalizer call. Throws on any fetch failure (the caller degrades the line via
  * `Promise.allSettled`). Concurrent record resolutions passing the same
  * `shared` scratch object share one subscriber lookup.
  */

@@ -33,10 +33,18 @@ port = 8787
 local_protocol = "http"
 
 # Production variables (used by Cloudflare auto-deploy from GitHub).
-# CLAUDE_API_KEY is set via the Cloudflare Dashboard (encrypted secret).
+# Production SECRETS are set via the Cloudflare Dashboard (encrypted secrets),
+# never in this file:
+#   CLAUDE_API_KEY      — the Anthropic API key (src/lib/anthropic.ts).
+#   PERSONALIZER_INTEGRATION_BRIDGE_TOKEN — the platform toolsets' caller-auth
+#     token toward Personalizer's integration bridge (sent as
+#     X-Personalizer-Integration-Bridge-Token, src/toolsets/integration-bridge.ts);
+#     pairs with the PERSONALIZER_API_URL [vars] value below. Never logged.
+#     Rotation: Personalizer accepts two active tokens per caller (current +
+#     next), so flip this secret after Personalizer has the next value.
 [vars]
 ENVIRONMENT = "production"
-BRAIN_API_URL = "https://personalizer.io"
+PERSONALIZER_API_URL = "https://personalizer.io"
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 # Dev origins allowed to send credentialed CORS requests (comma-separated).
 # Every other Origin is echoed WITHOUT credentials — see src/lib/cors.ts.

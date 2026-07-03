@@ -5,7 +5,7 @@
  * `get_entity_context` tool's record dispatch (./index.ts).
  *
  * `fetchEntityContext(type, id, contextId, env)` composes the model-visible
- * `AiToolEntityContext` shape worker-side from Brain's per-record admin
+ * `AiToolEntityContext` shape worker-side from Personalizer's per-record admin
  * endpoints (one fetcher per ref type, ENTITY_FETCHERS below), forwarding the
  * merchant's X-Personalizer-Context-ID on every call. The output shape is a
  * frozen cross-repo contract (lib `packages/storefront/src/admin/ai/CONTRACTS.md`
@@ -34,17 +34,17 @@
  *                 (discount/bundle one-hop Related, tenant-checked + non-deleted)
  *
  * Failure semantics: a malformed guid, an unknown type, a failed subscriber
- * lookup, a Brain 401/403, or a network failure THROWS (callers degrade — the
+ * lookup, a Personalizer 401/403, or a network failure THROWS (callers degrade — the
  * eager block renders `(could not load)`, the tool returns `{ ok: false }`).
  * Any other per-record fetch outcome (404, 204/empty, 5xx, unparsable body)
  * counts as a miss → `Found: false`, mirroring Brain's swallowed facade reads.
  *
- * These fetches ride the request's already-validated context-ID — Brain
+ * These fetches ride the request's already-validated context-ID — Personalizer
  * re-validates it on every proxied call, so no extra validation roundtrip is
  * made here.
  */
 
-import { brainApiUrl, type Env } from '../../config';
+import { personalizerApiUrl, type Env } from '../../config';
 
 // ── Brain read views (the members this worker consumes; Brain's C# entities
 //    carry more — these are read-only projections, never written back) ────────
@@ -177,7 +177,7 @@ const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * Resolve one record entity to the frozen AiToolEntityContext shape
  * (`Found: false` when unresolved). Throws on unknown type, malformed guid,
- * subscriber-lookup failure, Brain 401/403, or network failure.
+ * subscriber-lookup failure, Personalizer 401/403, or network failure.
  */
 export async function fetchEntityContext(
   type: string,
@@ -357,7 +357,7 @@ async function fetchBundleContext(
   return buildDiscountContext(bundle, 'Bundle discount', subscriber, contextId, env);
 }
 
-/** Discount-campaign load + tenant re-check (its Brain cache is guid-keyed). */
+/** Discount-campaign load + tenant re-check (its Personalizer cache is guid-keyed). */
 function loadDiscountCampaign(
   guid: string,
   subscriber: BrainSubscriber,
@@ -454,7 +454,7 @@ async function loadRecord<T extends BrainTenantRecord>(
 }
 
 /**
- * GET one Brain admin path, forwarding the merchant's context-ID. Returns
+ * GET one Personalizer admin path, forwarding the merchant's context-ID. Returns
  * `{ status, data }` — `data` is null for 204/empty/unparsable/non-ok bodies.
  * Throws on 401/403 (the context-ID itself was rejected) and network failure.
  */
@@ -463,7 +463,7 @@ async function brainGet(
   contextId: string,
   env: Env,
 ): Promise<{ status: number; data: unknown }> {
-  const response = await fetch(`${brainApiUrl(env)}/${path}`, {
+  const response = await fetch(`${personalizerApiUrl(env)}/${path}`, {
     method: 'GET',
     headers: {
       'X-Personalizer-Context-ID': contextId,

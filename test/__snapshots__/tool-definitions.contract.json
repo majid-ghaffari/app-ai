@@ -98,5 +98,157 @@
         "id"
       ]
     }
+  },
+  {
+    "name": "shopify_rest_request",
+    "description": "Call the merchant's Shopify Admin REST API. Provide the HTTP method, the version-less resource path (e.g. 'products.json'), and optional query parameters and JSON body. Reads are always safe; perform writes (POST/PUT/DELETE) only when the merchant has explicitly asked for the change, and confirm destructive actions first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Version-less Admin REST path, e.g. 'products.json' or 'orders/123.json'."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Query parameters, e.g. {\"limit\":\"50\",\"page_info\":\"…\"}."
+        },
+        "body": {
+          "type": "object",
+          "description": "JSON request body for POST/PUT."
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "shopify_graphql",
+    "description": "Run a GraphQL operation against the merchant's Shopify Admin API. Queries are always safe; run mutations only when the merchant has explicitly asked for the change, and confirm destructive actions first. Use variables for values.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "A GraphQL document (query or mutation)."
+        },
+        "variables": {
+          "type": "object",
+          "description": "GraphQL variables."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "bigcommerce_rest_request",
+    "description": "Call the merchant's BigCommerce API. Provide the HTTP method, the version-prefixed path (e.g. 'v3/catalog/products'), and optional query parameters and JSON body. Reads are always safe; perform writes only when the merchant has explicitly asked for the change, and confirm destructive actions first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Version-prefixed path, e.g. 'v3/catalog/products'."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "klaviyo_rest_request",
+    "description": "Call the merchant's Klaviyo API. Provide the HTTP method, the path (e.g. 'api/segments'), and optional query parameters (JSON:API style, e.g. filter, page[cursor]) and JSON body. Reads are always safe; perform writes only when the merchant has explicitly asked for the change, and confirm destructive actions first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Klaviyo path, e.g. 'api/segments'."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "google_ads_gaql_query",
+    "description": "Run a GAQL (Google Ads Query Language) SELECT query against the merchant's linked Google Ads account. GAQL is read-only. When the response carries a non-empty NextPageToken there are more rows: call again with the SAME query and that value as pageToken to fetch the next page.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "A GAQL SELECT statement."
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "pageToken": {
+          "type": "string",
+          "description": "Cursor for the next page — the NextPageToken from a previous response for the SAME query. Omit for the first page."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
   }
 ]

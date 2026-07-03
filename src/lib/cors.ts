@@ -2,7 +2,7 @@
  * CORS header construction.
  *
  * The AI endpoints carry NO cookies — authentication is the
- * `X-Personalizer-Context-ID` header, validated against Brain (see auth.ts).
+ * `X-Personalizer-Context-ID` header, validated against Personalizer (see auth.ts).
  * That makes it safe to echo arbitrary request Origins without credentials,
  * which is required because the Studio admin runs injected into arbitrary
  * merchant storefront pages (so the request Origin is the merchant's domain).

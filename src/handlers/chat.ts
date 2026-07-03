@@ -17,10 +17,12 @@
  *
  * The Anthropic key never leaves the worker (it lives in the anthropic client).
  * The tool surface comes ONLY from the toolset registry (toolsets/registry.ts):
- * this endpoint composes its explicit toolset allowlist (CHAT_TOOLSETS) per
- * request, and the composition owns tool definitions, dispatch, and per-toolset
- * credentials (docs/TOOLSETS.md). The personalizer toolset calls Brain
- * server→server, forwarding the merchant's context-ID.
+ * this endpoint composes its tool surface per request from the subscriber's
+ * available IntegrationParty set (threaded from the router's validate-context-id
+ * call), and the composition owns tool definitions, dispatch, and per-toolset
+ * credentials (docs/TOOLSETS.md). The personalizer toolset (always-active) calls
+ * Personalizer server→server, forwarding the merchant's context-ID; each
+ * party-gated platform toolset joins only when its party is available.
  *
  * Per-prompt model / token / tool choices come from the prompt registry
  * (prompts.ts) — the single source of truth.
@@ -29,6 +31,7 @@
 import { getSystemPrompt, type SystemPromptEntry } from '../prompts';
 import { composeToolsets } from '../toolsets/registry';
 import type { ToolsetComposition } from '../toolsets/types';
+import type { IntegrationParty } from '../toolsets/integration-party';
 import {
   WorkerError,
   errorPayload,
@@ -59,9 +62,6 @@ import type { Env } from '../config';
 
 /** Hard cap on model↔tool iterations (CONTRACTS.md §1). */
 const MAX_ITERATIONS = 8;
-
-/** This endpoint's explicit toolset allowlist (docs/TOOLSETS.md). */
-const CHAT_TOOLSETS = ['personalizer'];
 
 /** The client-supplied /chat request body (validated at each point of use). */
 interface ChatRequestBody {
@@ -98,13 +98,16 @@ interface DonePayload {
 }
 
 /**
- * Handle POST /chat. The context-ID is already validated by the router.
- * Returns a streaming `Response` (SSE) or a JSON `Response`.
+ * Handle POST /chat. The context-ID is already validated by the router, which
+ * also threads the subscriber's available IntegrationParty set
+ * (`availableParties`, from the same validate-context-id call) for dynamic
+ * toolset composition. Returns a streaming `Response` (SSE) or a JSON `Response`.
  */
 export async function handleChat(
   request: Request,
   env: Env,
   corsHeaders: CorsHeaders,
+  availableParties: readonly IntegrationParty[] = [],
 ): Promise<Response> {
   const systemPromptName = request.headers.get('X-Personalizer-System-Prompt') || 'chat';
   const wantsStream = (request.headers.get('Accept') || '').includes('text/event-stream');
@@ -132,8 +135,8 @@ export async function handleChat(
   }
 
   // Referencing: `context.refs` (EntityReference[], cap 5 — lib CONTRACTS.md §1)
-  // is sanitized, eagerly prefetched (record refs → Brain entity-context,
-  // analytics refs → their own metadata, no Brain call), and rendered as the
+  // is sanitized, eagerly prefetched (record refs → Personalizer entity-context,
+  // analytics refs → their own metadata, no Personalizer call), and rendered as the
   // Referenced-Entities block. `buildReferencedEntitiesBlock` never throws —
   // a failed ref degrades to a "(could not load)" line.
   const refs = sanitizeRefs(body.context?.refs);
@@ -143,10 +146,11 @@ export async function handleChat(
   const system = buildSystem(entry, body.context, referencedEntitiesBlock);
   const model = body.model || entry.model;
   const maxTokens = body.max_tokens || entry.maxTokens;
-  // The endpoint's whole tool surface, composed per request from its toolset
-  // allowlist. Per-toolset credentials (personalizer → the forwarded
-  // context-ID) resolve inside the composition — never in the loop.
-  const toolsets = composeToolsets(CHAT_TOOLSETS, { contextId, env });
+  // The endpoint's whole tool surface, composed per request from the
+  // subscriber's available integration parties (always-active toolsets like
+  // personalizer join regardless). Per-toolset credentials (personalizer → the
+  // forwarded context-ID) resolve inside the composition — never in the loop.
+  const toolsets = composeToolsets(availableParties, { contextId, env });
   const tools = entry.usesTools ? toolsets.definitions : undefined;
   // Opt-in output effort: registry entry default, client `effort` override.
   const effort = body.effort || entry.effort;

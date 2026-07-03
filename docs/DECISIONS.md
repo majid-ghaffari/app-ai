@@ -151,20 +151,18 @@ This is verified live by the token-savings gate (see [TESTING.md](TESTING.md)).
 The AI-tool layer is organized as named TOOLSETS (`src/toolsets/<name>/`), one
 per backend, each encapsulating its Anthropic tool definitions, its
 dispatch/executors, its normalizers, and its degrade conventions. A registry
-(`src/toolsets/registry.ts`) composes the active toolsets per request from an
-explicit per-endpoint allowlist; handlers consume tools only through the
-composition, so adding a toolset never edits handler logic. Each toolset
+(`src/toolsets/registry.ts`) composes the active toolsets per request from the
+subscriber's available integration parties (#14); handlers consume tools only
+through the composition, so adding a toolset never edits handler logic. Each toolset
 resolves its own backend credentials through a per-request seam
 (`resolveCredentials`) under fixed security standards: per-request,
-subscriber-scoped, never model-visible, never logged. The one registered
-toolset is `personalizer` (backend = Brain / the Personalizer API; credentials
-= the forwarded context-ID). Planned platform toolsets (`shopify-core`,
-`bigcommerce-core`, `google`, `klaviyo` — per-subscriber tokens from Brain's
-`SubscriberIntegrationConfig`) are pure additions through the same seams; the
-secure token-sharing mechanism is an open future design, deliberately not
-specified yet. The model-visible tool contract (names, input schemas, output
-shapes) is frozen regardless of module layout — pinned by the lib repo's
-`admin/ai/CONTRACTS.md` §2 and the contract snapshot in
+subscriber-scoped, never model-visible, never logged. The registered toolsets
+are `personalizer` (backend = the Personalizer API; credentials = the
+forwarded context-ID) and the four platform toolsets (`shopify`,
+`bigcommerce`, `klaviyo`, `google-ads` — backend = Personalizer's integration bridge;
+credentials = the call channel, #13). The model-visible tool contract (names, input
+schemas, output shapes) is frozen regardless of module layout — pinned by the
+lib repo's `admin/ai/CONTRACTS.md` §2 and the contract snapshot in
 `test/toolsets.test.ts`. Full standards: [TOOLSETS.md](TOOLSETS.md).
 
 ### 11. Strict TypeScript, no build step (supersedes #1)
@@ -188,14 +186,14 @@ bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 ### 12. No Hardcoded Config Values — and where the config/code line sits
 
 Every URL and deploy-time tunable lives in configuration behind the single
-typed `Env` in `src/config.ts`: `BRAIN_API_URL`, `ANTHROPIC_API_BASE`,
+typed `Env` in `src/config.ts`: `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`,
 `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`, `MODEL_PLACEMENT` in wrangler.toml
 `[vars]` (production) / `.dev.vars` (local; documented in the committed
 `.dev.vars.example`), and the `CLAUDE_API_KEY` secret in Cloudflare encrypted
 secrets / `.dev.vars`. **A missing variable throws, naming the variable and
 its channel — there are no fallback defaults**, because a fallback silently
 turns a deployment mistake into wrong routing (a worker quietly talking to the
-wrong Brain is worse than a loud 500). The classification line: frozen
+wrong Personalizer is worse than a loud 500). The classification line: frozen
 contracts and protocol facts stay in code (wire field names, tool names,
 routes, prompt text, Anthropic's 4-breakpoint limit + `1h` TTL, the
 cross-repo-frozen `MAX_ITERATIONS`/`MAX_CHAT_REFS`), as do internal
@@ -208,3 +206,74 @@ explicit required environment variables) and the production values are pinned
 by tests that read wrangler.toml
 itself (`test/config.test.ts`). Full rule: [CODE-PATTERNS.md](CODE-PATTERNS.md)
 → "No Hardcoded Config Values".
+
+### 13. Platform toolsets hold a call channel, never a platform token
+
+The `shopify` / `bigcommerce` / `klaviyo` / `google-ads` toolsets give the
+model transparent passthrough access to the merchant's platform APIs (reads
+and writes), but the worker never touches a platform credential. Every tool
+call goes to Personalizer's integration bridge (`v2/integration-bridge/*` on the main
+API), which validates the caller, resolves the merchant, and relays the call
+under the merchant's own installed-integration token — Personalizer is the sole
+credential custodian. What `resolveCredentials` resolves
+(`src/toolsets/integration-bridge.ts`) is a CALL CHANNEL: the Personalizer base URL, the
+merchant's context-ID (`X-Personalizer-Context-ID`, the tenant), and the
+`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` Workers Secret (`X-Personalizer-Integration-Bridge-Token`, the
+caller — read only through the `personalizerIntegrationBridgeToken` accessor in
+`src/config.ts`; never a `wrangler.toml` var, never logged, never
+model-visible). Either header alone is insufficient by design. The rejected
+alternative — per-subscriber platform tokens shared from Personalizer's
+`SubscriberIntegrationConfig` into the worker — would have made app-ai a
+second credential holder; the call channel keeps exactly one custodian.
+
+The proxy is a pure bridge — no path/method allowlists, no GraphQL operation
+gate. The behavioral boundary is the tool descriptions (write-caution
+language) plus the merchant token's own OAuth scopes. Error handling follows
+the frozen cross-repo discrimination rule: the `X-Ls-Integration-Bridge-Error` response
+header separates the two voices. Absent → the platform speaking, verbatim —
+the executor surfaces `{ platformStatus, headers?, body }` to the model as
+`ok: true` DATA at any status, so a platform 4xx/5xx is actionable feedback
+the model self-corrects on, in the platform's own error language (`headers`,
+lowercased keys, is the whitelisted out-of-band subset — `Link` for Shopify
+REST `page_info` cursors, `Retry-After`, the platform rate-limit headers —
+omitted when none are present). Present → a LimeSpot layer produced the
+`{ Message, ExceptionType, MessageDetail }` envelope — the call degrades to
+the standard `{ ok: false }` shape carrying `<Message> (<ExceptionType>)`, so
+the model can tell a malformed request (rephrase) from a configuration
+failure (stop retrying, tell the merchant).
+
+Which subscribers see the platform toolsets is decided by their available
+integration parties (#14) — each toolset's `integrationParties` gate, not any
+endpoint allowlist.
+
+### 14. Dynamic per-subscriber toolset composition, keyed off `IntegrationParty`
+
+Toolset composition is data-driven off a single identity — `IntegrationParty`
+(a verbatim mirror of Personalizer's C# enum, `src/toolsets/integration-party.ts`;
+the wire form is the enum NAME, never its guid). Each descriptor declares an
+`integrationParties: IntegrationParty[]` gate; a toolset is offered iff the
+array is empty (always-active, e.g. personalizer) OR intersects the
+subscriber's available parties — no mapping, no switch, no static endpoint
+allowlist (supersedes the allowlist half of #10). The available-party set rides
+the router's existing per-request `validate-context-id` call, which now returns
+`AvailableIntegrationParties: string[]` (liveness-filtered by Personalizer); the
+router stops discarding that result and threads it into `handleChat`
+(`availableParties`). No new call, no new cache — the parties are exactly as
+fresh as the auth gate the router already makes (a mid-session-enabled
+integration appears on the very next chat request, modulo Personalizer's own
+~5-min connection-status cache for the revocable OAuth/key parties).
+
+The executor builds the integration-bridge URL party segment from the MATCHED
+party — the intersection of the toolset's `integrationParties` with the
+subscriber's set (`v2/integration-bridge/{IntegrationPartyName}/…`, matching
+Personalizer's dispatch key). A subscriber has at most ONE commerce party
+(Shopify/BigCommerce/Woo mutually exclusive) and each non-commerce party owns
+its own toolset, so the intersection is always exactly one — a defensive assert
+guards it; no tiebreak logic exists. v1 gates: `shopify` →
+`ShopifyPersonalizer`, `bigcommerce` → `BigCommercePersonalizer`, `klaviyo` →
+`Klaviyo`, `google-ads` → `Google`.
+
+The `google-ads` GAQL tool also gained an optional `pageToken` input, threaded
+to the wire body as `PageToken` (`{ Query, PageSize?, PageToken? }`); the
+response `NextPageToken` surfaces verbatim in the platform body, so the model
+pages by echoing it back. Additive and backward-compatible.

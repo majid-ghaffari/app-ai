@@ -65,11 +65,11 @@ degradation that the code handles silently.
 
 ### Grey-clouded `preview.personalizer.io` origin → "Too many redirects" (500)
 
-Production is not subject to this. `wrangler.toml [vars] BRAIN_API_URL` points at
+Production is not subject to this. `wrangler.toml [vars] PERSONALIZER_API_URL` points at
 `https://personalizer.io`, which is Cloudflare-fronted end to end, so the worker's
-server-side subrequest reaches Brain over real HTTPS with no redirect loop.
+server-side subrequest reaches Personalizer over real HTTPS with no redirect loop.
 
-The loop only appears when the worker's `BRAIN_API_URL` targets the grey-clouded
+The loop only appears when the worker's `PERSONALIZER_API_URL` targets the grey-clouded
 preview Azure origin (`https://preview.personalizer.io`): the `personalizer.io`
 Cloudflare zone's SSL/TLS mode is **"Flexible"**, so Cloudflare connects to that
 origin over **HTTP** even when the Worker's `fetch` asks for HTTPS. The preview
@@ -81,6 +81,6 @@ for a preview target is a **"Full"** zone SSL/TLS mode, or dropping the preview
 app's `HTTPS-Only` / `UseHttpsRedirection()`. Pointing at the raw Azure hostname
 is a dead end — the cert is for `preview.personalizer.io`.
 
-For fully-local development the worker talks to Brain over plain HTTP
-(`.dev.vars`: `BRAIN_API_URL=http://127.0.0.1:5000`) — see lib
+For fully-local development the worker talks to Personalizer over plain HTTP
+(`.dev.vars`: `PERSONALIZER_API_URL=http://127.0.0.1:5000`) — see lib
 `packages/storefront/src/admin/docs/LOCAL-AI-DEV.md`.

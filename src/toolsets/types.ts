@@ -8,6 +8,7 @@
 import type { Env } from '../config';
 import type { ToolDefinition } from '../lib/anthropic';
 import type { EntityReference } from '../lib/references';
+import type { IntegrationParty } from './integration-party';
 
 /** The request auth material handed to each toolset's `resolveCredentials`. */
 export interface ToolAuthContext {
@@ -44,13 +45,26 @@ export interface ToolExecutionContext extends ToolCallExtras {
   /** Whatever this toolset's own `resolveCredentials` returned (opaque to the registry). */
   credentials: unknown;
   env: Env;
+  /**
+   * The subscriber party this toolset's executor targets — the intersection of
+   * `descriptor.integrationParties` with the subscriber's available parties,
+   * exactly one by the ≤1-commerce-party invariant. Present only for
+   * party-gated toolsets; absent for always-active ones (empty
+   * `integrationParties`, e.g. personalizer, which never reads it). The
+   * platform toolsets use it as the integration-bridge URL party segment.
+   */
+  matchedParty?: IntegrationParty;
 }
 
 /**
  * The descriptor every toolset module exports — the ONE export of
  * `src/toolsets/<name>/index.ts` (contract details in docs/TOOLSETS.md):
  *
- *   name               — the registry key + endpoint-allowlist literal.
+ *   name               — the registry key.
+ *   integrationParties — the IntegrationParty set that gates this toolset.
+ *                        Empty = always-active (no gate, e.g. personalizer);
+ *                        otherwise the toolset is composed iff the subscriber
+ *                        has one of these parties available (registry.ts).
  *   definitions        — Anthropic custom-tool schemas, stable order, frozen
  *                        model-visible contract (lib CONTRACTS.md §2).
  *   resolveCredentials — per-request credential seam; receives the auth
@@ -60,6 +74,7 @@ export interface ToolExecutionContext extends ToolCallExtras {
  */
 export interface ToolsetDescriptor {
   readonly name: string;
+  readonly integrationParties: readonly IntegrationParty[];
   readonly definitions: readonly ToolDefinition[];
   resolveCredentials(authContext: ToolAuthContext): unknown;
   execute(

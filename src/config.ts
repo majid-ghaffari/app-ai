@@ -35,8 +35,15 @@ export interface Env {
    * context only; worker code does not branch on it.
    */
   readonly ENVIRONMENT?: string;
-  /** Brain (Personalizer API) base URL, no trailing slash. Non-secret var. */
-  readonly BRAIN_API_URL?: string;
+  /** Personalizer API base URL, no trailing slash. Non-secret var. */
+  readonly PERSONALIZER_API_URL?: string;
+  /**
+   * Caller-auth token toward Personalizer's integration bridge, sent as the
+   * `X-Personalizer-Integration-Bridge-Token` header by the platform toolsets'
+   * call channel (src/toolsets/integration-bridge.ts). SECRET — Cloudflare
+   * encrypted secret / .dev.vars.
+   */
+  readonly PERSONALIZER_INTEGRATION_BRIDGE_TOKEN?: string;
   /** Anthropic API origin (`https://api.anthropic.com`), no trailing slash. Non-secret var. */
   readonly ANTHROPIC_API_BASE?: string;
   /** Comma-separated Origins allowed to send credentialed CORS requests. Non-secret var. */
@@ -57,12 +64,19 @@ export interface Env {
 
 /** The required string variables (everything in `Env` except `ENVIRONMENT` metadata and the optional `FILES_KV`). */
 type RequiredVarName =
-  | 'BRAIN_API_URL'
+  | 'PERSONALIZER_API_URL'
+  | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
   | 'CREDENTIALED_ORIGINS'
   | 'MODEL_DEFAULT'
   | 'MODEL_PLACEMENT'
   | 'CLAUDE_API_KEY';
+
+/** The variables that are SECRETS (encrypted-secret channel, never wrangler.toml `[vars]`). */
+const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
+  'CLAUDE_API_KEY',
+  'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
+];
 
 /** Read one required variable, throwing a config error naming it when absent. */
 function requireVar(env: Env, name: RequiredVarName): string {
@@ -70,16 +84,24 @@ function requireVar(env: Env, name: RequiredVarName): string {
   if (typeof value === 'string' && value.length > 0) {
     return value;
   }
-  const where =
-    name === 'CLAUDE_API_KEY'
-      ? 'Set it as a Cloudflare encrypted secret (production) or in .dev.vars (local dev, gitignored — see .dev.vars.example).'
-      : 'Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).';
+  const where = SECRET_VAR_NAMES.includes(name)
+    ? 'Set it as a Cloudflare encrypted secret (production) or in .dev.vars (local dev, gitignored — see .dev.vars.example).'
+    : 'Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).';
   throw new Error(`Missing required configuration variable ${name}. ${where}`);
 }
 
-/** Brain (Personalizer API) base URL. */
-export function brainApiUrl(env: Env): string {
-  return requireVar(env, 'BRAIN_API_URL');
+/** Personalizer API base URL. */
+export function personalizerApiUrl(env: Env): string {
+  return requireVar(env, 'PERSONALIZER_API_URL');
+}
+
+/**
+ * The caller-auth token for Personalizer's integration bridge. Only the
+ * platform toolsets' call-channel seam (src/toolsets/integration-bridge.ts)
+ * may call this.
+ */
+export function personalizerIntegrationBridgeToken(env: Env): string {
+  return requireVar(env, 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
 }
 
 /** Anthropic API origin (the client appends the versioned `/v1/...` paths). */

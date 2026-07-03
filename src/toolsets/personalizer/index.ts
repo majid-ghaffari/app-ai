@@ -1,21 +1,20 @@
 /**
- * Personalizer toolset — every AI tool whose backend is Brain (the
- * Personalizer API).
+ * Personalizer toolset — every AI tool whose backend is the Personalizer API.
  *
  * These tools are exposed to the Anthropic model during the chat/onboarding
  * agent loop. When the model emits a `tool_use` for one of them, app-ai
- * executes it by calling Brain's read-only AI tool proxy (`/v2/ai-tools/*`)
- * server→server, forwarding the merchant's X-Personalizer-Context-ID for
- * tenant scoping.
+ * executes it by calling Personalizer's read-only AI tool proxy
+ * (`/v2/ai-tools/*`) server→server, forwarding the merchant's
+ * X-Personalizer-Context-ID for tenant scoping.
  *
- * The model NEVER reaches Brain directly. See lib CONTRACTS.md §2 for the
- * frozen tool definitions + the Brain endpoint each one calls.
+ * The model NEVER reaches Personalizer directly. See lib CONTRACTS.md §2 for
+ * the frozen tool definitions + the Personalizer endpoint each one calls.
  *
  * `get_entity_context` is the referencing deref tool: record types resolve via
- * `fetchEntityContext` (./entity-context.ts — Brain's per-record admin
+ * `fetchEntityContext` (./entity-context.ts — Personalizer's per-record admin
  * endpoints, normalized worker-side to the frozen AiToolEntityContext shape);
  * analytics types resolve worker-side from the request's `context.refs`
- * (lib/references.ts) with no Brain call.
+ * (lib/references.ts) with no Personalizer call.
  *
  * The module exports ONE thing: the toolset descriptor consumed by the
  * registry (../registry.ts). Handlers never import this module directly —
@@ -24,13 +23,13 @@
  * Credentials (the seam, docs/TOOLSETS.md): `resolveCredentials` returns
  * `{ contextId }` — the request's forwarded, already-validated
  * X-Personalizer-Context-ID. It is subscriber-scoped, per-request, and used
- * ONLY as the Brain auth header; it never enters tool definitions, tool
+ * ONLY as the Personalizer auth header; it never enters tool definitions, tool
  * results, or logs.
  */
 
 import { fetchEntityContext } from './entity-context';
 import { refCategoryPath, type EntityReference } from '../../lib/references';
-import { brainApiUrl, type Env } from '../../config';
+import { personalizerApiUrl, type Env } from '../../config';
 import type { ToolDefinition } from '../../lib/anthropic';
 import type { ToolExecutionResult, ToolsetDescriptor } from '../types';
 
@@ -149,7 +148,7 @@ interface EntityContextInput {
   id?: string;
 }
 
-/** Map a tool name to its Brain AI-proxy request path (query built from the input). */
+/** Map a tool name to its Personalizer AI-proxy request path (query built from the input). */
 const TOOL_ROUTES: Record<string, (input: DataQueryInput) => string> = {
   get_store_analytics: (input) => {
     const params = new URLSearchParams();
@@ -183,15 +182,19 @@ interface PersonalizerCredentials {
 /**
  * The toolset descriptor (contract in ../types.ts + docs/TOOLSETS.md).
  * Personalizer credentials = the merchant's forwarded context-ID (validated
- * upfront by the router; Brain re-validates it on every proxied call).
+ * upfront by the router; Personalizer re-validates it on every proxied call).
  *
- * `execute` is defensive: a Brain failure is returned as `{ ok: false, ... }`
+ * `execute` is defensive: a Personalizer failure is returned as `{ ok: false, ... }`
  * with an error message rather than thrown, so the agent loop can feed the
  * error back to the model (which can then apologize / proceed) instead of
  * aborting the turn.
  */
 export const personalizerToolset: ToolsetDescriptor = {
   name: 'personalizer',
+
+  // Empty = always-active: the Personalizer-backed tools are offered to every
+  // subscriber regardless of third-party integrations (registry composition).
+  integrationParties: [],
 
   definitions: TOOL_DEFINITIONS,
 
@@ -225,11 +228,11 @@ export const personalizerToolset: ToolsetDescriptor = {
 /**
  * Dispatch `get_entity_context` per the frozen table (lib CONTRACTS.md §2):
  * record types (`campaign`/`segment`/`progress-bar`/`bundle`) →
- * `fetchEntityContext` (Brain's per-record admin endpoints, normalized
+ * `fetchEntityContext` (Personalizer's per-record admin endpoints, normalized
  * worker-side); analytics types (`analytics-metric`/`analytics-tab`) →
  * resolved from the request's refs (match `refCategoryPath(ref) === input.id`,
  * fallback first ref of matching `type`), returning the ref's `metadata` —
- * NO Brain call.
+ * NO Personalizer call.
  */
 async function executeGetEntityContext(
   input: EntityContextInput,
@@ -275,7 +278,7 @@ async function executeGetEntityContext(
 }
 
 /**
- * GET one Brain AI-tool proxy path server→server, forwarding the merchant's
+ * GET one Personalizer AI-tool proxy path server→server, forwarding the merchant's
  * context-ID. Non-ok / network failures come back as `{ ok: false, ... }`.
  */
 async function fetchBrainTool(
@@ -284,7 +287,7 @@ async function fetchBrainTool(
   contextId: string,
   env: Env,
 ): Promise<ToolExecutionResult> {
-  const url = `${brainApiUrl(env)}/${path}`;
+  const url = `${personalizerApiUrl(env)}/${path}`;
 
   try {
     const response = await fetch(url, {

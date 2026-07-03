@@ -2,7 +2,7 @@
  * App AI Service — Cloudflare Worker entry + router.
  *
  * A secure proxy in front of Anthropic: it holds the Anthropic API key, validates
- * the merchant's `X-Personalizer-Context-ID` against Brain, and exposes:
+ * the merchant's `X-Personalizer-Context-ID` against Personalizer, and exposes:
  *
  *   GET    /health       — liveness (no auth)
  *   POST   /files        — upload to the Anthropic Files API
@@ -53,8 +53,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return handleHealth(corsHeaders);
     }
 
-    // Every endpoint except /health requires a valid context-ID.
-    await validateContextId(request.headers.get('X-Personalizer-Context-ID'), env);
+    // Every endpoint except /health requires a valid context-ID. The same
+    // per-request validation call carries the subscriber's available
+    // IntegrationParty set (AvailableIntegrationParties) — captured here, not
+    // discarded, and threaded into /chat for dynamic toolset composition
+    // (no extra call, no cache — the parties are exactly as fresh as this gate).
+    const validation = await validateContextId(
+      request.headers.get('X-Personalizer-Context-ID'),
+      env,
+    );
 
     if (pathname === '/files' && method === 'POST') {
       return await handleFileUpload(request, env, corsHeaders);
@@ -70,7 +77,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return await handleMessages(request, env, corsHeaders);
     }
     if (pathname === '/chat' && method === 'POST') {
-      return await handleChat(request, env, corsHeaders);
+      return await handleChat(
+        request,
+        env,
+        corsHeaders,
+        validation.AvailableIntegrationParties ?? [],
+      );
     }
 
     return errorResponse('Resource not found.', corsHeaders, 404, 'RecordNotFoundException');
