@@ -101,6 +101,8 @@ export interface WorkerSseEvent {
     ok?: boolean;
     summary?: string;
     error?: unknown;
+    input?: unknown;
+    toolCalls?: Array<{ id: string; name: string; input: unknown }>;
     Message?: string;
     ExceptionType?: string;
     MessageDetail?: string;

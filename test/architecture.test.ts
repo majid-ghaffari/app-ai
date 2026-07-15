@@ -175,6 +175,13 @@ describe('fitness: No Hardcoded Config Values', () => {
       ...Object.entries(sourceModules),
       ...Object.entries(scriptModules),
     ]) {
+      // The dev Claude-Code shim (scripts/dev-claude-shim.mjs) is standalone
+      // local tooling that must run with `npm run dev:shim` and no setup — it
+      // carries dev-sane default endpoints (127.0.0.1 Personalizer / its own
+      // listen host), each overridable by an env var. It lives OUTSIDE the
+      // worker's fail-fast config contract by design (it never ships to prod,
+      // and is not bundled), so the no-URL-literal rule does not apply to it.
+      if (path.endsWith('dev-claude-shim.mjs')) continue;
       const code = stripComments(source);
       expect(
         code,

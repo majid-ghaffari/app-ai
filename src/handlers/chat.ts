@@ -95,6 +95,14 @@ interface DonePayload {
   stopReason: string | null;
   iterations: number;
   usage: Usage | null;
+  /**
+   * CLIENT tool-calls the model requested this turn (only for a `clientTools`
+   * prompt — e.g. `onboarding-agent`). When present, the worker did NOT execute
+   * them: the client (lib ai/agent/onboarding-agent.ts) runs them in the store
+   * iframe, appends the `tool_result` turn, and calls `/chat` again to continue.
+   * Absent for server-tool / no-tool prompts.
+   */
+  toolCalls?: Array<{ id: string; name: string; input: unknown }>;
 }
 
 /**
@@ -151,13 +159,32 @@ export async function handleChat(
   // personalizer join regardless). Per-toolset credentials (personalizer → the
   // forwarded context-ID) resolve inside the composition — never in the loop.
   const toolsets = composeToolsets(availableParties, { contextId, env });
-  const tools = entry.usesTools ? toolsets.definitions : undefined;
+  // A `clientTools` prompt (onboarding-agent) drives tools that run in the
+  // browser, not the worker. Send ITS definitions to the model (in place of the
+  // server toolset) and run the loop in CLIENT-tool mode: on a tool_use the loop
+  // returns the calls to the client in `done.toolCalls` and stops — it never
+  // executes them here. Otherwise the usual server toolset (when `usesTools`).
+  const clientTools = entry.clientTools;
+  const tools = clientTools ? [...clientTools] : entry.usesTools ? toolsets.definitions : undefined;
+  const clientToolMode = !!clientTools;
   // Opt-in output effort: registry entry default, client `effort` override.
   const effort = body.effort || entry.effort;
 
   const runner = (emit: Emit | null) =>
     runAgentLoop(
-      { env, toolsets, model, maxTokens, system, messages, tools, effort, fileBlockCount, refs },
+      {
+        env,
+        toolsets,
+        model,
+        maxTokens,
+        system,
+        messages,
+        tools,
+        effort,
+        fileBlockCount,
+        refs,
+        clientToolMode,
+      },
       emit,
     );
 
@@ -311,6 +338,9 @@ interface AgentLoopParams {
   effort: Effort | undefined;
   fileBlockCount?: number;
   refs?: readonly EntityReference[];
+  /** CLIENT-tool mode (a `clientTools` prompt): on a tool_use, return the calls
+   *  in `done.toolCalls` and stop — the client executes them, never the worker. */
+  clientToolMode?: boolean;
 }
 
 /**
@@ -331,6 +361,7 @@ async function runAgentLoop(
     effort,
     fileBlockCount = 0,
     refs = [],
+    clientToolMode = false,
   }: AgentLoopParams,
   emit: Emit | null,
 ): Promise<DonePayload> {
@@ -377,6 +408,26 @@ async function runAgentLoop(
 
     if (turn.stopReason !== 'tool_use' || turn.toolUses.length === 0) {
       break; // natural end (or max_tokens / refusal) — done.
+    }
+
+    // CLIENT-tool mode: the tools execute in the browser (the iframe is the AI's
+    // hands), NOT here. Hand the model's tool-calls to the client in
+    // `done.toolCalls` and stop this turn — the client runs them against the live
+    // store, appends the tool_result turn, and calls /chat again to continue the
+    // loop. The worker never touches the store. (See lib ai/ONBOARDING-CONTRACT.md
+    // + ai/agent/onboarding-agent.ts, which drives this iteration client-side.)
+    if (clientToolMode) {
+      const toolCalls = turn.toolUses.map((toolUse) => ({
+        id: toolUse.id as string,
+        name: toolUse.name as string,
+        input: toolUse.input,
+      }));
+      if (emit) {
+        for (const call of toolCalls) {
+          await emit({ type: 'tool_call', data: call });
+        }
+      }
+      return { text: fullText, stopReason: 'tool_use', iterations, usage, toolCalls };
     }
 
     // Execute every tool the model requested; collect tool_result blocks.
