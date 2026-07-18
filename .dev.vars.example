@@ -21,15 +21,38 @@ PERSONALIZER_API_URL=http://127.0.0.1:5000
 # Personalizer's IntegrationBridge caller map.
 PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=local-dev-integration-bridge-token
 
+# ── AI channel ───────────────────────────────────────────────────────────────
 # Anthropic API origin, no trailing slash.
-ANTHROPIC_API_BASE=https://api.anthropic.com
+#
+# DEV DEFAULT = the FREE local Claude-Code shim (scripts/dev-claude-shim.mjs).
+# Start it with `npm run dev:shim`, then plain `wrangler dev` fulfils every
+# worker inference via Claude Code (the machine's Claude Code auth) — NO
+# Anthropic credits are ever spent. This is the standard, permanent local
+# channel; leave it as-is.
+#
+# The worker talks to Anthropic through exactly one seam (src/lib/anthropic.ts,
+# `${ANTHROPIC_API_BASE}/v1/...`), so this ONE line is the whole toggle — no
+# src change, no code branch.
+ANTHROPIC_API_BASE=http://127.0.0.1:8788
+
+# To use the REAL, PAID Anthropic API from local dev (rarely needed — prod-only
+# by policy), you must do TWO things, both deliberate:
+#   1. Point the base back at the real API:  ANTHROPIC_API_BASE=https://api.anthropic.com
+#   2. Opt in explicitly:                     AI_CHANNEL=prod
+# The cred-burn guard (test/dev-shim.test.ts → assertDevAiChannel) FAILS a
+# dev/test run that points at api.anthropic.com without AI_CHANNEL=prod, so a
+# credit-spending config can never slip in silently.
+# AI_CHANNEL=prod
 
 # Origins allowed to send credentialed CORS requests (comma-separated).
 CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http://localhost:3000
 
-# Deploy-time model choices for the prompt registry (src/prompts.ts).
-MODEL_DEFAULT=claude-opus-4-8
-MODEL_PLACEMENT=claude-haiku-4-5
+# Capability tiers (provider-agnostic) bound to concrete models — the prompt
+# registry (src/prompt-registry.ts) tags each prompt with a tier; resolveModel maps it
+# here. Swap a value to bump a model version or switch provider.
+MODEL_FAST=claude-haiku-4-5
+MODEL_BALANCED=claude-sonnet-5
+MODEL_FRONTIER=claude-opus-4-8
 
 # SECRET — your Anthropic API key. Never commit the real value.
 CLAUDE_API_KEY=sk-ant-your-key-here

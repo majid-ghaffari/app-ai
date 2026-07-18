@@ -16,8 +16,9 @@ export const ENV: Env = {
   ANTHROPIC_API_BASE: 'https://api.anthropic.com',
   CREDENTIALED_ORIGINS:
     'https://local-app.limespot.com,http://localhost:4200,http://localhost:3000',
-  MODEL_DEFAULT: 'claude-opus-4-8',
-  MODEL_PLACEMENT: 'claude-haiku-4-5',
+  MODEL_FAST: 'claude-haiku-4-5',
+  MODEL_BALANCED: 'claude-sonnet-5',
+  MODEL_FRONTIER: 'claude-opus-4-8',
 };
 
 export const CORS = { 'Access-Control-Allow-Origin': '*' };

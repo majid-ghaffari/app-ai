@@ -5,7 +5,7 @@
  *      ~15-block intermediate rule, 4-breakpoint cap, stale-strip.
  *   3. Files API checksum dedup (lib/file-dedup.ts) — sha256Hex, KV hit/miss, no-op.
  *   4. count_tokens pre-flight helper (lib/anthropic.ts).
- *   5. Model/effort routing (prompts.ts + handlers).
+ *   5. Model/effort routing (prompt-registry.ts + handlers).
  *
  * fetch + KV mocked; Web Crypto comes from the vitest (Node) runtime.
  */
@@ -17,7 +17,7 @@ import { sha256Hex, dedupUpload, KV_RECORD_TTL_SECONDS } from '../src/lib/file-d
 import * as anthropic from '../src/lib/anthropic';
 import type { ContentBlock, MessageParam } from '../src/lib/anthropic';
 import { buildSystem, handleChat } from '../src/handlers/chat';
-import { getSystemPrompt } from '../src/prompts';
+import { getSystemPrompt } from '../src/prompt-registry';
 import {
   ENV,
   CORS,
@@ -272,14 +272,28 @@ describe('LEVER 4 — countTokens', () => {
 // ── LEVER 5: model / effort routing ─────────────────────────────────────────
 
 describe('LEVER 5 — model + effort routing', () => {
-  it('registry models: placement→MODEL_PLACEMENT, everything else→MODEL_DEFAULT', () => {
-    // The model PAIRING is registry data; the model VALUES are deploy-time
-    // config (MODEL_DEFAULT / MODEL_PLACEMENT). Production values are pinned
-    // by the wrangler.toml [vars] contract test in test/config.test.ts.
-    expect(getSystemPrompt('placement', ENV).model).toBe(ENV.MODEL_PLACEMENT);
-    expect(getSystemPrompt('chat', ENV).model).toBe(ENV.MODEL_DEFAULT);
-    expect(getSystemPrompt('onboarding', ENV).model).toBe(ENV.MODEL_DEFAULT);
-    expect(getSystemPrompt('image-selection', ENV).model).toBe(ENV.MODEL_DEFAULT);
+  it('registry tiers resolve to models: placement→fast, a balanced prompt→balanced, no-tier→frontier default', () => {
+    // The tier PAIRING is registry data; the model VALUES are deploy-time config
+    // (MODEL_FAST / MODEL_BALANCED / MODEL_FRONTIER via `resolveModel`). Production
+    // values are pinned by the wrangler.toml [vars] contract test in
+    // test/config.test.ts.
+    // `fast` tier — the latency-sensitive placement prompt.
+    expect(getSystemPrompt('placement', ENV).model).toBe(ENV.MODEL_FAST);
+    // `balanced` tier — a multi-modal / JSON reasoner.
+    expect(getSystemPrompt('proposals', ENV).model).toBe(ENV.MODEL_BALANCED);
+    // DEFAULT (`frontier`) tier — the entries that OMIT `tier`.
+    expect(getSystemPrompt('chat', ENV).model).toBe(ENV.MODEL_FRONTIER);
+    expect(getSystemPrompt('onboarding', ENV).model).toBe(ENV.MODEL_FRONTIER);
+    expect(getSystemPrompt('image-selection', ENV).model).toBe(ENV.MODEL_FRONTIER);
+  });
+
+  it('the DEFAULT tier is `frontier` — a no-tier prompt resolves to the frontier binding', () => {
+    // A no-tier entry (`chat`) MUST resolve to the frontier model id, proving the
+    // registry's DEFAULT_TIER is `frontier` (the flagship agent-loop tier). If the
+    // default flipped, this catches it.
+    expect(getSystemPrompt('chat', ENV).model).toBe('claude-opus-4-8');
+    expect(getSystemPrompt('placement', ENV).model).toBe('claude-haiku-4-5');
+    expect(getSystemPrompt('proposals', ENV).model).toBe('claude-sonnet-5');
   });
 
   it('no registry entry carries effort (placement model does not support it)', () => {

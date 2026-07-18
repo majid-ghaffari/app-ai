@@ -301,7 +301,7 @@ describe('manageCacheControl', () => {
     const blocks = payload.messages?.[0]?.content as CacheableBlock[];
     const cached = blocks.filter((b) => b.cache_control);
     expect(cached).toHaveLength(3);
-    // KEPT user blocks now carry the extended 1h TTL (LEVER 1).
+    // KEPT user blocks carry the extended 1h TTL (LEVER 1).
     cached.forEach((b) => expect(b.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' }));
     expect(blocks.find((b) => b.type === 'document')?.cache_control).toBeUndefined();
   });

@@ -5,7 +5,9 @@
 Architectural decisions for the worker, with rationale. Present-tense — each
 entry describes the choice that stands and why, not a change history.
 
-### 1. Superseded by #11 (strict TypeScript).
+### 1. Strict TypeScript — see #11.
+
+The strict-TypeScript decision is recorded at [#11](#11-strict-typescript-no-build-step-supersedes-1).
 
 ### 2. GA 1-hour prompt cache on stable prefixes
 
@@ -32,7 +34,9 @@ it would be dead config.
 ### 4. No-filesystem `.md` text bundling
 
 Prompt text lives in one `.md` file per prompt under `src/prompts/`; the
-registry (`prompts.ts`) imports each as a string. Workers have no runtime
+barrel (`src/prompts/index.ts`) imports each as a string (composing the
+multi-block prompts) and the registry (`prompt-registry.ts`) reads its text
+through that barrel. Workers have no runtime
 filesystem, so the text is bundled at BUILD time, identically in both targets
 with the same import specifier (no `?raw` suffix):
 
@@ -187,10 +191,10 @@ bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 
 Every URL and deploy-time tunable lives in configuration behind the single
 typed `Env` in `src/config.ts`: `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`,
-`CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`, `MODEL_PLACEMENT` in wrangler.toml
-`[vars]` (production) / `.dev.vars` (local; documented in the committed
-`.dev.vars.example`), and the `CLAUDE_API_KEY` secret in Cloudflare encrypted
-secrets / `.dev.vars`. **A missing variable throws, naming the variable and
+`CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
+`MODEL_BALANCED` / `MODEL_FRONTIER` in wrangler.toml `[vars]` (production) /
+`.dev.vars` (local; documented in the committed `.dev.vars.example`), and the
+`CLAUDE_API_KEY` secret in Cloudflare encrypted secrets / `.dev.vars`. **A missing variable throws, naming the variable and
 its channel — there are no fallback defaults**, because a fallback silently
 turns a deployment mistake into wrong routing (a worker quietly talking to the
 wrong Personalizer is worse than a loud 500). The classification line: frozen
@@ -255,9 +259,9 @@ the wire form is the enum NAME, never its guid). Each descriptor declares an
 array is empty (always-active, e.g. personalizer) OR intersects the
 subscriber's available parties — no mapping, no switch, no static endpoint
 allowlist (supersedes the allowlist half of #10). The available-party set rides
-the router's existing per-request `validate-context-id` call, which now returns
+the router's per-request `validate-context-id` call, which returns
 `AvailableIntegrationParties: string[]` (liveness-filtered by Personalizer); the
-router stops discarding that result and threads it into `handleChat`
+router threads that result into `handleChat`
 (`availableParties`). No new call, no new cache — the parties are exactly as
 fresh as the auth gate the router already makes (a mid-session-enabled
 integration appears on the very next chat request, modulo Personalizer's own

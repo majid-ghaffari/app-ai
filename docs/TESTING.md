@@ -72,6 +72,15 @@ npm run format-check    # Prettier check (whole repo; exclusions + rationale in 
 npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
 ```
 
+## Local AI dev channel + cred-burn guard
+
+Local dev fulfils Anthropic inference through **Claude Code**, not the paid API, so dev never burns credits (see the root `CLAUDE.md` → "Local AI dev — the free Claude-Code channel"). Two pieces are covered offline in `test/dev-shim.test.ts`:
+
+- **Translation layer** — the pure Anthropic⇄Claude-Code mapping helpers exported by `scripts/dev-claude-shim.mjs` (system/message/file-block translation, token estimate, code-fence strip, multipart parse, usage mapping). These are the risk surface: the shim's HTTP behavior is only correct if these map the wire shapes the worker's `chat.ts` / `messages.ts` parsers expect.
+- **Cred-burn GUARD** (`assertDevAiChannel`) — FAILS a dev/test config that points `ANTHROPIC_API_BASE` at `api.anthropic.com` without an explicit `AI_CHANNEL=prod` opt-in, and asserts `.dev.vars.example` ships the free-shim default (`http://127.0.0.1:8788`). This makes accidental credit-burn impossible: plain `wrangler dev` uses the free shim, and the paid API requires saying so out loud.
+
+Importing the shim for these tests is side-effect free — the HTTP server only binds its port when the file is run directly (`npm run dev:shim`), never on import.
+
 ## The token-savings gate (pre-release)
 
 `scripts/verify-caching.mjs` (`npm run verify:caching`) proves prompt caching

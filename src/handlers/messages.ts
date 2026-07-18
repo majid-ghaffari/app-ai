@@ -11,7 +11,7 @@
  * the raw upstream body in `MessageDetail`.
  */
 
-import { getSystemPrompt } from '../prompts';
+import { getSystemPrompt } from '../prompt-registry';
 import * as anthropic from '../lib/anthropic';
 import type { CacheableBlock, ClientMessagesPayload, Usage } from '../lib/anthropic';
 import { manageCacheControl, EXTENDED_CACHE_CONTROL } from '../lib/cache-control';
@@ -62,10 +62,19 @@ export async function handleMessages(
       }
     }
 
+    // The registry is authoritative for the inference model: when the caller
+    // omits `model`, fall back to the resolved system-prompt entry's model
+    // (a deploy-time choice — the entry's capability tier resolved via
+    // `resolveModel`). Additive + safe —
+    // a caller that sends its own `model` (e.g. image-selection sends Haiku) is
+    // untouched; only a body without `model` (the Website-Analysis probe) is
+    // defaulted, so a probe runs on its registry model per docs/prompts.
+    applyRegistryModel(claudePayload, systemPromptName, env);
+
     manageCacheControl(claudePayload, attachmentFileCount);
 
     // Apply opt-in output effort from the registry entry, if the client didn't
-    // already set output_config (additive + safe — see prompts.ts entry shape).
+    // already set output_config (additive + safe — see prompt-registry.ts entry shape).
     applyRegistryEffort(claudePayload, systemPromptName, env);
 
     // Best-effort pre-flight token estimate for large payloads — log/warn only,
@@ -104,6 +113,16 @@ async function injectSystemPrompt(
 ): Promise<number> {
   const prompt = getSystemPrompt(systemPromptName, env);
 
+  // CACHE-FIRST STRUCTURE (see prompt-registry.ts → CACHING). `prompt.prompt` is the
+  // STABLE, shop-independent system text — for the composed onboarding prompts it
+  // is `composePrompt(...blocks)` in a deterministic order, byte-identical across
+  // every shop. We put ALL of it in the single cacheable system block with a 1h
+  // `cache_control` breakpoint, so repeated per-shop calls HIT the cached prefix
+  // after the first. The LIB-SIDE EXPECTATION that makes this work: per-shop
+  // VARIABLE data (the page screenshots + the per-page manifest) rides AFTER this
+  // breakpoint, in the first user MESSAGE — never in the system prompt — so it
+  // never invalidates the cached prefix. `manageCacheControl` (below) then
+  // distributes the remaining breakpoints across those user blocks.
   claudePayload.system = [
     { type: 'text', text: prompt.prompt, cache_control: { ...EXTENDED_CACHE_CONTROL } },
   ];
@@ -160,6 +179,31 @@ async function injectSystemPrompt(
     return attachmentBlocks.length;
   }
   return 0;
+}
+
+/**
+ * Set `claudePayload.model` from the resolved registry entry's model WHEN the
+ * caller omitted it. The registry entry pairs each prompt with a capability tier
+ * that resolves to a deploy-time model (via `resolveModel`); a caller that
+ * already sent `model` owns it and is left untouched. No system prompt / unknown
+ * name / already-set model → the payload is unchanged.
+ */
+function applyRegistryModel(
+  claudePayload: ClientMessagesPayload,
+  systemPromptName: string | null,
+  env: Env,
+): void {
+  if (!systemPromptName || claudePayload.model) {
+    return;
+  }
+  try {
+    const entry = getSystemPrompt(systemPromptName, env);
+    claudePayload.model = entry.model;
+    log.info(`Applied registry model '${entry.model}' for prompt ${systemPromptName}`);
+  } catch {
+    // Unknown prompt / missing model var — leave the payload as-is; the
+    // downstream Anthropic call surfaces a clear error.
+  }
 }
 
 /**

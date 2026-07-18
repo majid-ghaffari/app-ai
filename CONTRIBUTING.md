@@ -23,11 +23,11 @@ test(app-ai): pre-release token-savings gate (verify:caching)
 fix(app-ai): only send output_config.effort on models that support it
 ```
 
-End every commit message with the trailer:
-
-```
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-```
+Commit messages carry **no AI-attribution or tool-credit trailers** — no
+`Co-Authored-By: Claude …`, no `Claude-Session:`, no "Generated with …", and no
+mention of Claude / Anthropic / any AI assistant as an author or contributor.
+The subject + body describe the change only. (See [CLAUDE.md](CLAUDE.md) → Hard
+rules.)
 
 ## Validate before you push
 

@@ -25,10 +25,10 @@
  * party-gated platform toolset joins only when its party is available.
  *
  * Per-prompt model / token / tool choices come from the prompt registry
- * (prompts.ts) — the single source of truth.
+ * (prompt-registry.ts) — the single source of truth.
  */
 
-import { getSystemPrompt, type SystemPromptEntry } from '../prompts';
+import { getSystemPrompt, type SystemPromptEntry } from '../prompt-registry';
 import { composeToolsets } from '../toolsets/registry';
 import type { ToolsetComposition } from '../toolsets/types';
 import type { IntegrationParty } from '../toolsets/integration-party';
@@ -58,10 +58,13 @@ import {
   buildReferencedEntitiesBlock,
   type EntityReference,
 } from '../lib/references';
+import { createLogger } from '../lib/logger';
 import type { Env } from '../config';
 
 /** Hard cap on model↔tool iterations (CONTRACTS.md §1). */
 const MAX_ITERATIONS = 8;
+
+const log = createLogger('Chat');
 
 /** The client-supplied /chat request body (validated at each point of use). */
 interface ChatRequestBody {
@@ -97,10 +100,10 @@ interface DonePayload {
   usage: Usage | null;
   /**
    * CLIENT tool-calls the model requested this turn (only for a `clientTools`
-   * prompt — e.g. `onboarding-agent`). When present, the worker did NOT execute
-   * them: the client (lib ai/agent/onboarding-agent.ts) runs them in the store
-   * iframe, appends the `tool_result` turn, and calls `/chat` again to continue.
-   * Absent for server-tool / no-tool prompts.
+   * prompt — e.g. `onboarding-chat`'s `look_at_page`). When present, the worker
+   * did NOT execute them: the client runs them in the store iframe, appends the
+   * `tool_result` turn (e.g. the captured screenshot), and calls `/chat` again to
+   * continue. Absent for server-tool / no-tool prompts.
    */
   toolCalls?: Array<{ id: string; name: string; input: unknown }>;
 }
@@ -159,7 +162,7 @@ export async function handleChat(
   // personalizer join regardless). Per-toolset credentials (personalizer → the
   // forwarded context-ID) resolve inside the composition — never in the loop.
   const toolsets = composeToolsets(availableParties, { contextId, env });
-  // A `clientTools` prompt (onboarding-agent) drives tools that run in the
+  // A `clientTools` prompt (onboarding-chat) drives tools that run in the
   // browser, not the worker. Send ITS definitions to the model (in place of the
   // server toolset) and run the loop in CLIENT-tool mode: on a tool_use the loop
   // returns the calls to the client in `done.toolCalls` and stops — it never
@@ -399,6 +402,10 @@ async function runAgentLoop(
     if (effort && supportsEffort(model)) payload.output_config = { effort };
 
     const turn = await streamAnthropicTurn(payload, env, emit);
+    // Observe cache effectiveness per model turn (docs/CACHING): each streamed
+    // turn reports its own usage, so a multi-turn tool loop logs one line per
+    // model call — mirrors the /messages `logUsageStats` format.
+    logUsageStats(turn.usage);
     usage = turn.usage || usage;
     stopReason = turn.stopReason;
     if (turn.text) fullText += (fullText ? '\n' : '') + turn.text;
@@ -415,7 +422,7 @@ async function runAgentLoop(
     // `done.toolCalls` and stop this turn — the client runs them against the live
     // store, appends the tool_result turn, and calls /chat again to continue the
     // loop. The worker never touches the store. (See lib ai/ONBOARDING-CONTRACT.md
-    // + ai/agent/onboarding-agent.ts, which drives this iteration client-side.)
+    // + the lib look-at-page executor, which drives this iteration client-side.)
     if (clientToolMode) {
       const toolCalls = turn.toolUses.map((toolUse) => ({
         id: toolUse.id as string,
@@ -474,6 +481,21 @@ async function runAgentLoop(
   const ranIterations = Math.min(iterations, MAX_ITERATIONS);
 
   return { text: fullText, stopReason, iterations: ranIterations, usage };
+}
+
+/**
+ * Log token-usage stats with cache-hit/creation markers for one model turn.
+ * Same format + logger convention as /messages (`logUsageStats` in
+ * messages.ts) so a single tail grep spans both surfaces. Token counts only —
+ * no PII, no prompt bodies (docs/TOOLSETS.md → security standards).
+ */
+function logUsageStats(usage: Usage | null | undefined): void {
+  if (!usage) {
+    return;
+  }
+  log.info(
+    `Tokens — input: ${usage.input_tokens}, cache_creation: ${usage.cache_creation_input_tokens || 0}, cache_read: ${usage.cache_read_input_tokens || 0}, output: ${usage.output_tokens}`,
+  );
 }
 
 /** One accumulated Anthropic turn (finalized content + extracted tool uses). */

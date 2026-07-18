@@ -5,7 +5,7 @@ import { defineConfig, type Plugin } from 'vitest/config';
  * `import chatPrompt from './prompts/chat.md'` returns the file's contents in
  * tests — mirroring the wrangler `[[rules]] type = "Text"` rule that does the
  * same in the Worker bundle. The import specifier is identical in both (no
- * `?raw` suffix), so prompts.ts works unchanged under vitest and wrangler.
+ * `?raw` suffix), so prompt-registry.ts works unchanged under vitest and wrangler.
  */
 function rawMarkdownPlugin(): Plugin {
   return {
