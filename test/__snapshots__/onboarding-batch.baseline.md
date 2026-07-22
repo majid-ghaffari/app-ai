@@ -122,8 +122,9 @@ merchant sees:
 Collection / Search / Blog) so the merchant sees a populated, product-filled strip
 immediately — and `RecentViews` is never a page's ONLY box (a page whose only box is
 `RecentViews` looks broken / blank in the onboarding preview). The CART stack is the
-deliberate exception: it is data-dependent by design (Upsell + FBT, each with a configured
-fallback, plus the progress bar carrying the page) — follow it as written.
+deliberate exception: it is data-dependent by design (Upsell + FBT + Related, the
+fallback-backed cart-context strips, plus the progress bar carrying the page) —
+follow it as written.
 
 **Session-dependent boxes from the playbook are still FIRST-CLASS — do not drop them.** The
 playbook's `BoughtTogether` (Product, Cart) and `Upsell` (Cart) placements ship with
@@ -153,7 +154,7 @@ Boxes are CAROUSELS unless stated otherwise. Each page's stack below is the DEFA
 - **Home** — **Most Popular** right after the hero (or right after the store/collection intro section when one directly follows the hero); **You May Like** mid-page, one or two sections below Most Popular (audience-gated by the lib: hidden for first-time visitors); **Recently Viewed** at the bottom, above the footer.
 - **Product** — **Frequently Bought Together** as a bundle right below the product details + price and ABOVE any reviews list (falls back to Cross-sell); **Related Items** directly below the FBT bundle; **Recently Viewed** at the end.
 - **Collection** — **Most Popular** scoped to this collection, at the top of the collection page; **Recently Viewed** at the end.
-- **Cart** — the Smart Progress Bar at the very top; **Upsell** as a slider ABOVE the cart contents (ordered by popularity; hides when it has nothing to show); **Frequently Bought Together** BELOW the cart contents (order summary + checkout button), falling back to Cross-sell; **Recently Viewed** at the end.
+- **Cart** — the Smart Progress Bar at the very top; **Upsell** as a slider ABOVE the cart contents (ordered by popularity; hides when it has nothing to show); **Frequently Bought Together** BELOW the cart contents (order summary + checkout button), falling back to Cross-sell; **Related Items** directly after the FBT strip; **Recently Viewed** at the end.
 - **SlidingCart** — **Frequently Bought Together** in rows style, capped at 2 products, below the drawer's cart content (falls back to Cross-sell). Minimal — a narrow drawer stays uncrowded.
 - **Search** / **Blog** — **Most Popular** or **You May Like** (primary) plus Recently Viewed (secondary), if the page exists.
 

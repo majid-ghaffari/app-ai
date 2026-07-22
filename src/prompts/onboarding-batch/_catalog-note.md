@@ -15,8 +15,9 @@ merchant sees:
 Collection / Search / Blog) so the merchant sees a populated, product-filled strip
 immediately — and `RecentViews` is never a page's ONLY box (a page whose only box is
 `RecentViews` looks broken / blank in the onboarding preview). The CART stack is the
-deliberate exception: it is data-dependent by design (Upsell + FBT, each with a configured
-fallback, plus the progress bar carrying the page) — follow it as written.
+deliberate exception: it is data-dependent by design (Upsell + FBT + Related, the
+fallback-backed cart-context strips, plus the progress bar carrying the page) —
+follow it as written.
 
 **Session-dependent boxes from the playbook are still FIRST-CLASS — do not drop them.** The
 playbook's `BoughtTogether` (Product, Cart) and `Upsell` (Cart) placements ship with
