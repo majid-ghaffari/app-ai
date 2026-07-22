@@ -11,6 +11,7 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `onboarding-batch-all`
 
 - **Purpose:** Given the WHOLE STORE (several pages, each at two widths), return ONE JSON object holding a per-page plan for EACH page — which boxes to place, at which numbered candidate (INSERT or REPLACE, from that page's fixed valid list), and how to style each so it looks native — PLUS the store-wide off-page `segments` + `discounts`.
+- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle`); only Recently Viewed anchors at the footer boundary.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist.
 - **Max tokens:** `8192` (double the per-page `onboarding-batch`'s `4096` — the whole-store plan is a larger completion).
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).

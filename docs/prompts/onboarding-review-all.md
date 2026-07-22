@@ -11,6 +11,8 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `onboarding-review-all`
 
 - **Purpose:** Judge whether the onboarding pages rendered well after the whole-store plan was applied, per page, and classify any per-page failure — NON-CRITICAL placement vs CRITICAL styling — returning corrections the conductor can batch-write.
+- **Consistency is in scope, store-wide:** verdicts stay per-page, but the judge compares ACROSS pages (its whole-store advantage): sibling strips on a page share one visual rhythm (card size, corner treatment, arrows) and the same box type looks the same on every page — a deviating instance gets a `styleBox` aligning it to the dominant treatment (the `bundle`-style FBT + the progress bar are exempt natures). Internal-looking TITLES (`_LS` suffix, raw type names) are reported in `feedback` with a `failureClass` and NO correction (no title verb exists).
+- **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `onboarding-review`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **maxTokens:** 8192 — the whole-store payload (a verdict per page) needs more output room than the single-page review's 2048 (mirrors how `onboarding-batch-all` bumped 4096→8192 over `onboarding-batch`).

@@ -11,6 +11,8 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `cartdrawer-review-all`
 
 - **Purpose:** Judge whether the recommendation box(es) rendered well INSIDE the OPEN cart drawer after the plan was applied, at BOTH widths, and classify any failure — NON-CRITICAL placement vs CRITICAL styling (INCLUDING a box that overflows the narrow drawer or pushes the checkout CTA out of reach) — returning corrections the conductor can write, re-render, and re-review.
+- **Consistency is in scope:** everything in the drawer reads as ONE designed column — strips share card size / corner treatment / arrow style with each other and with the store's own card styling; a deviating strip gets a `styleBox`. Internal-looking TITLES are reported in `feedback` with a `failureClass` and NO correction (no title verb exists).
+- **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `onboarding-review` / `onboarding-review-all`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **maxTokens:** 2048 — a SINGLE surface's verdict fits the single-page review budget (matches `onboarding-review`), not the whole-store `onboarding-review-all` bump to 8192 (which pays for a verdict PER PAGE).

@@ -224,8 +224,8 @@ describe('off-page holistic blocks — composed into onboarding-batch-all ONLY',
  * lib #99 must send — and (b) it composes into both propose prompts and NOT the
  * review prompts. Editing this one block updates both propose prompts at once.
  */
-describe('box-placement block — INSERT + REPLACE, composed into both propose prompts', () => {
-  it('_block-box-placement.md carries the INSERT+REPLACE instruction + manifest contract', () => {
+describe('box-placement block — INSERT-only placement + reference-candidate manifest, composed into both propose prompts', () => {
+  it('_block-box-placement.md carries the INSERT-only instruction + manifest contract', () => {
     expect(blockBoxPlacement.length).toBeGreaterThan(100);
     for (const pattern of [
       /INSERT/,

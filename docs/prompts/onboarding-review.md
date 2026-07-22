@@ -11,6 +11,8 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `onboarding-review`
 
 - **Purpose:** Judge whether an onboarding page rendered well after the plan was applied, and classify any failure — NON-CRITICAL placement vs CRITICAL styling — returning corrections the conductor can apply.
+- **Consistency is in scope, page-wide:** sibling strips on the page share one visual rhythm (card size, corner treatment, arrows); a deviating strip gets a `styleBox` aligning it to the page's dominant treatment (the `bundle`-style FBT + the progress bar are exempt natures). Internal-looking TITLES (`_LS` suffix, raw type names) are reported in `feedback` with a `failureClass` and NO correction (no title verb exists).
+- **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `visual-verify`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none. The lib uploads the after-render screenshot per request.

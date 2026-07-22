@@ -11,6 +11,7 @@ It is the demand-first sibling of the single-page [`onboarding-batch`](onboardin
 ## `optimize-demand`
 
 - **Purpose:** Given ONE store page the merchant is looking at, plus the request they TYPED, return ONE JSON plan for the whole page — which boxes to place, at which numbered candidate (INSERT `before`/`after`, or `replace`), and how to style each so it looks native — honoring the merchant's explicit demand FIRST, then rounding out the page with best practice.
+- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle`); only Recently Viewed anchors at the footer boundary.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist. The body omits `model` so the registry is authoritative. `maxTokens: 4096`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none (`attachments: []`). The lib uploads the page's two screenshots per request.

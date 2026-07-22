@@ -57,7 +57,7 @@ each entry's `prompt:` references `prompts.<name>`).
 
 **`onboarding-shared/` is NOT a prompt — it is the shared block library.** Its `_shared-*.md` /
 `_block-*.md` files are the instruction fragments duplicated across MORE THAN ONE composed prompt (box
-vocabulary, the JSON-only hardening lines, the mobile rule, the correction verbs, the INSERT-vs-REPLACE
+vocabulary, the JSON-only hardening lines, the mobile rule, the correction verbs, the INSERT-only
 placement block, the off-page segment/discount blocks, …). They live in their own folder precisely BECAUSE
 they are used in multiple places: a block used by one prompt only stays a fragment inside that prompt's own
 folder; a block shared across prompts is hoisted to `onboarding-shared/` so a single edit updates every
@@ -78,7 +78,7 @@ loose `.md` files. The full set:
 | `placement`            | single-file     | `/chat` · none          | One-shot JSON placement proposer on the `fast` tier (currently Haiku).                    |
 | `proposals`            | single-file     | `/chat` · server tools  | Per-store SETUP proposer over real page evidence + real store data (`balanced` tier).     |
 | `analytics-insights`   | single-file     | `/chat` · none          | One-shot per-tab `{ kind, text }[]` insights over a tab's real analytics data.            |
-| `onboarding-batch`     | composed        | `/messages` · none      | Propose one page's boxes (INSERT/REPLACE by number + styling). Single-page (`balanced`).  |
+| `onboarding-batch`     | composed        | `/messages` · none      | Propose one page's boxes (INSERT-only by number + explicit playbook styling). Single-page (`balanced`).  |
 | `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: EVERY page in one call + off-page segments/discounts. |
 | `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
 | `onboarding-review-all`| composed        | `/messages` · none      | Whole-store twin of `onboarding-review`: QC every page in one call.                        |

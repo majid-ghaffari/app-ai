@@ -11,6 +11,7 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `cartdrawer-batch-all`
 
 - **Purpose:** Given ONE surface — the OPEN cart drawer at two widths — return ONE JSON plan of which recommendation box(es) to place INSIDE the drawer, at which numbered candidate (INSERT before/after or REPLACE), and how to style each so it looks native to the store and FITS the narrow drawer column on BOTH phone and desktop.
+- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch-all`. Body omits `model`, so the registry is authoritative.
 - **`maxTokens`:** 4096.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
