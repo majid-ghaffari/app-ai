@@ -22,6 +22,8 @@ Judge whether the page rendered well at BOTH widths: are the planned boxes prese
 
 Then classify. This classification is the crucial part of your job:
 
+**Data-dependent boxes may legitimately render less in the PREVIEW.** The previewer has no browsing history and an empty cart, and the playbook's data-dependent boxes ship with configured fallbacks: an `Upsell` with nothing to offer HIDES itself, and a `BoughtTogether` may render its Cross-sell fallback (or thin). A planned Upsell/FBT that is absent or sparse in the preview images is therefore NOT a defect — never emit a correction that removes it or adds a substitute strip for it. Judge the boxes that DID render (placement, styling, fit); judge the progress bar normally (it renders regardless of cart contents).
+
 - **All good** → `pass: true`, `corrections: []`, `failureClass: null`. The boxes rendered, sit in reasonable slots, and match the store's look — on BOTH widths.
 - **Placement off (NON-CRITICAL)** → a box is present and renders fine, but sits in a slightly-wrong SLOT or order (e.g. Recently Viewed landed above the fold instead of near the bottom; two boxes are in the wrong order). This is a minor, fixable issue. Still surface a correction if it's fixable, but set `failureClass: "placement"`. A placement issue alone does NOT make the page "broken".
 - **Styling broken (CRITICAL)** → a box RENDERS BADLY: it looks broken, its cards clash hard with the store's styling, arrows/spacing/borders fight the theme, it can't be made to match the store, OR it is broken / cramped / overflowing at ONE width (commonly mobile) even if the other width looks fine. This is critical: set `failureClass: "styling"`.

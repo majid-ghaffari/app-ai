@@ -16,3 +16,5 @@ Use the manifest to know which images belong to which page and each page's appli
 ## What to decide
 
 Judge EACH page independently: did that page render well at BOTH widths — are the planned boxes present, in sensible slots, and styled so they look native to the store, on desktop AND on mobile? Then classify each page. This classification is the crucial part of your job:
+
+**Data-dependent boxes may legitimately render less in the PREVIEW.** The previewer has no browsing history and an empty cart, and the playbook's data-dependent boxes ship with configured fallbacks: an `Upsell` with nothing to offer HIDES itself, and a `BoughtTogether` may render its Cross-sell fallback (or thin). A planned Upsell/FBT that is absent or sparse in the preview images is therefore NOT a defect — never emit a correction that removes it or adds a substitute strip for it. Judge the boxes that DID render (placement, styling, fit); judge the progress bar normally (it renders regardless of cart contents).

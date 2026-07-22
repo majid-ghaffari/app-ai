@@ -335,7 +335,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     maxTokens: 4096,
     usesTools: false,
     description:
-      'Cart-drawer SINGLE-SURFACE PROPOSE; given the OPEN cart drawer (a rendered overlay) at desktop + mobile widths + the numbered candidate manifest (INSERT anchors + any REPLACE grids inside the drawer), returns { boxes: [ { boxType, position, anchorNumber, styleReferenceSelector?, appearancePatch, appearancePatchMobile, reasoning } ] } — a SINGLE top-level key `boxes` (no `pages` wrapper, no progressBar, no segments/discounts). Favors compact cross-sell/upsell strips that fit the narrow drawer below the line items and above the checkout CTA. Structured output, the conductor applies it box-by-box. Sonnet, no tools.',
+      'Cart-drawer SINGLE-SURFACE PROPOSE; given the OPEN cart drawer (a rendered overlay) at desktop + mobile widths + the numbered candidate manifest (INSERT anchors + any REPLACE grids inside the drawer), returns { boxes: [ { boxType, position, anchorNumber, styleReferenceSelector?, appearancePatch, appearancePatchMobile, reasoning } ], progressBar?: { position, anchorNumber, reasoning } } — the `boxes` array plus the OPTIONAL Smart Progress Bar slot (the SECOND host of the bar: top of the drawer; omitted when the drawer already shows a threshold bar; no `pages` wrapper, no segments/discounts). Favors compact cross-sell/upsell strips that fit the narrow drawer below the line items and above the checkout CTA. Structured output, the conductor applies it box-by-box. Sonnet, no tools.',
     attachments: [],
   },
 

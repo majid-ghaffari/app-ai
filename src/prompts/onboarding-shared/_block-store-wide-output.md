@@ -57,8 +57,9 @@ The full whole-store object is therefore:
    you proposed (or an already-active audience), `discountRate` a number or
    `null` (template default), `rationale` one short sentence. No other keys.
 4. **Tie discounts to segments you proposed.** A campaign's `audience` must be a
-   population this store has — one of your `segments` titles or an active
-   audience. Never offer a discount for an audience the store lacks.
+   population this store has — one of your `segments` titles, an active
+   audience, or the literal `"All audiences"` for a store-wide offer. Never
+   offer a discount for an audience the store lacks.
 5. **Both are OPTIONAL and FOCUSED.** Omit a key entirely (or return `[]`) when
    the store warrants nothing; propose a small high-value set, never every
    template. These additions never change the `pages` plan — the on-page boxes +

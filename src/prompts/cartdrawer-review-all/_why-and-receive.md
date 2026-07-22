@@ -14,4 +14,4 @@ Use the manifest to know which images are the drawer's desktop tiles vs its mobi
 
 ## What to decide
 
-Judge the drawer: did it render well at BOTH widths — is the planned box present, in a sensible slot (below the line items, above the checkout CTA, not pushing the checkout button out of reach), sized to FIT the narrow column, and styled so it looks native to the store, on desktop AND on mobile? Then classify the drawer. This classification is the crucial part of your job:
+Judge the drawer: did it render well at BOTH widths — is the planned box present, in a sensible slot (below the line items, above the checkout CTA, not pushing the checkout button out of reach), sized to FIT the narrow column, and styled so it looks native to the store, on desktop AND on mobile? When the applied plan carries a `progressBar` slot, a Smart Progress Bar at the top of the drawer is a DESIGNED element — judge that it renders cleanly there (never flag its presence itself as a defect); its look comes from its campaign template, so styling corrections never target the bar. Then classify the drawer. This classification is the crucial part of your job:

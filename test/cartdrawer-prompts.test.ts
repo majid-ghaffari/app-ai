@@ -89,10 +89,11 @@ describe('cartdrawer-batch-all (PROPOSE) — drawer guidance + single-surface ou
     // what must not appear is the JSON key / a per-page map structure).
     expect(text).not.toContain('"pages"');
     expect(text).not.toMatch(/"pages"\s*:\s*\{/);
-    // The drawer is compact: the schema explicitly EXCLUDES the progress bar + the
-    // store-wide off-page keys (they must not appear as an OUTPUT key — the prompt
-    // spells out that they are NOT part of the drawer's output).
-    expect(text).toMatch(/NO `progressBar`/);
+    // The drawer carries the bar's SECOND host: the schema includes the OPTIONAL
+    // `progressBar` slot (top of the drawer, no appearance keys) and still EXCLUDES the
+    // store-wide off-page keys.
+    expect(text).toMatch(/OPTIONAL `progressBar`/);
+    expect(text).toMatch(/never `"replace"`/);
     expect(text).toMatch(/NO off-page `segments` \/ `discounts`/);
     // The single-surface box fields the lib parser must match.
     for (const field of [

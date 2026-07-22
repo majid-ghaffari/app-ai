@@ -113,7 +113,9 @@ Onboarding runs for a merchant setting up their store — the previewer has **no
 - **CATALOG-backed (always render products, even for a brand-new visitor): `MostPopular`, `Trending`, `NewArrivals`, `YouMayLike`, `FeaturedCollection`, `RelatedItems` (product page).** These are backed by the store's catalog / co-view data.
 - **SESSION-dependent (EMPTY until the shopper has browsed / has a cart): `RecentViews` (needs browse history), `BoughtTogether` / `CrossSell` / `Upsell` (need a product/cart context).**
 
-**Rule: the FIRST / primary box on EVERY page MUST be a CATALOG-backed box** so the merchant sees a populated, product-filled recommendation strip immediately. Add a session-dependent box (e.g. `RecentViews` near the bottom) only as a SECONDARY box, and never as a page's ONLY box — a page whose only box is `RecentViews` looks broken (blank) in the onboarding preview.
+**Rule: lead with a CATALOG-backed box wherever the playbook provides one** (Home / Product / Collection / Search / Blog) so the merchant sees a populated, product-filled strip immediately — and `RecentViews` is never a page's ONLY box (a page whose only box is `RecentViews` looks broken / blank in the onboarding preview). The CART stack is the deliberate exception: it is data-dependent by design (Upsell + FBT, each with a configured fallback, plus the progress bar carrying the page) — follow it as written.
+
+**Session-dependent boxes from the playbook are still FIRST-CLASS — do not drop them.** The playbook's `BoughtTogether` (Product, Cart) and `Upsell` (Cart) placements ship with configured FALLBACKS the lib seeds (FBT falls back to Cross-sell; Upsell hides itself when it has nothing to show), so they degrade gracefully rather than rendering blank for real shoppers. Place them where the playbook says, alongside the page's catalog-backed strip — omit one only when the page plainly warrants it, not because of the preview.
 
 ### Page vocabulary
 
@@ -129,21 +131,22 @@ The Smart Progress Bar is an optional threshold / progress widget that lives on 
 
 **Include it only when it fits.** Add the progress bar on the Cart page when a threshold nudge makes sense for this store (the common case). If the Cart page already shows a visible threshold / progress bar in the images, or a bar would not help this store, omit it. On EVERY non-Cart page, and on the Cart page when you choose not to add one, simply leave the `progressBar` key OUT (or set it to `null`).
 
-### Best-practice page stacks (guidance, adapt to the store)
+### Best-practice page stacks (the LimeSpot playbook — adapt to the store)
 
-The FIRST box named is the primary CATALOG-backed strip (it must render products); a trailing Recently Viewed is an optional secondary add-on.
+Boxes are CAROUSELS unless stated otherwise. Each page's stack below is the DEFAULT — include EACH listed box for that page unless the page plainly warrants otherwise. Recently Viewed is the standard closer: always the LAST strip, at the very bottom of the page above the footer (empty in preview, fills in for real shoppers). Keep the page's most prominent strip CATALOG-backed so the preview shows products; a data-dependent box (Frequently Bought Together / Upsell) degrades gracefully for real shoppers via its configured fallback.
 
-- **Home** — a **Featured Collection** or **Most Popular** carousel high on the page (primary), Recently Viewed near the bottom (secondary).
-- **Product** — **Related Items** or **You May Like** after the product details (primary), then a "frequently bought together" bundle, Recently Viewed at the end (secondary).
-- **Collection** — **Most Popular** at the top of the grid (primary), Recently Viewed at the end (secondary).
-- **Cart** / **SlidingCart** — **You May Like** or **Most Popular** after the cart contents (primary), bought-together / upsell alongside, Recently Viewed at the end (secondary).
+- **Home** — **Most Popular** right after the hero (or right after the store/collection intro section when one directly follows the hero); **You May Like** mid-page, one or two sections below Most Popular (audience-gated by the lib: hidden for first-time visitors); **Recently Viewed** at the bottom, above the footer.
+- **Product** — **Frequently Bought Together** as a bundle right below the product details + price and ABOVE any reviews list (falls back to Cross-sell); **Related Items** directly below the FBT bundle; **Recently Viewed** at the end.
+- **Collection** — **Most Popular** scoped to this collection, at the top of the collection page; **Recently Viewed** at the end.
+- **Cart** — the Smart Progress Bar at the very top; **Upsell** as a slider ABOVE the cart contents (ordered by popularity; hides when it has nothing to show); **Frequently Bought Together** BELOW the cart contents (order summary + checkout button), falling back to Cross-sell; **Recently Viewed** at the end.
+- **SlidingCart** — **Frequently Bought Together** in rows style, capped at 2 products, below the drawer's cart content (falls back to Cross-sell). Minimal — a narrow drawer stays uncrowded.
 - **Search** / **Blog** — **Most Popular** or **You May Like** (primary) plus Recently Viewed (secondary), if the page exists.
 
 ## Appearance patch — allowed keys ONLY
 
 `appearancePatch` is either `null` (the store's default already fits) or an object using ONLY these keys. Do not invent keys.
 
-- **`Style`** — the layout: `"carousel"` | `"grid"` | `"bundle"` | `"rows"`.
+- **`Style`** — the layout: `"carousel"` | `"grid"` | `"rows"` | `"slider"`. (There is NO `"bundle"` Style value — a Frequently-Bought-Together box renders its bundle layout from the box type itself.)
 - **`ItemsPerPage`** — number of cards shown per row / page.
 - **`ItemsLimit`** — total number of products the box pulls.
 - **`ImageBorderRadius`** — image corner radius in px (0 for square, ~8 for rounded).
@@ -238,7 +241,7 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 10. **`reasoning`** — one short sentence, tied to what you SAW when you can.
 11. **Focused, not exhaustive; vary across pages.** A small set of strong boxes per page beats a crowded store, and don't paste the identical stack onto every page — each page's role decides its boxes.
 12. **`progressBar`** (OPTIONAL, Cart page ONLY) — omit it entirely on every non-Cart page. On the Cart page, add it when a threshold nudge fits: `{ "position", "anchorNumber", "reasoning" }` — a `position` (`before`/`after`/`replace`) + an `anchorNumber` from the Cart page's `1..N` range + one short `reasoning`. NO appearance keys (the campaign template styles the bar). Omit the key (or set it `null`) if the Cart already shows a threshold bar or one wouldn't help.
-13. **Respect existing setup.** Don't pad a page that already has the right widgets (a LimeSpot carousel, a related-products strip, a visible cart threshold bar).
+13. **Respect existing PERSONALIZATION; replace static lookalikes.** A LimeSpot-rendered widget (`limespot` / `ls-` classes) or a visible cart threshold bar that's already doing the job is left alone — never duplicate it. But a THEME's own STATIC related-products / recommendations-style grid is NOT personalization — it is exactly what a green REPLACE candidate is for: swap the playbook's box IN for it (e.g. Product: the static "you may also like" grid becomes the Related Items box) rather than deferring to it or working around it.
 14. **Tolerate missing evidence.** A partial screenshot, only one width for a page, or a missing page is not an error — reason from what remains and lean on the best-practice stack.
 
 Respond with ONLY the JSON object, no prose, no explanation, no markdown code fences. Return only valid JSON.

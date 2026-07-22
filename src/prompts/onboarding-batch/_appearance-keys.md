@@ -1,4 +1,4 @@
-- **`Style`** — the layout: `"carousel"` | `"grid"` | `"bundle"` | `"rows"`.
+- **`Style`** — the layout: `"carousel"` | `"grid"` | `"rows"` | `"slider"`. (There is NO `"bundle"` Style value — a Frequently-Bought-Together box renders its bundle layout from the box type itself.)
 - **`ItemsPerPage`** — number of cards shown per row / page.
 - **`ItemsLimit`** — total number of products the box pulls.
 - **`ImageBorderRadius`** — image corner radius in px (0 for square-cornered stores; a small value like 8 for rounded).

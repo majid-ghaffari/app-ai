@@ -82,7 +82,7 @@ loose `.md` files. The full set:
 | `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: EVERY page in one call + off-page segments/discounts. |
 | `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
 | `onboarding-review-all`| composed        | `/messages` · none      | Whole-store twin of `onboarding-review`: QC every page in one call.                        |
-| `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface).                   |
+| `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface) + the OPTIONAL `progressBar` slot (the bar's second host, top of the drawer). |
 | `cartdrawer-review-all`| composed        | `/messages` · none      | QC verdict on the cart-drawer boxes (single surface).                                      |
 | `optimize-demand`      | composed        | `/messages` · none      | On-demand optimize: propose boxes for the current page, led by the merchant's demand.      |
 | `probe-industry`       | probe folder²   | `/messages` · none      | Website-Analysis probe: homepage → `{ industry, confidence, findings }`.                   |

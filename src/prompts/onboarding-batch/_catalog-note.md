@@ -11,10 +11,19 @@ merchant sees:
   (needs browse history), `BoughtTogether` / `CrossSell` / `Upsell` (need a product/cart
   context).**
 
-**Rule: the FIRST / primary box on every page MUST be a CATALOG-backed box** so the merchant
-sees a populated, product-filled recommendation strip immediately. Add a session-dependent box
-(e.g. `RecentViews` near the bottom) only as a SECONDARY box, and never as a page's ONLY box —
-a page whose only box is `RecentViews` looks broken (blank) in the onboarding preview.
+**Rule: lead with a CATALOG-backed box wherever the playbook provides one** (Home / Product /
+Collection / Search / Blog) so the merchant sees a populated, product-filled strip
+immediately — and `RecentViews` is never a page's ONLY box (a page whose only box is
+`RecentViews` looks broken / blank in the onboarding preview). The CART stack is the
+deliberate exception: it is data-dependent by design (Upsell + FBT, each with a configured
+fallback, plus the progress bar carrying the page) — follow it as written.
+
+**Session-dependent boxes from the playbook are still FIRST-CLASS — do not drop them.** The
+playbook's `BoughtTogether` (Product, Cart) and `Upsell` (Cart) placements ship with
+configured FALLBACKS the lib seeds (FBT falls back to Cross-sell; Upsell hides itself when it
+has nothing to show), so they degrade gracefully rather than rendering blank for real
+shoppers. Place them where the playbook says, alongside the page's catalog-backed strip —
+omit one only when the page plainly warrants it, not because of the preview.
 
 ### Page vocabulary
 

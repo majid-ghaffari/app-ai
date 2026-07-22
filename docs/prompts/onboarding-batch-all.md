@@ -28,9 +28,9 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 5. `onboarding-batch-all/_receive.md` — what the lib sends (the per-page manifest + the marked screenshots) and what to decide, whole-store.
 6. `onboarding-shared/_shared-guidance.md` (shared) — "guidance, not a script".
 7. `onboarding-shared/_shared-box-vocab.md` (shared) — the ten box names.
-8. `onboarding-batch-all/_catalog-note.md` — CATALOG-backed vs SESSION-dependent boxes (first box per page must be catalog-backed), the page vocabulary, and the Cart-only Smart Progress Bar note.
+8. `onboarding-batch-all/_catalog-note.md` — CATALOG-backed vs SESSION-dependent boxes (lead with a catalog-backed box where the playbook provides one; the Cart stack is the deliberate data-dependent exception), the page vocabulary, and the Cart-only Smart Progress Bar note.
 9. `onboarding-shared/_block-pb-placement.md` (shared) — the progress bar carries NO styling; placement only.
-10. `onboarding-batch-all/_pb-detail.md` — include the bar only when it fits + best-practice per-page stacks.
+10. `onboarding-batch-all/_pb-detail.md` — include the bar only when it fits + the best-practice per-page stacks (the LimeSpot playbook: Home = Most Popular after the hero + a mid-page You May Like [lib-audience-gated: hidden for first-time visitors] + Recently Viewed above the footer; Product = an FBT bundle below the product details [Cross-sell fallback] + Related Items + Recently Viewed; Collection = collection-scoped Most Popular on top + Recently Viewed; Cart = the Progress Bar on top + an Upsell slider above the cart contents + FBT below them [Cross-sell fallback] + Recently Viewed; SlidingCart = a 2-product rows-style FBT).
 11. `onboarding-shared/_shared-appearance-header.md` (shared) — `appearancePatch` is `null` or allowed keys only.
 12. `onboarding-batch-all/_appearance-keys.md` — the allowed DESKTOP-and-shared appearance keys.
 13. `onboarding-shared/_shared-mobile-rule.md` (shared) — the `appearancePatchMobile` header.
@@ -96,11 +96,11 @@ The assistant text is a single JSON object with a top-level `pages` map keyed by
       }
     }
   },
-  "segments": [{ "title": "Potential Buyers", "rationale": "browsers who haven't purchased yet" }],
+  "segments": [{ "title": "First-Time Visitors", "rationale": "the journey-stage starter set" }],
   "discounts": [
     {
       "title": "Frequently Bought Together",
-      "audience": "Potential Buyers",
+      "audience": "Returning Buyers",
       "discountRate": 10,
       "rationale": "a 10% bundle nudge to lift first-order value"
     }
@@ -114,7 +114,7 @@ The assistant text is a single JSON object with a top-level `pages` map keyed by
 - `position` — exactly `"before"`, `"after"`, or `"replace"`: `before`/`after` a violet INSERT anchor, or `replace` a green REPLACE candidate. `position` MUST match the candidate's manifest `type`. Matches the lib's `PlacementMethod` union (`brain/batch-output.ts`).
 - `anchorNumber` — an INTEGER in that PAGE's `1..N` (per-page, one continuous sequence across both modes), equal to a candidate painted on that page whose `type` matches `position`. With `position`, ONE responsive placement for both widths. Never invented / never out of range / never a `replace` on a non-replace number. The lib maps the number back to the element's sibling selector internally.
 - `styleReferenceSelector` — OPTIONAL, PREFERRED: a CSS selector for the store's own most-representative product grid/carousel on that page, to CLONE the box's appearance from. On a `replace` box, point it at the replaced candidate's own reference `selector` from the manifest (its `outerHTML` grounds the clone). Mirrors `PlacedBoxProposal.styleReferenceSelector` (`brain/batch-output.ts`).
-- `appearancePatch` — `null`, OR an object using ONLY: `Style` (`"carousel"`|`"grid"`|`"bundle"`|`"rows"`), `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`. The FALLBACK when no `styleReferenceSelector` exists. Chosen to read well at BOTH widths.
+- `appearancePatch` — `null`, OR an object using ONLY: `Style` (`"carousel"`|`"grid"`|`"rows"`|`"slider"` — no `"bundle"` value; the FBT box renders its bundle layout from the box type), `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`. The FALLBACK when no `styleReferenceSelector` exists. Chosen to read well at BOTH widths.
 - `appearancePatchMobile` — `null` (the common case), OR an object of MOBILE-ONLY overrides using ONLY `ImageHeightMobile` (px, default 200) + `MarginRightMobile` (px, default 10). No desktop keys; NO mobile items-per-row (the phone row is width-driven, floored at 2 products/row). Mirrors the lib's `AppearancePatchMobile` type.
 - `reasoning` — one short sentence.
 

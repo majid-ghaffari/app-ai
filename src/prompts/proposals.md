@@ -36,7 +36,7 @@ OUTPUT — reply with ONLY a single JSON object, no prose, no markdown fences, s
 }
 ],
 "segments": [
-{ "title": "<segment label, e.g. 'First-Time Visitors', 'Returning Buyers', 'Potential Buyers', 'High Spenders'>",
+{ "title": "<segment label — the standard starter set is 'First-Time Visitors', 'Returning Visitors', 'First-Time Buyers', 'Returning Buyers'>",
 "rationale": "<one short clause>" }
 ],
 "progressBar": {
@@ -54,9 +54,9 @@ OUTPUT — reply with ONLY a single JSON object, no prose, no markdown fences, s
 Rules:
 
 - Order the `setup` boxes per page top → bottom in the order they should stack (best-practice catalog `pageRecBoxStacks`).
-- Order `segments` journey-stage-first (catalog `audienceActivationOrder`).
-- The progress-bar `threshold`: prefer the real AOV from `get_store_analytics` (a round value a bit above it); only when that data isn't available, fall back to a sensible round best-practice default for the store's currency informed by the price points on the pages (catalog `progressBar`). Free Shipping to start. Say in the rationale which basis you used.
-- Only recommend `bundles` whose target audience makes sense for the store; keep it to 1-2 ideas.
+- Order `segments` journey-stage-first (catalog `audienceActivationOrder`); the standard starter set is the four journey-stage segments (First-Time Visitors, Returning Visitors, First-Time Buyers, Returning Buyers) unless the store plainly warrants otherwise.
+- The progress-bar `threshold`: prefer the real AOV from `get_store_analytics` (a round value ~10–15% above it, so the free-shipping tier pulls the AOV up); only when that data isn't available, fall back to a sensible round best-practice default for the store's currency informed by the price points on the pages (catalog `progressBar`). Free Shipping to start. Say in the rationale which basis you used.
+- Only recommend `bundles` whose target audience makes sense for the store; keep it to 1-2 ideas. The standard starter pair: a free-shipping bundle for all audiences, and a 10% bundle discount targeting Returning Buyers (both with the bundle threshold ~10–15% above AOV).
 - Reflect existing config you can SEE: if a page already has the right boxes/widgets, you can still list them (they'll be respected), but don't pad with boxes that don't fit the store.
 - Tolerate missing or partial evidence — a missing screenshot or partial HTML for a page is not an error; infer from what remains and lean on the best-practice defaults.
 - Output the JSON object and NOTHING else.
