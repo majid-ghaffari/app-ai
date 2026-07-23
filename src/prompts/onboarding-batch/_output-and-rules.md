@@ -36,9 +36,20 @@ Return EXACTLY one JSON object of this shape and nothing else. The top-level key
       "position": "after",
       "anchorNumber": 3,
       "styleReferenceSelector": ".featured-collection .grid",
-      "appearancePatch": { "Style": "carousel" },
+      "appearancePatch": {
+        "Style": "carousel",
+        "ItemsPerPage": 4,
+        "ItemsLimit": 8,
+        "ExtraClasses": "page-width",
+        "NavigationArrowType": "circleChevron",
+        "ImageMaxHeight": 320,
+        "Default": {
+          "QuickActions": { "AddToCart": { "background-color": "#121212", "color": "#ffffff", "border-radius": "0px" } },
+          "Title": { "font-size": "24px", "font-weight": "400" }
+        }
+      },
       "appearancePatchMobile": null,
-      "reasoning": "Most Popular right after the store's featured-collection section, cloning that grid's own style so it reads native beside it."
+      "reasoning": "Most Popular after the featured collection; geometry, gutter, button, and heading all read from the store's own sections."
     }
   ]
 }
@@ -77,7 +88,7 @@ On the **Cart page**, a plan MAY additionally carry the `progressBar` slot (Cart
 5. **`position`** — exactly `"before"` or `"after"`: whether the box goes before or after the numbered candidate named by `anchorNumber`. No other value — placement is ADDITIVE ONLY, `"replace"` is never emitted, and the merchant's own sections all stay on the page.
 6. **`anchorNumber`** — an INTEGER in `1..N` (the valid SHARED continuous candidate range), equal to a numbered candidate you actually SEE painted on the page (on the desktop and/or mobile image) . Together with `position`, it is ONE responsive placement for both widths, not one per width. Pick ONLY from the visible numbered candidates. Never invent a number that is not painted on the page or is outside `1..N`. If no candidate fits a box you wanted, drop that box rather than inventing a place for it. You emit only the number + `before`/`after` — never a selector; the conductor resolves the number to the real element's sibling selector.
 7. **`styleReferenceSelector`** (OPTIONAL, PREFERRED) — a CSS selector string for the store's own most-representative product grid / carousel to CLONE the box's appearance from (e.g. `".product-grid"`, `"ul.grid--collection"`). The system reads that block's REAL computed styling and applies it to the box — the most faithful way to look native. A green reference candidate's manifest `selector` is ideal (its `outerHTML` grounds the clone precisely). Include it whenever a good reference block exists; omit the non-`Style` appearance keys when you have one. Emit a plain selector string, never a value for a block you don't actually see.
-8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`, the Product Frequently Bought Together `"bundle"`). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` alone (the clone supplies the rest).
+8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`; FBT `"bundle"` on the Product page ONLY, `"carousel"` on Cart). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`, `ExtraClasses`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` + the count keys + `ExtraClasses` per the hard caps and the gutter rule (the clone supplies the visual skin, never the structure, the count, or the gutter).
 9. **`appearancePatchMobile`** — `null` (the common case — the shared styling already reads well on phone), OR an object of mobile-only overrides using ONLY `ImageHeightMobile` (px, default 200) and `MarginRightMobile` (px, default 10). No desktop keys here, and NO mobile items-per-row (the phone row is width-driven, floored at 2 products/row; a mobile items value is ignored). Set it only when mobile genuinely needs to differ.
 10. **`reasoning`** — one short sentence on why this box, here, styled this way — tied to what you SAW when you can.
 11. **Focused, not exhaustive.** A small set of strong boxes that fit this store beats a crowded page. `boxes` may be empty if this page genuinely warrants no boxes.

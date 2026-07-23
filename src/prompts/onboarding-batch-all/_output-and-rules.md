@@ -41,9 +41,20 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
           "position": "after",
           "anchorNumber": 3,
           "styleReferenceSelector": ".product-recommendations .grid",
-          "appearancePatch": { "Style": "carousel" },
+          "appearancePatch": {
+            "Style": "carousel",
+            "ItemsPerPage": 4,
+            "ItemsLimit": 8,
+            "ExtraClasses": "page-width",
+            "NavigationArrowType": "circleChevron",
+            "ImageMaxHeight": 320,
+            "Default": {
+              "QuickActions": { "AddToCart": { "background-color": "#121212", "color": "#ffffff", "border-radius": "0px" } },
+              "Title": { "font-size": "24px", "font-weight": "400" }
+            }
+          },
           "appearancePatchMobile": null,
-          "reasoning": "Related Items directly below the product-details boundary, cloning the store's own grid style so it reads native beside it."
+          "reasoning": "Related Items below the product details; 4/row + image height matching the store's own cards, its wrapper class for the gutter, its button colors, its heading type."
         }
       ]
     },
@@ -78,7 +89,7 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 5. **`position`** — exactly `"before"` or `"after"`. Placement is ADDITIVE ONLY: never emit `"replace"` for any number — the merchant's own sections all stay on the page.
 6. **`anchorNumber`** — an INTEGER in that PAGE's `1..N` range, equal to a numbered candidate you actually SEE on that page's images. Numbering is per-page, top → bottom. Together with `position` it is ONE responsive placement for both widths. If no candidate fits a box you wanted, drop that box rather than inventing a place. Emit only the number + `before`/`after` — never a selector.
 7. **`styleReferenceSelector`** (OPTIONAL, PREFERRED) — a CSS selector for the store's own most-representative product grid / carousel on that page to CLONE from. A green reference candidate's manifest `selector` is ideal (its `outerHTML` grounds the clone precisely). Include it whenever a good reference exists; omit the non-`Style` appearance keys when you have one. Emit a plain selector string, never a value for a block you don't see.
-8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`, the Product Frequently Bought Together `"bundle"`). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` alone (the clone supplies the rest).
+8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`; FBT `"bundle"` on the Product page ONLY, `"carousel"` on Cart). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`, `ExtraClasses`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` + the count keys + `ExtraClasses` per the hard caps and the gutter rule (the clone supplies the visual skin, never the structure, the count, or the gutter).
 9. **`appearancePatchMobile`** — `null` (common), OR an object of mobile-only overrides (`ImageHeightMobile`, `MarginRightMobile` only). No desktop keys, no mobile items-per-row.
 10. **`reasoning`** — one short sentence, tied to what you SAW when you can.
 11. **Focused, not exhaustive; vary across pages.** A small set of strong boxes per page beats a crowded store, and don't paste the identical stack onto every page — each page's role decides its boxes.

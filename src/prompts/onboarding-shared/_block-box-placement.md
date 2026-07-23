@@ -47,8 +47,13 @@ back to the full `appearancePatch` only when no good reference block exists.
 ### Per-number manifest (VARIABLE per-shop data — never in the cached prefix)
 
 The per-page manifest names every numbered candidate and its
-`type: "insert"` | `"replace"`. INSERT anchors are just a boundary and need no
-extra data. Green reference candidates
+`type: "insert"` | `"replace"`, and — when a structural signal exists — a
+**`label`** naming what the candidate's element IS ("the product details / buy
+section", "the cart contents", "the footer", "the collection product grid").
+**TRUST the labels**: when the playbook says "below the product details", pick
+the anchor LABELED as the product details with `"after"` — the label is read
+from the page's real structure and beats squinting at marker pixels. INSERT
+anchors otherwise carry no extra data. Green reference candidates
 carry more context — keyed by that candidate's number — their
 `type: "replace"` marker, their **outerHTML** (the block's structure +
 product-card markup that grounds the style clone), and a reference `selector`.

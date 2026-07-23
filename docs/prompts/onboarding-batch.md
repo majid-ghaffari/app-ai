@@ -11,7 +11,7 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 ## `onboarding-batch`
 
 - **Purpose:** Given ONE store page, return ONE JSON plan for the whole page — which boxes to place, at which anchor (from a fixed valid list), and how to style each so it looks native to the store.
-- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle`); only Recently Viewed anchors at the footer boundary.
+- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle`) plus its count keys under the HARD caps (carousel 4/line; grid 8 at 4/row; bundle 3; slider 1; rows 2 — lower allowed, never more). Bottom closers are Related Items then Recently Viewed (RV always last at the footer boundary); every other box anchors in its own page region.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as the `proposals` strategist.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none. The lib uploads the page's screenshot + cleaned HTML per request.

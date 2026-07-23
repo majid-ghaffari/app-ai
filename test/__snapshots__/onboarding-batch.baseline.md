@@ -57,8 +57,13 @@ back to the full `appearancePatch` only when no good reference block exists.
 ### Per-number manifest (VARIABLE per-shop data — never in the cached prefix)
 
 The per-page manifest names every numbered candidate and its
-`type: "insert"` | `"replace"`. INSERT anchors are just a boundary and need no
-extra data. Green reference candidates
+`type: "insert"` | `"replace"`, and — when a structural signal exists — a
+**`label`** naming what the candidate's element IS ("the product details / buy
+section", "the cart contents", "the footer", "the collection product grid").
+**TRUST the labels**: when the playbook says "below the product details", pick
+the anchor LABELED as the product details with `"after"` — the label is read
+from the page's real structure and beats squinting at marker pixels. INSERT
+anchors otherwise carry no extra data. Green reference candidates
 carry more context — keyed by that candidate's number — their
 `type: "replace"` marker, their **outerHTML** (the block's structure +
 product-card markup that grounds the style clone), and a reference `selector`.
@@ -142,24 +147,28 @@ The Smart Progress Bar is an optional threshold / progress widget that lives on 
 ### Best-practice page stacks (the LimeSpot playbook — adapt to the store)
 
 Boxes are CAROUSELS unless stated otherwise. Each page's stack below is the DEFAULT — include EACH listed box for that page unless the page plainly warrants otherwise. Recently Viewed is the standard closer: always the LAST strip, at the very bottom of the page above the footer (empty in preview, fills in for real shoppers). Keep the page's most prominent strip CATALOG-backed so the preview shows products; a data-dependent box (Frequently Bought Together / Upsell) degrades gracefully for real shoppers via its configured fallback.
-Two hard disciplines on every stack: (1) **EXPLICIT STYLE** — every box's `appearancePatch` carries its playbook `Style` (`"carousel"` unless the stack names another: the Cart **Upsell** is `"slider"`, the Product **Frequently Bought Together** is `"bundle"`). Never leave the structure to the theme default. (2) **REGION, not footer** — **Recently Viewed is the ONLY strip anchored at the footer boundary**; every other box anchors inside its own page region: Product FBT + Related take the EARLIEST anchors below the product details (never a footer section), the Collection Most Popular takes the TOPMOST anchor, and the Cart Upsell anchors ABOVE the cart line items with FBT + Related immediately below the cart summary. When a region offers no numbered anchor of its own, take the earliest anchor below it with `"before"` — never drift a mid-page box down to the footer.
+Two hard disciplines on every stack: (1) **EXPLICIT STYLE + STORE-MATCHED CARD GEOMETRY** — every box's `appearancePatch` carries its playbook `Style` (`"carousel"` unless the stack names another: the Cart **Upsell** is `"slider"`; **Frequently Bought Together is `"bundle"` ON THE PRODUCT PAGE ONLY — on the Cart page FBT is a `"carousel"`**) AND its count keys. Our cards must read as the STORE'S OWN product cards — same card width, same rough image proportions, never bigger or longer than the theme's. So: set `ItemsPerPage` to the STORE'S OWN cards-per-row, COUNTED in its product/collection grids in the screenshots (typically 3–5) — a match to the store, not a fixed number. When the store's card images are visibly constrained (roughly square or landscape) and this catalog's natural images run TALL, ALSO set `ImageMaxHeight` to roughly the store's own card-image height as seen (px). Hard CEILINGS (going lower is fine, exceeding never; the platform default of 20 floods the strip): carousel / grid ≤ 6 per line; grid total ≤ 2 rows of that count (`ItemsLimit`); bundle `ItemsLimit` 3; slider 1 visible; rows 2 products. (2) **REGION discipline** — the page's BOTTOM CLOSERS are Related Items then Recently Viewed (Recently Viewed is always LAST, at the footer boundary; Related Items sits directly above it where the stack places it there); every other box anchors inside its own page region: the Product FBT takes the EARLIEST anchor below the product details (never a footer section), the Collection Most Popular takes the TOPMOST anchor, and the Cart Upsell anchors ABOVE the cart line items with FBT immediately below the cart summary. Match each stack position to the LABELED anchors first (the manifest labels name the product details, the cart contents, the footer, the collection grid); when a region offers no labeled or numbered anchor of its own, take the earliest anchor below it with `"before"` — never drift a mid-page box down to the footer. (3) **GUTTER — match the page's own padding**: recommendation boxes must sit in the SAME content gutter as the sections around them — read the theme's content-wrapper class off a green reference candidate's `outerHTML` (e.g. `page-width`) and emit it as `ExtraClasses` on EVERY box of that page. A strip must never render full-bleed edge-to-edge when its neighbour sections don't. (4) **BUTTONS & ARROWS match the store**: the card Add-to-cart button clones the store's own primary button (colors/radius read off the screenshots → `Default.QuickActions.AddToCart`), and the carousel arrows take the SHAPE the store's own sliders show (`NavigationArrowType`; `Default.NextPrev` when the store's arrows carry visible chrome; `"circleChevron"` is the DEFAULT when the store shows no slider arrows of its own). (5) **ONE TITLE STYLE store-wide**: every box heading shares the SAME typography — clone the store's own section-heading style once and emit the identical `Default.Title` map on every box, every page. A box whose button, arrows, or title clash with the store's reads as third-party.
 
 - **Home** — **Most Popular** right after the hero (or right after the store/collection intro section when one directly follows the hero); **You May Like** mid-page, one or two sections below Most Popular (audience-gated by the lib: hidden for first-time visitors); **Recently Viewed** at the bottom, above the footer.
-- **Product** — **Frequently Bought Together** as a bundle right below the product details + price and ABOVE any reviews list (falls back to Cross-sell); **Related Items** directly below the FBT bundle; **Recently Viewed** at the end.
+- **Product** — **Frequently Bought Together** as a bundle right below the product details + price and ABOVE any reviews list (falls back to Cross-sell); **Related Items** near the bottom, ABOVE the footer and directly ABOVE the Recently Viewed box; **Recently Viewed** at the end.
 - **Collection** — **Most Popular** scoped to this collection, at the top of the collection page; **Recently Viewed** at the end.
-- **Cart** — the Smart Progress Bar at the very top; **Upsell** as a slider ABOVE the cart contents (ordered by popularity; hides when it has nothing to show); **Frequently Bought Together** BELOW the cart contents (order summary + checkout button), falling back to Cross-sell; **Related Items** directly after the FBT strip; **Recently Viewed** at the end.
+- **Cart** — the Smart Progress Bar at the very top; **Upsell** as a slider ABOVE the cart contents (ordered by popularity; hides when it has nothing to show); **Frequently Bought Together** BELOW the cart contents (order summary + checkout button), falling back to Cross-sell; **Related Items** after the FBT strip, in the bottom region above the footer (before Recently Viewed); **Recently Viewed** at the end.
 - **SlidingCart** — **Frequently Bought Together** in rows style, capped at 2 products, below the drawer's cart content (falls back to Cross-sell). Minimal — a narrow drawer stays uncrowded.
-- **Search** / **Blog** — **Most Popular** or **You May Like** (primary) plus Recently Viewed (secondary), if the page exists.
 
 ## Appearance patch — allowed keys ONLY
 
 `appearancePatch` is either `null` (the store's default already fits) or an object using ONLY these keys. Do not invent keys.
 
-- **`Style`** — the layout: `"carousel"` | `"grid"` | `"rows"` | `"slider"`. (There is NO `"bundle"` Style value — a Frequently-Bought-Together box renders its bundle layout from the box type itself.)
-- **`ItemsPerPage`** — number of cards shown per row / page.
+- **`Style`** — the layout: `"carousel"` | `"grid"` | `"bundle"` | `"rows"` | `"slider"` (`"bundle"` is the Frequently-Bought-Together bundle layout).
+- **`ItemsPerPage`** — number of cards shown per row / page. MATCH the store's own cards-per-row — count the cards in its product/collection grids in the screenshots.
+- **`ImageMaxHeight`** — px cap on the card image height. Set ≈ the store's own card-image height when this catalog's natural images run taller than the store's cards (keeps our cards from towering over the theme's).
 - **`ItemsLimit`** — total number of products the box pulls.
 - **`ImageBorderRadius`** — image corner radius in px (0 for square-cornered stores; a small value like 8 for rounded).
-- **`NavigationArrowType`** — the carousel arrow style (match the store; omit / minimal if the store shows no arrows).
+- **`NavigationArrowType`** — the carousel arrow SHAPE: `"chevron"` | `"circleChevron"` | `"circleFull"` | `"circleArrow"` | `"strikingChevron"`. MATCH the store's own slider arrows as SEEN in the screenshots (a chevron inside a circular border = `"circleChevron"`; a bare chevron = `"chevron"`); when the store shows no slider arrows of its own, DEFAULT to `"circleChevron"`.
+- **`Default.QuickActions.AddToCart`** — a CSS-declaration map for the card's Add-to-cart button, cloned from the STORE'S OWN primary button as seen in the screenshots (its Add to cart / View all): e.g. `{ "background-color": "#121212", "color": "#ffffff", "border-radius": "0px" }`. The box's button must read as the store's button.
+- **`Default.NextPrev`** — a CSS-declaration map for the carousel arrow buttons when the store's arrows carry visible styling (border, background) to match.
+- **`Default.Title`** — a CSS-declaration map for the box heading. ALL boxes on ALL pages share ONE title style — clone the store's own section-heading typography (font family / size / weight / case as seen in the screenshots) and emit the SAME map on every box.
+- **`ExtraClasses`** — the theme's own content-wrapper class(es), copied VERBATIM from the page's section wrappers (read them off a green candidate's `outerHTML`, e.g. `page-width`) — this puts the box in the same gutter/max-width as the sections around it. Class tokens only, never invented.
 
 These keys are the box's DESKTOP-and-shared styling — they apply at both widths unless a mobile override below changes them.
 
@@ -203,9 +212,20 @@ Return EXACTLY one JSON object of this shape and nothing else. The top-level key
       "position": "after",
       "anchorNumber": 3,
       "styleReferenceSelector": ".featured-collection .grid",
-      "appearancePatch": { "Style": "carousel" },
+      "appearancePatch": {
+        "Style": "carousel",
+        "ItemsPerPage": 4,
+        "ItemsLimit": 8,
+        "ExtraClasses": "page-width",
+        "NavigationArrowType": "circleChevron",
+        "ImageMaxHeight": 320,
+        "Default": {
+          "QuickActions": { "AddToCart": { "background-color": "#121212", "color": "#ffffff", "border-radius": "0px" } },
+          "Title": { "font-size": "24px", "font-weight": "400" }
+        }
+      },
       "appearancePatchMobile": null,
-      "reasoning": "Most Popular right after the store's featured-collection section, cloning that grid's own style so it reads native beside it."
+      "reasoning": "Most Popular after the featured collection; geometry, gutter, button, and heading all read from the store's own sections."
     }
   ]
 }
@@ -244,7 +264,7 @@ On the **Cart page**, a plan MAY additionally carry the `progressBar` slot (Cart
 5. **`position`** — exactly `"before"` or `"after"`: whether the box goes before or after the numbered candidate named by `anchorNumber`. No other value — placement is ADDITIVE ONLY, `"replace"` is never emitted, and the merchant's own sections all stay on the page.
 6. **`anchorNumber`** — an INTEGER in `1..N` (the valid SHARED continuous candidate range), equal to a numbered candidate you actually SEE painted on the page (on the desktop and/or mobile image) . Together with `position`, it is ONE responsive placement for both widths, not one per width. Pick ONLY from the visible numbered candidates. Never invent a number that is not painted on the page or is outside `1..N`. If no candidate fits a box you wanted, drop that box rather than inventing a place for it. You emit only the number + `before`/`after` — never a selector; the conductor resolves the number to the real element's sibling selector.
 7. **`styleReferenceSelector`** (OPTIONAL, PREFERRED) — a CSS selector string for the store's own most-representative product grid / carousel to CLONE the box's appearance from (e.g. `".product-grid"`, `"ul.grid--collection"`). The system reads that block's REAL computed styling and applies it to the box — the most faithful way to look native. A green reference candidate's manifest `selector` is ideal (its `outerHTML` grounds the clone precisely). Include it whenever a good reference block exists; omit the non-`Style` appearance keys when you have one. Emit a plain selector string, never a value for a block you don't actually see.
-8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`, the Product Frequently Bought Together `"bundle"`). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` alone (the clone supplies the rest).
+8. **`appearancePatch`** — an object that ALWAYS carries the box's playbook `Style` (`"carousel"` unless the stack names another — the Cart Upsell `"slider"`; FBT `"bundle"` on the Product page ONLY, `"carousel"` on Cart). When there is NO `styleReferenceSelector` to clone from, also set the other allowed DESKTOP-and-shared keys (`ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`, `ExtraClasses`) to match the store's native card style at BOTH widths; when you gave a reference, emit `Style` + the count keys + `ExtraClasses` per the hard caps and the gutter rule (the clone supplies the visual skin, never the structure, the count, or the gutter).
 9. **`appearancePatchMobile`** — `null` (the common case — the shared styling already reads well on phone), OR an object of mobile-only overrides using ONLY `ImageHeightMobile` (px, default 200) and `MarginRightMobile` (px, default 10). No desktop keys here, and NO mobile items-per-row (the phone row is width-driven, floored at 2 products/row; a mobile items value is ignored). Set it only when mobile genuinely needs to differ.
 10. **`reasoning`** — one short sentence on why this box, here, styled this way — tied to what you SAW when you can.
 11. **Focused, not exhaustive.** A small set of strong boxes that fit this store beats a crowded page. `boxes` may be empty if this page genuinely warrants no boxes.
