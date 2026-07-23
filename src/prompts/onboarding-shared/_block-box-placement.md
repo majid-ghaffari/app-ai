@@ -30,6 +30,15 @@ Name the boundary by its `anchorNumber` and set `position` to `"before"` or
 place. Use the top→bottom numbering deliberately: a top-of-page box takes an
 EARLY number, and only the page's closing strip sits at the last boundaries.
 
+**SECTIONS ARE ATOMIC — place only at SECTION SEAMS.** A theme section is ONE
+unit: its heading, its content grid, and its trailing controls (a "View all"
+button, pagination, a collection footer) all belong together. A box NEVER
+splits a section's internals — never between a grid and its own "View all",
+never inside the hero banner / a slideshow / the header, never overlapping any
+section's content. Every placement lands in the GAP between one COMPLETE
+section and the next ("right after the hero" means the gap BELOW the hero's
+bottom edge — the `"before"` edge of the section that follows it).
+
 ### Reference-style slot (make the box look native)
 
 The BEST way to make a box native is to CLONE the appearance of one of the

@@ -1,6 +1,6 @@
 - **`Style`** — the layout: `"carousel"` | `"grid"` | `"bundle"` | `"rows"` | `"slider"` (`"bundle"` is the Frequently-Bought-Together bundle layout).
 - **`ItemsPerPage`** — number of cards shown per row / page. MATCH the store's own cards-per-row — count the cards in its product/collection grids in the screenshots.
-- **`ImageMaxHeight`** — px cap on the card image height. Set ≈ the store's own card-image height when this catalog's natural images run taller than the store's cards (keeps our cards from towering over the theme's).
+- **`ImageMaxWidth`** + **`ImageMaxHeight`** — TOGETHER these define the card's UNIFORM image cell (the renderer sizes every image in the strip to the same cell from this pair). ALWAYS set BOTH, ≈ the store's own card image proportions as seen in the screenshots. Catalogs mix wildly different natural shapes (a tall snowboard beside wide goggles) — without the pair, each image renders at its own natural size and the strip's cards misalign.
 - **`ItemsLimit`** — total number of products the box pulls.
 - **`ImageBorderRadius`** — image corner radius in px (0 for square, ~8 for rounded).
 - **`NavigationArrowType`** — the carousel arrow SHAPE: `"chevron"` | `"circleChevron"` | `"circleFull"` | `"circleArrow"` | `"strikingChevron"`. MATCH the store's own slider arrows as SEEN in the screenshots (a chevron inside a circular border = `"circleChevron"`; a bare chevron = `"chevron"`); when the store shows no slider arrows of its own, DEFAULT to `"circleChevron"`.
