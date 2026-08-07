@@ -35,12 +35,13 @@ round-trips. A lookup failure falls back to `document`. This is the price of
 sending images as `image` blocks (Anthropic 400s an image inside a `document`
 block); the typing is not yet cached across calls within a session.
 
-### Live token-savings gate requires manual credentials
+### Optional live token-savings diagnostic requires manual credentials
 
 `scripts/verify-caching.mjs` proves caching engages against the deployed worker,
 but it needs a master `X-Personalizer-Context-ID` and a reachable target. It
-cannot run in plain push-CI (no secrets) — it is a manual pre-release step, or a
-`workflow_dispatch` job guarded on a repo secret. See [TESTING.md](TESTING.md).
+cannot run in plain push-CI (no secrets). Operators may run it manually or via a
+`workflow_dispatch` job guarded on repo secrets. It is not a release gate. See
+[TESTING.md](TESTING.md).
 This is an inherent property of integration-testing a deployed, authenticated
 target, not a gap to close.
 
@@ -48,9 +49,9 @@ target, not a gap to close.
 
 The unit/integration suite mocks `fetch`, so it verifies the worker _attaches_
 `cache_control` breakpoints correctly — it cannot verify Anthropic actually
-_reads_ from cache. Only the live gate catches a real silent invalidator (a
-per-request byte sneaking into a cached prefix). Run the gate before a release
-that touches `prompts/*.md`, the tool definitions, or any cache-control code.
+_reads_ from cache. The optional live diagnostic can expose a real silent
+invalidator (a per-request byte sneaking into a cached prefix) when that behavior
+needs investigation.
 
 ### `FILES_KV` must be bound for dedup to be active
 

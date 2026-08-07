@@ -2,19 +2,19 @@
 
 **Parent:** [../CLAUDE.md](../CLAUDE.md)
 
-The worker has five test layers. Each catches a different class of bug. The
-first four are offline tests in the default `vitest run` set; the fifth is a
-live integration gate run as a pre-release step.
+The worker has four required offline test layers in the default `vitest run`
+set. An optional live integration diagnostic can measure deployed prompt-cache
+behavior when an operator explicitly chooses to run it.
 
 ## Layers
 
-| Layer                  | Files                                                                                                           | Network | Catches                                                                                                                                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                   | `test/token-saving.test.ts` (pure-fn cases)                                                                     | Mocked  | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                                     |
-| Integration (handler)  | `test/chat.test.ts`, `test/proxy.test.ts`, `test/toolsets.test.ts`, `test/platform-toolsets.test.ts`            | Mocked  | Handler wiring: agent loop, SSE protocol, MAX_ITERATIONS, prompt selection, dedup KV, toolset composition/allowlist/credential seam, integration-bridge wire shapes + `X-Ls-Integration-Bridge-Error` discrimination |
-| Contract               | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts` | Mocked  | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                                  |
-| Fitness (architecture) | `test/architecture.test.ts`, `test/config.test.ts`                                                              | Static  | Invariant erosion: an endpoint bypassing its toolset allowlist, credentials reaching logs/model context, a bespoke error envelope, a hardcoded URL or inline config fallback, production `[vars]` drift              |
-| Token-savings gate     | `scripts/verify-caching.mjs`                                                                                    | LIVE    | Prompt caching silently failing to engage against the deployed worker                                                                                                                                                |
+| Layer                    | Files                                                                                                           | Network | Catches                                                                                                                                                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                     | `test/token-saving.test.ts` (pure-fn cases)                                                                     | Mocked  | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                                     |
+| Integration (handler)    | `test/chat.test.ts`, `test/proxy.test.ts`, `test/toolsets.test.ts`, `test/platform-toolsets.test.ts`            | Mocked  | Handler wiring: agent loop, SSE protocol, MAX_ITERATIONS, prompt selection, dedup KV, toolset composition/allowlist/credential seam, integration-bridge wire shapes + `X-Ls-Integration-Bridge-Error` discrimination |
+| Contract                 | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts` | Mocked  | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                                  |
+| Fitness (architecture)   | `test/architecture.test.ts`, `test/config.test.ts`                                                              | Static  | Invariant erosion: an endpoint bypassing its toolset allowlist, credentials reaching logs/model context, a bespoke error envelope, a hardcoded URL or inline config fallback, production `[vars]` drift              |
+| Token-savings diagnostic | `scripts/verify-caching.mjs`                                                                                    | LIVE    | Prompt caching silently failing to engage against the deployed worker                                                                                                                                                |
 
 The unit / integration / contract layers mock `fetch` and `env` — no real
 network, no credentials. They run on every push and PR (`.github/workflows/ci.yml`).
@@ -44,9 +44,9 @@ Pick the lowest layer that captures the bug:
    scans in `test/architecture.test.ts` (or the config/production-value pins in
    `test/config.test.ts`) so the whole CLASS of regression is caught, not the
    one instance.
-5. **Token-savings gate last** — does the bug only manifest against real
-   Anthropic caching behavior (a cached prefix that stops engaging)? That can't
-   be mocked meaningfully — it's the live gate below.
+5. **Optional token-savings diagnostic** — if investigating real Anthropic
+   caching behavior, use the live diagnostic below. This is useful operational
+   evidence, not part of the release gate set.
 
 ## No silent skips
 
@@ -54,9 +54,9 @@ A test never `it.skip()`s because an env var or fixture is missing. If a
 precondition is absent, the test (or the gate) THROWS with an actionable
 message:
 
-- The caching gate throws if no master context-ID is available — naming the env
+- When invoked, the caching diagnostic throws if no master context-ID is available — naming the env
   var to set and the fixture path to provide (see below).
-- The caching gate throws if a deployed-worker call returns a non-2xx or a
+- When invoked, the caching diagnostic throws if a deployed-worker call returns a non-2xx or a
   Brain-shaped error body (`{ Message, ExceptionType, ... }`).
 
 A skipped test is invisible in CI green. A louder red is the trade we make.
@@ -72,7 +72,16 @@ npm run format-check    # Prettier check (whole repo; exclusions + rationale in 
 npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
 ```
 
-## The token-savings gate (pre-release)
+## Local AI dev channel + cred-burn guard
+
+Local dev fulfils Anthropic inference through **Claude Code**, not the paid API, so dev never burns credits (see the root `CLAUDE.md` → "Local AI dev — the free Claude-Code channel"). Two pieces are covered offline in `test/dev-shim.test.ts`:
+
+- **Translation layer** — the pure Anthropic⇄Claude-Code mapping helpers exported by `scripts/dev-claude-shim.mjs` (system/message/file-block translation, token estimate, code-fence strip, multipart parse, usage mapping). These are the risk surface: the shim's HTTP behavior is only correct if these map the wire shapes the worker's `chat.ts` / `messages.ts` parsers expect.
+- **Cred-burn GUARD** (`assertDevAiChannel`) — FAILS a dev/test config that points `ANTHROPIC_API_BASE` at `api.anthropic.com` without an explicit `AI_CHANNEL=prod` opt-in, and asserts `.dev.vars.example` ships the free-shim default (`http://127.0.0.1:8788`). This makes accidental credit-burn impossible: plain `wrangler dev` uses the free shim, and the paid API requires saying so out loud.
+
+Importing the shim for these tests is side-effect free — the HTTP server only binds its port when the file is run directly (`npm run dev:shim`), never on import.
+
+## Optional token-savings diagnostic
 
 `scripts/verify-caching.mjs` (`npm run verify:caching`) proves prompt caching
 engages against a DEPLOYED worker. It is an integration check — it needs the
@@ -135,20 +144,19 @@ APP_AI_CONTEXT_FILE=/tmp/storefront-test/shop-context.lsdev1.myshopify.com.json 
   call 2: input=3 cache_creation=0 cache_read=23217
   ✓ placement file-block prefix: cache engaged (call 2 cache_read=23217 > 0)
 
-GATE PASSED — both cached prefixes engage against the deployed worker.
+CHECK PASSED — both cached prefixes engage against the deployed worker.
 ```
 
-## Why the gate is a manual / dispatch step, not push-CI
+## Why the diagnostic is manual / dispatch-only
 
-The gate needs deployed-worker access, Anthropic billing, and a master
-context-ID. Plain push-CI has no secrets, so the gate cannot run there
-truthfully. Two paths:
+The diagnostic needs deployed-worker access, Anthropic billing, and a master
+context-ID. It is intentionally optional and is not part of push-CI or release
+readiness. Two ways to invoke it when useful:
 
-- **Manual pre-release step** — run `npm run verify:caching` against the deployed
-  worker before cutting a release (this is the required gate).
+- **Manual diagnostic** — run `npm run verify:caching` against the deployed
+  worker when investigating or measuring prompt-cache behavior.
 - **GitHub Actions** (`.github/workflows/verify-caching.yml`) — a
   `workflow_dispatch` job guarded on the `APP_AI_CONTEXT_ID` + `APP_AI_TARGET`
   repo secrets. When either is absent (forks, unconfigured repos) the guard
   step exits the job cleanly so nothing fails; when both are present, it runs
-  the gate. It is never wired into the push/PR `build` job, because that job
-  has no secrets and a faked step would be a lie.
+  the diagnostic. It is never wired into the required push/PR `build` job.

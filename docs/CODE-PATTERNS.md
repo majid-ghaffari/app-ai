@@ -104,7 +104,7 @@ constant, it belongs in configuration (next section). Inline `4`s and
 - No re-exports "for compatibility", no renamed `_vars` to silence linters,
   no `// removed` markers, no keeping code "just in case".
 - A module-internal value is not exported (e.g. the `systemPrompts` table is
-  private to `prompts.ts`; consumers go through `getSystemPrompt`).
+  private to `prompt-registry.ts`; consumers go through `getSystemPrompt`).
 
 ---
 
@@ -124,8 +124,9 @@ CONFIGURATION, not in code:
 
 1. **One typed `Env`.** `src/config.ts` declares the single `Env` interface
    and the accessors (`personalizerApiUrl`, `anthropicApiBase`, `claudeApiKey`,
-   `personalizerIntegrationBridgeToken`, `credentialedOrigins`, `modelDefault`,
-   `modelPlacement`). Nothing else reads `env.X` for a required variable. The Node scripts (`scripts/`)
+   `personalizerIntegrationBridgeToken`, `credentialedOrigins`, and `resolveModel`
+   — which maps a capability tier to its bound `MODEL_FAST` / `MODEL_BALANCED` /
+   `MODEL_FRONTIER`). Nothing else reads `env.X` for a required variable. The Node scripts (`scripts/`)
    follow the same discipline with explicit REQUIRED environment variables
    (`APP_AI_TARGET`, `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`) — no default
    target, no default fixture path.
@@ -163,7 +164,7 @@ Anything sent to or received from Brain (the Personalizer API) mirrors
 Brain's C# definition **exactly**. Brain owns the contract; this worker
 mirrors it.
 
-- **Verify against the sibling `brain` repo (C#)**, never the legacy Angular
+- **Verify against the sibling `brain` repo (C#)**, never the sibling Angular
   `app` TypeScript (it is just another client mirror and can be stale).
 - **Don't invent fields.** If Brain's entity doesn't have it, it doesn't
   exist.
@@ -231,7 +232,7 @@ failed.
 Tests never `skip()` around a missing precondition — a skipped test is a
 green CI that lies. Throw with an actionable error instead:
 
-- The live token-savings gate (`scripts/verify-caching.mjs`) throws loudly
+- The optional live token-savings diagnostic (`scripts/verify-caching.mjs`) throws loudly
   on missing credentials or an unreachable target — it never exits 0
   without measuring.
 - A fixture that can't build its precondition throws with the command that

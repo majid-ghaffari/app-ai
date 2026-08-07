@@ -19,15 +19,15 @@ change), but they still deploy — there is no "safe" branch to stage on.
 
 ```
 docs(app-ai): add standalone-project docs (TESTING / DECISIONS / KNOWN-ISSUES)
-test(app-ai): pre-release token-savings gate (verify:caching)
+test(app-ai): add live token-savings diagnostic (verify:caching)
 fix(app-ai): only send output_config.effort on models that support it
 ```
 
-End every commit message with the trailer:
-
-```
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-```
+Commit messages carry **no AI-attribution or tool-credit trailers** — no
+`Co-Authored-By: Claude …`, no `Claude-Session:`, no "Generated with …", and no
+mention of Claude / Anthropic / any AI assistant as an author or contributor.
+The subject + body describe the change only. (See [CLAUDE.md](CLAUDE.md) → Hard
+rules.)
 
 ## Validate before you push
 
@@ -43,18 +43,17 @@ npx vitest run          # unit + integration + contract + fitness (must be green
 npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
 ```
 
-For any change touching prompt text, the tool definitions, or cache-control
-code, also run the live token-savings gate against the deployed worker — the
-offline suite cannot prove caching actually engages (it mocks `fetch`):
+For changes touching prompt text, tool definitions, or cache-control code, the
+optional deployed-worker diagnostic can provide additional operational evidence;
+the required offline suite mocks `fetch`:
 
 ```bash
-npm run verify:caching  # asserts cache_read > 0 on a repeat call (see docs/TESTING.md)
+npm run verify:caching  # optional; asserts cache_read > 0 on a repeat call
 ```
 
-The gate is a required pre-release step. It needs a master context-ID and a
-reachable target; it throws loudly (never silently skips) if either is missing.
-See [docs/TESTING.md](docs/TESTING.md) for credentials/target resolution and CI
-vs manual rationale.
+This diagnostic is not a release gate. When explicitly invoked, it needs a
+master context-ID and a reachable target and throws loudly if either is missing.
+See [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation rule
 

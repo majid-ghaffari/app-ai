@@ -1,0 +1,152 @@
+# Onboarding Batch ALL (WHOLE-STORE PROPOSE) — Maintenance Doc
+
+The design/maintenance record for the `onboarding-batch-all` prompt — the WHOLE-STORE PROPOSE of onboarding "batch mode", the ONE HOLISTIC propose pass. It is the whole-store twin of [`onboarding-batch`](onboarding-batch.md): where `onboarding-batch` plans ONE page per call, `onboarding-batch-all` plans EVERY page (and the two store-wide off-page natures) in a SINGLE completion. It is a **COMPOSED prompt**: rather than one `prompt.md`, its system text is assembled by `composePrompt(...)` in the prompt's own barrel [`src/prompts/onboarding-batch-all/index.ts`](../../src/prompts/onboarding-batch-all/index.ts) from per-prompt fragment files in [`src/prompts/onboarding-batch-all/`](../../src/prompts/onboarding-batch-all/) (`_intro.md`, `_receive.md`, `_catalog-note.md`, `_pb-detail.md`, `_appearance-keys.md`, `_output-and-rules.md`) plus SHARED blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/) — including the enforced-rule block `_block-fixed-rules.md` (first line = the cross-repo `ONBOARDING_RULESET_VERSION`, see DECISIONS.md #17) shared by all four onboarding prompts, and THREE off-page blocks (`_block-audience-segments.md`, `_block-discount-specs.md`, `_block-store-wide-output.md`) that ONLY this prompt composes. The four onboarding prompts (`onboarding-batch` / `-all`, `onboarding-review` / `-all`) share the common blocks, so **an edit to a shared block updates every prompt that composes it.** The composed text is pinned by [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts) against the committed baseline in `test/__snapshots__/onboarding-batch-all.baseline.md`. The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
+
+## Whole-store batch in one paragraph
+
+`onboarding-batch-all` proposes the WHOLE store in ONE call: given EVERY page at both widths in one completion, it returns `{ pages: { Home: { boxes }, Product: { boxes }, … } }`, so the merchant's "reading → thinking → reveal" show has a SINGLE masked wait rather than one per page. It is also the ONE HOLISTIC propose pass (CONDUCTOR-FRAMEWORK.md → "One holistic propose pass"): the same call ADDITIONALLY returns the two STORE-WIDE OFF-PAGE natures — audience `segments` + `discounts` (bundle/discount campaigns) — as optional top-level keys next to `pages`. This doc covers that whole-store PROPOSE; the QC-side twin is [`onboarding-review-all`](onboarding-review-all.md), the single-page propose is [`onboarding-batch`](onboarding-batch.md).
+
+It is registered like a probe (header-selected on `POST /messages`, JSON-only, no tools, Sonnet) but is NOT a `probe-<id>` name: probes are Website-Analysis capabilities; this is an onboarding step. The lib falls back to looping per-page `onboarding-batch` if `onboarding-batch-all` is unavailable or omits a page.
+
+## `onboarding-batch-all`
+
+- **Purpose:** Given the WHOLE STORE (several pages, each at two widths), return ONE JSON object holding a per-page plan for EACH page — which boxes to place, at which numbered candidate (INSERT or REPLACE, from that page's fixed valid list), and how to style each so it looks native — PLUS the store-wide off-page `segments` + `discounts`.
+- **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle` — Cart FBT is a `carousel`) plus STORE-MATCHED counts under the HARD ceilings (`ItemsPerPage` = the store's own cards-per-row, ≤6/line; grid ≤2 rows; bundle 3; slider 1; rows 2 — lower allowed, never more) and the uniform image cell (`ImageMaxWidth`+`ImageMaxHeight` pair). Bottom closers are Related Items then Recently Viewed (RV always last at the footer boundary); every other box anchors in its own page region (Collection Most Popular topmost; Search Most Popular `after` the anchor labeled "the search field", under the field and above the results; Cart Upsell above the line items). Boxes adopt the store's gutter via `ExtraClasses` (the theme's own wrapper class — commonly `page-width` / `container` / `content-container`), clone the store's button into `Default.QuickActions.AddToCart`, default arrows to `circleChevron` when the store shows none, and share ONE `Default.Title` style store-wide.
+- **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist.
+- **Max tokens:** `8192` (double the per-page `onboarding-batch`'s `4096` — the whole-store plan is a larger completion).
+- **Effort:** `low` — reserves the output budget for the required whole-store JSON instead of letting adaptive thinking consume it.
+- **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
+- **Attachments:** none. The lib uploads every page's screenshots per request.
+- **Box vocabulary + page vocabulary:** from the shared [`_shared-box-vocab.md`](../../src/prompts/onboarding-shared/_shared-box-vocab.md) block and the fragment `_catalog-note.md`'s page-vocabulary section, composed into this and the single-page `onboarding-batch` prompt.
+
+### Composition — which blocks compose this prompt
+
+`composePrompt(...)` in [`src/prompts/onboarding-batch-all/index.ts`](../../src/prompts/onboarding-batch-all/index.ts) assembles the system text from these parts, in this STABLE order (the order is load-bearing for prompt caching — a reorder busts the cached prefix):
+
+1. `onboarding-batch-all/_intro.md` — whole-store framing (plan all pages at once, return one JSON object per page).
+2. `onboarding-shared/_block-fixed-rules.md` (**shared, composed into all four onboarding prompts**) — the enforced-rule block whose FIRST LINE is the cross-repo `ONBOARDING_RULESET_VERSION`, followed by the advisory guidance. The ONE rule the lib enforces deterministically after the proposal is the Cart-page progress bar forced top; the box fallbacks (Upsell → Related Items; FBT → Cross-Sell) are BRAIN SOFT DEFAULTS the prompt frames advisorily, NOT lib-enforced rules. Part of the stable cached prefix — see DECISIONS.md #17.
+3. `onboarding-shared/_shared-mobile-first.md` (shared) — mobile is first-class at both widths.
+4. `onboarding-shared/_shared-json-hardening.md` (shared) — machine-readable JSON only.
+5. `onboarding-shared/_block-box-placement.md` (**shared, composed into BOTH propose prompts**) — the canonical INSERT-vs-REPLACE placement instruction over ONE continuous `1..N` sequence, the reference-style slot, and the per-number `type` / `outerHTML` MANIFEST contract.
+6. `onboarding-batch-all/_receive.md` — what the lib sends (the per-page manifest + the marked screenshots) and what to decide, whole-store.
+7. `onboarding-shared/_shared-guidance.md` (shared) — "guidance, not a script".
+8. `onboarding-shared/_shared-box-vocab.md` (shared) — the ten box names.
+9. `onboarding-batch-all/_catalog-note.md` — box data sources as CONTEXT not a constraint (catalog-backed vs session-shaped boxes; Studio fills every box with sample items so nothing renders blank, and the page stacks are SOFT defaults the model may keep or override — box ORDER is respected, never forced to lead with a particular type), the page vocabulary, and the Cart-only Smart Progress Bar note.
+10. `onboarding-shared/_block-pb-placement.md` (shared) — the progress bar carries NO styling and NO placement (it always renders at the deterministic top of the Cart page); the model decides only WHETHER to include it.
+11. `onboarding-batch-all/_pb-detail.md` — include the bar only when it fits + the best-practice per-page stacks (the LimeSpot playbook: Home = Most Popular after the hero + a mid-page You May Like [lib-audience-gated: hidden for first-time visitors] + Recently Viewed above the footer; Product = an FBT bundle below the product details [Cross-sell fallback] + Related Items + Recently Viewed; Collection = collection-scoped Most Popular on top + Recently Viewed; Cart = the Progress Bar on top + an Upsell slider above the cart contents + FBT below them [Cross-sell fallback] + Related Items after FBT + Recently Viewed; SlidingCart = a 2-product rows-style FBT).
+12. `onboarding-shared/_shared-appearance-header.md` (shared) — `appearancePatch` is `null` or allowed keys only.
+13. `onboarding-batch-all/_appearance-keys.md` — the allowed DESKTOP-and-shared appearance keys.
+14. `onboarding-shared/_shared-mobile-rule.md` (shared) — the `appearancePatchMobile` header.
+15. `onboarding-batch-all/_output-and-rules.md` — the frozen output JSON + the numbered rules.
+16. `onboarding-shared/_block-audience-segments.md` (**shared, off-page — this prompt ONLY**) — propose audience segments.
+17. `onboarding-shared/_block-discount-specs.md` (**shared, off-page — this prompt ONLY**) — propose bundle/discount campaigns.
+18. `onboarding-shared/_block-store-wide-output.md` (**shared, off-page — this prompt ONLY**) — the `segments` / `discounts` top-level output keys next to `pages`.
+19. `onboarding-shared/_shared-json-tail.md` (shared) — the closing JSON-only hardening line.
+
+The three OFF-PAGE blocks (16–18) are the INTENDED divergence from `onboarding-batch`: they are appended AFTER the on-page output+rules, so the box/PB portion stays byte-identical to the per-page twin and only the store-wide segments/discounts output is added. The per-page `onboarding-batch` does NOT carry them (segments + discounts are store-wide, not a single-page decision). **Editing any shared block (`_shared-*` / `_block-*`) updates every prompt that composes it** — e.g. editing `_block-box-placement.md` changes BOTH propose prompts at once; editing an off-page block changes only this one.
+
+### Input (what the lib provides)
+
+For the WHOLE STORE in one call — **no full HTML, no per-marker text descriptors for INSERT anchors** (a deliberate token + reliability choice; the model reads each store page from pixels and places by number). Placement has TWO modes within the on-page nature — INSERT a new box at a boundary OR REPLACE an existing static grid — via ONE continuous number sequence PER PAGE (the shared `_block-box-placement.md` capability block, composed into this prompt AND `onboarding-batch`):
+
+- **the pages** — several pages, each named from the page vocabulary: `Home`, `Product`, `Collection`, `Cart`, `SlidingCart`, `Search`, `Blog`. Plan ONLY the pages present in the manifest.
+- **TWO screenshots per page at two widths** (each an image, uploaded via `/files`) — a **desktop** and a **mobile** (phone-width) full-page screenshot of each page, each with numbered `+1 +2 +3 … +N` markers painted as a TRANSLUCENT overlay (~50% opacity), **ONE number per CANDIDATE** — each number labels a placement candidate (a **violet INSERT anchor** = an existing section boundary the box sits before/after, OR a **green REPLACE candidate** = an existing static product grid/carousel the box can swap IN for). Dual purpose per image: the store's real design shows THROUGH the markers, so the model reads the aesthetic (card style, palette, spacing, arrows-or-not) from the page underneath AND the candidate numbers from the overlay. Mobile is FIRST-CLASS (the majority of shoppers) — the model decides boxes + styling considering BOTH widths.
+- **the per-page MANIFEST** (a single text block covering ALL pages) — for EACH page: the page name, which uploaded images are that page's DESKTOP tiles and which are its MOBILE tiles (by their 1-based position in the image list), that page's candidate range (`1..N`, where `N` differs per page), and — per number — its `type` (`"insert"` | `"replace"`), with a `replace` candidate additionally naming its **`outerHTML`** (the block's structure + product-card markup) + a reference **`selector`**. Example lines: `PAGE Home: DESKTOP TILES images 1-2, MOBILE TILES images 3-3, CANDIDATE ANCHORS 1..6`. INSERT anchors carry no extra data; the `outerHTML` grounds both the replace decision and the style clone.
+- **numbering is PER-PAGE and shared across both widths.** On a given page, marker `+3` is the SAME logical candidate on that page's desktop and mobile image (it may reflow, or exist on only one width). Home's `+3` and Product's `+3` are UNRELATED — numbering is scoped to each page. A box is placed RELATIVE to a numbered candidate ON ITS PAGE: the model emits `anchorNumber` (which candidate) + `position` (`"before"` | `"after"` an insert anchor, or `"replace"` a replace candidate — matching that candidate's `type`). That pair is ONE responsive placement for both widths of that page, not one per width. The `number → real element sibling selector` mapping is conductor-internal (the lib keeps it; the model never emits a selector). Every `anchorNumber` must be an integer in that page's `1..N` it actually SEES painted, whose `type` matches its `position`.
+- **This manifest is the INPUT contract lib #99 builds and sends in the DATA block** (per-number `type`; a replace candidate's `outerHTML` + `selector`) — it rides AFTER the cache breakpoint (per-shop VARIABLE data), never in the cached system prefix.
+
+### Frozen output contract
+
+The assistant text is a single JSON object with a top-level `pages` map keyed by page name, and OPTIONAL store-wide `segments` / `discounts` keys next to it:
+
+```json
+{
+  "pages": {
+    "Home": {
+      "boxes": [
+        {
+          "boxType": "FeaturedCollection",
+          "position": "after",
+          "anchorNumber": 1,
+          "styleReferenceSelector": ".product-grid",
+          "appearancePatch": null,
+          "appearancePatchMobile": { "ImageHeightMobile": 160, "MarginRightMobile": 8 },
+          "reasoning": "short why — one sentence"
+        }
+      ]
+    },
+    "Product": {
+      "boxes": [
+        {
+          "boxType": "RelatedItems",
+          "position": "replace",
+          "anchorNumber": 3,
+          "styleReferenceSelector": ".product-recommendations .grid",
+          "appearancePatch": null,
+          "appearancePatchMobile": null,
+          "reasoning": "candidate 3 is a green REPLACE candidate — swap in a personalized Related Items box"
+        }
+      ]
+    },
+    "Cart": {
+      "boxes": [
+        /* … */
+      ],
+      "progressBar": {
+        "reasoning": "free-shipping bar at the top of the cart"
+      }
+    }
+  },
+  "segments": [{ "title": "First-Time Visitors", "rationale": "the journey-stage starter set" }],
+  "discounts": [
+    {
+      "title": "Frequently Bought Together",
+      "audience": "Returning Buyers",
+      "discountRate": 10,
+      "rationale": "a 10% bundle nudge to lift first-order value"
+    }
+  ]
+}
+```
+
+**`pages`** — an object keyed by page name; include an entry for EVERY page in the manifest (a page that warrants no boxes gets `{ "boxes": [] }`). Each page's plan is `{ boxes: [...] }`, PLUS the OPTIONAL `progressBar` on the Cart page. Each box carries the SAME per-page shape as `onboarding-batch`:
+
+- `boxType` — from the box vocabulary (`MostPopular`, `Trending`, `NewArrivals`, `YouMayLike`, `RecentViews`, `BoughtTogether`, `CrossSell`, `Upsell`, `RelatedItems`, `FeaturedCollection`). Never invent a name. Box ORDER is the model's to choose and is respected as-is — there is no forced catalog-backed-primary rule (Studio fills every box with sample items while designing, so no box renders blank in the preview).
+- `position` — exactly `"before"`, `"after"`, or `"replace"`: `before`/`after` a violet INSERT anchor, or `replace` a green REPLACE candidate. `position` MUST match the candidate's manifest `type`. Matches the lib's `PlacementMethod` union (`brain/batch-output.ts`).
+- `anchorNumber` — an INTEGER in that PAGE's `1..N` (per-page, one continuous sequence across both modes), equal to a candidate painted on that page whose `type` matches `position`. With `position`, ONE responsive placement for both widths. Never invented / never out of range / never a `replace` on a non-replace number. The lib maps the number back to the element's sibling selector internally.
+- `styleReferenceSelector` — OPTIONAL, PREFERRED: a CSS selector for the store's own most-representative product grid/carousel on that page, to CLONE the box's appearance from. On a `replace` box, point it at the replaced candidate's own reference `selector` from the manifest (its `outerHTML` grounds the clone). Mirrors `PlacedBoxProposal.styleReferenceSelector` (`brain/batch-output.ts`).
+- `appearancePatch` — `null`, OR an object using ONLY: `Style` (`"carousel"`|`"grid"`|`"rows"`|`"slider"`|`"bundle"`), `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`. The FALLBACK when no `styleReferenceSelector` exists. Chosen to read well at BOTH widths.
+- `appearancePatchMobile` — `null` (the common case), OR an object of MOBILE-ONLY overrides using ONLY `ImageHeightMobile` (px, default 200) + `MarginRightMobile` (px, default 10). No desktop keys; NO mobile items-per-row (the phone row is width-driven, floored at 2 products/row). Mirrors the lib's `AppearancePatchMobile` type.
+- `reasoning` — one short sentence.
+
+**`progressBar`** — the Smart Progress Bar, a Cart-page-ONLY optional key. Present only on the `Cart` page when a threshold / free-shipping nudge fits; OMITTED (or `null`) on every non-Cart page and on Cart when no bar is warranted. Shape `{ reasoning }` — a single one-sentence `reasoning` and NOTHING else: the model decides only WHETHER to include the bar. There is deliberately **NO `position` / `anchorNumber`** (D1 ratified deterministic top-of-Cart — the lib always renders the bar at the top of the Cart page, so the model can't affect its placement) and **NO appearance keys** (its look comes from its campaign template — Shopify Free Shipping, etc.; NO `appearancePatch` / `appearancePatchMobile` / `styleReferenceSelector`). The lib reads the include/omit decision + `reasoning` and places the bar deterministically.
+
+**`segments`** — OPTIONAL store-wide, sitting NEXT TO `pages` (never nested in a page). An array of `{ title, rationale }`: `title` from the segment vocabulary the grounding catalog / existing-config input provides (the lib resolves it to a real built-in segment template — never a free-invented name), `rationale` one short sentence. Off-page (no placement, no appearance, no screenshot). Omit the key or return `[]` when the store warrants none.
+
+**`discounts`** — OPTIONAL store-wide, next to `pages`. An array of `{ title, audience, discountRate, rationale }`: `title` from the campaign/template vocabulary the grounding input provides (never invented), `audience` naming one of the `segments` titles you proposed (or an already-active audience — the lib eligibility-gates a campaign to its audience), `discountRate` a number (percentage, e.g. `15`) or `null` for the template default, `rationale` one short sentence. Omit the key or return `[]` when the store warrants none.
+
+Both off-page keys are OPTIONAL and FOCUSED — a small high-value set, never every template. Off-page items get a SEPARATE non-visual review later (a separate lib task) — this prompt only PROPOSES them. No extra keys, no missing keys. A page's `boxes` may be empty when the page warrants no boxes.
+
+### Request/response contract (frozen)
+
+- `POST {base}/messages`, header `X-Personalizer-System-Prompt: onboarding-batch-all`.
+- Body: a standard Anthropic messages payload. User content = the image blocks for EVERY page (each page's desktop + mobile marked screenshots, uploaded via `POST /files`) plus a text block carrying the whole-store manifest (per-page names, image-tile ranges, `1..N` marker ranges, per-number `type`, and a replace candidate's `outerHTML` + `selector`). Body omits `model` so the registry (the `balanced` tier = `claude-sonnet-5`) is authoritative.
+- Response: the Anthropic messages envelope; the assistant text block is the JSON above.
+- **JSON reliability:** the prompt ends with an explicit "respond with ONLY the JSON object, no prose, no markdown code fences" hardening line (`_shared-json-tail.md`) and keeps a small flat schema + one inline example. The lib parses tolerantly (its `structured-output.ts` extractor: direct / fenced / embedded) and applies a bounded repair-retry (feed the model its own invalid output + the parse error, 1–2×) — the same tolerant-parse baseline `visual-verify` uses in production on this stack. (Forced schema-constrained tool-use via `tool_choice` is available on the prod worker but NOT the dev Claude-Code shim.)
+- **Cost:** dev/test route through the FREE Claude-Code channel (the shim); prod through app-ai; never the paid API except a prod smoke.
+
+### Caching notes
+
+The composed system text is the STABLE, shop-independent prefix (`cache_control` 1h breakpoint in [`handlers/messages.ts`](../../src/handlers/messages.ts)), and the per-shop screenshots + whole-store manifest ride AFTER it in the first user message, so repeated per-shop calls HIT the cached prefix. `composePrompt(a, b, c)` === `[a,b,c].map(trim).join('\n\n')`, so the STABLE part order (above) yields a byte-stable prefix — a reordered block busts the cache. NEVER put per-shop VARIABLE data (screenshots, the per-page manifest, a candidate's `outerHTML`, file ids) in any block; that is the "variable data last" expectation (see CACHING in `messages.ts` / `lib/cache-control.ts`). The off-page blocks are equally stable — no per-shop data in segments/discounts either.
+
+### Pinning test
+
+[`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts) is the byte-equivalence gate. Because `onboarding-batch-all` is the ONE intended divergence (the holistic off-page additions), it is NOT asserted byte-identical to its baseline as a whole. Instead the suite pins it in parts:
+
+- **The box+PB portion is byte-identical as a PREFIX** — the baseline body (everything before the closing JSON-only tail) must survive verbatim as the composed prompt's prefix; the holistic build only APPENDS off-page content, never edits the box/PB portion.
+- **The JSON-only tail still CLOSES the prompt** — the off-page blocks sit BEFORE it.
+- **The three off-page blocks are all present AND new** — `_block-audience-segments`, `_block-discount-specs`, `_block-store-wide-output` each compose in verbatim, are genuinely NEW vs the baseline body, and the output names the two store-wide keys (`` `segments` ``, `` `discounts` ``) the lib parser consumes.
+- **The off-page blocks compose into `onboarding-batch-all` ONLY** — a separate suite asserts their markers do NOT leak into `onboarding-batch`, `onboarding-review`, or `onboarding-review-all`.
+- **No per-shop VARIABLE data** leaks into any composed onboarding prompt (no `file_id` / screenshot marker / `fileIds`), keeping the cache prefix stable.
+
+When you change the box/PB portion ON PURPOSE, regenerate the shared `onboarding-batch-all.baseline.md` (and note the box-placement change also flows to `onboarding-batch`). When you change an off-page block on purpose, the "present AND new" and marker assertions guard it; update the block and re-run the gate.

@@ -30,18 +30,20 @@ Hardcoded Config Values").
 
 ### 3. Start Development Server
 
-Local development fulfills Anthropic inference through **Claude Code** without
-Anthropic API credits. `.dev.vars.example` points the Worker at the local
-Anthropic-compatible shim, so run both processes:
+Local dev fulfils Anthropic inference through **Claude Code** (free — no Anthropic
+credits), via a local Anthropic-compatible shim. `.dev.vars.example` already
+defaults `ANTHROPIC_API_BASE` to the shim, so the standard flow is two processes:
 
 ```bash
-npm run dev:shim   # Claude-Code channel on :8788
-npm run dev        # wrangler dev on :8787
+npm run dev:shim   # free Claude-Code channel on :8788 (uses your Claude Code auth)
+npm run dev        # wrangler dev on :8787 → routes Anthropic traffic to the shim
 ```
 
-The Worker runs at `http://localhost:8787`. Using the paid API locally requires
-both `ANTHROPIC_API_BASE=https://api.anthropic.com` and `AI_CHANNEL=prod`; the
-development guard rejects an accidental one-setting switch.
+Server runs at `http://localhost:8787`. See [CLAUDE.md](CLAUDE.md) →
+"Local AI dev — the free Claude-Code channel" for how it works, the tool bridge
+(`LS_DEV_CONTEXT_ID`), and the cred-burn guard. Using the real, paid API from
+local requires `ANTHROPIC_API_BASE=https://api.anthropic.com` **and**
+`AI_CHANNEL=prod` (the guard blocks it otherwise) — prod-only by policy.
 
 ### 4. Test
 
@@ -119,7 +121,7 @@ The frozen cross-repo contract is in the lib repo at
 §8 referencing). Source: `src/handlers/chat.ts` (agent loop + SSE),
 `src/toolsets/` (toolset registry + the personalizer toolset's tool defs,
 Personalizer dispatch, and entity-context normalizer), `src/lib/references.ts` (refs
-intake + Referenced-Entities block), `src/prompts.ts` (system prompts).
+intake + Referenced-Entities block), `src/prompt-registry.ts` (system prompts).
 Tests: `test/chat.test.ts`, `test/toolsets.test.ts`,
 `test/platform-toolsets.test.ts`, `test/references.test.ts` (`npm test`).
 
@@ -190,7 +192,7 @@ app-ai/
 │   │   ├── bigcommerce/      # bigcommerce_rest_request (version-prefixed paths)
 │   │   ├── klaviyo/          # klaviyo_rest_request (api/… paths, JSON:API paging)
 │   │   └── google-ads/       # google_ads_gaql_query (GAQL SELECT — read-only)
-│   ├── prompts.ts            # System-prompt registry (name → text + metadata)
+│   ├── prompt-registry.ts            # System-prompt registry (name → text + metadata)
 │   ├── prompts/*.md          # Simple prompt text (one .md per prompt, bundled at build time)
 │   └── prompts/<name>/       # Multi-file prompt: prompt.md + sample.md (attachment); maintenance doc in docs/prompts/<name>.md
 ├── test/
@@ -205,7 +207,7 @@ app-ai/
 │   ├── architecture.test.ts  # fitness scans (allowlists, credentials, error shape, config rule)
 │   └── helpers.ts            # shared typed fixtures (Env, fetch mock, SSE parser, KV mock)
 ├── scripts/
-│   └── verify-caching.mjs    # live token-savings GATE (npm run verify:caching) — see docs/TESTING.md
+│   └── verify-caching.mjs    # optional live token-savings diagnostic — see docs/TESTING.md
 ├── docs/                     # Standalone-project docs (CODE-PATTERNS / TESTING / TOOLSETS / DECISIONS / KNOWN-ISSUES / PROMPT-AUTHORING / prompts/<name>.md)
 ├── CONTRIBUTING.md           # Commit convention + push-to-main deploy rule + validate loop
 ├── wrangler.toml             # Configuration ([vars] + KV binding) + the `[[rules]] type = "Text"` prompt-bundling rule
@@ -233,8 +235,8 @@ variable, no fallback defaults.
 **Production:**
 
 - Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
-  `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
-  `MODEL_PLACEMENT` (values pinned by `test/config.test.ts`)
+  `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, and the tier→model bindings
+  `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
@@ -243,51 +245,50 @@ variable, no fallback defaults.
 
 ### Updating System Prompts
 
-Each system prompt is a **registry entry** in [src/prompts.ts](src/prompts.ts) whose
+Each system prompt is a **registry entry** in [src/prompt-registry.ts](src/prompt-registry.ts) whose
 TEXT lives under [src/prompts/](src/prompts/) — the ONE and only prompt location. The registry
-maps `name → { prompt, model, maxTokens, usesTools, description, attachments, effort? }` and is
-the single source of truth for each prompt's model / token / tool choices (consumed by both
+maps `name → { prompt, tier, maxTokens, usesTools, clientTools?, description, attachments, effort? }` and is
+the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-The six registered prompts:
+The registry holds 19 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
+onboarding-chat, placement, proposals, analytics-insights) and `/messages` one-shot JSON prompts
+(image-selection, visual-verify, the four Website-Analysis probes, and the onboarding /
+cart-drawer / optimize propose + review passes). The authoritative inventory — every prompt with
+its shape, endpoint, tools, and role — is [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), which
+also owns the per-prompt doc-sync rule.
 
-| Name                 | Endpoint    | Tools | Purpose                                                                       |
-| -------------------- | ----------- | ----- | ----------------------------------------------------------------------------- |
-| `image-selection`    | `/messages` | No    | HTML + screenshot → CSS selectors (JSON-only). LIVE smart-image.              |
-| `chat`               | `/chat`     | Yes   | General conversational Studio assistant (agent loop).                         |
-| `onboarding`         | `/chat`     | Yes   | New-merchant onboarding assistant (agent loop, best-practice defaults).       |
-| `placement`          | `/chat`     | No    | Structured placement proposer; one-shot JSON, faster model.                   |
-| `proposals`          | `/chat`     | Yes   | Per-store onboarding setup proposer; grounds in real store data (agent loop). |
-| `analytics-insights` | `/chat`     | No    | One-shot analytics insights JSON over the tab's real data (grounding).        |
+**Prompt-text shapes** — a prompt is one of three shapes, all resolving to the same registry
+entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md)):
 
-**Single vs. multi-file convention** — a prompt is one of two shapes, both resolving to the
-same registry entry:
+- **Simple** → one file `src/prompts/<name>.md` (e.g. `chat.md`).
+- **Multi-file** → a folder `src/prompts/<name>/` with a `prompt.md` system prompt + a
+  `sample.md`-style file wired as an `attachments` entry (uploaded and prepended to the first
+  message). `image-selection/` is the one attachment-carrying prompt; the four `probe-<id>/`
+  folders hold just a `prompt.md`.
+- **Composed** → a folder of `_`-prefixed BLOCK files assembled by `composePrompt(...)` in the
+  folder's own `index.ts`, mixing that prompt's fragments with SHARED blocks from
+  `src/prompts/onboarding-shared/` (the onboarding / cart-drawer / optimize propose + review
+  prompts). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
+  text; elsewhere a `_*.md` is the co-located exclusion convention (never imported).
 
-- **Simple** → one file `src/prompts/<name>.md` (e.g. `chat.md`). Import and use as `prompt`.
-- **Multi-file** → a folder `src/prompts/<name>/` (e.g. `image-selection/`): a required
-  `prompt.md` (main system prompt) + optional non-underscore context part(s) composed in via
-  the `composePrompt(...)` helper + a `sample.md`-style file wired as an `attachments` entry
-  (uploaded and prepended to the first message; image-selection only). Underscore-prefixed
-  files (`_*.md`) in a prompt folder remain a supported exclusion convention — never imported,
-  never bundled, never sent to the API. Per-prompt design/maintenance docs live at
-  [docs/prompts/<name>.md](docs/prompts/) (workflow: [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md)).
-
-`image-selection` is the one multi-file prompt today: `prompt.md` is its system text, `sample.md`
-its training-examples attachment, [docs/prompts/image-selection.md](docs/prompts/image-selection.md)
-its design/maintenance doc.
+The barrel `src/prompts/index.ts` re-exports every prompt's final text; `src/prompt-registry.ts`
+imports it as `prompts` and pairs each with its metadata. Per-prompt design docs live at
+[docs/prompts/<name>.md](docs/prompts/) (workflow: [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md)).
 
 To change a prompt's wording: edit its `.md` file(s) under `src/prompts/` — pure text.
-To add a prompt: create `src/prompts/<name>.md` (simple) or a `src/prompts/<name>/` folder
-(multi-file) and add a registry entry that imports it.
+To add a prompt: create `src/prompts/<name>.md` (simple), or a `src/prompts/<name>/` folder
+(multi-file, or composed from `_`-block files with its own `index.ts`), re-export its text from
+the `src/prompts/index.ts` barrel, and add a registry entry in `src/prompt-registry.ts`.
 To change a prompt's model / token budget / whether it uses tools: edit the metadata in
-`src/prompts.ts`.
+`src/prompt-registry.ts`.
 
 The `.md` files are bundled at **build time** (Workers have no runtime filesystem) — the
 `[[rules]] type = "Text"` rule in `wrangler.toml` (glob `**/*.md`, so nested multi-file
 prompts bundle too) makes `import x from './prompts/x.md'` resolve to the file's string
 contents; `vitest.config.ts` mirrors this for tests with the same import specifier.
 
-1. Edit the `.md` text and/or the `src/prompts.ts` metadata
+1. Edit the `.md` text and/or the `src/prompt-registry.ts` metadata
 2. `npx vitest run` and `npx wrangler deploy --dry-run` to verify
 3. Commit and push to GitHub (auto-deploys to production)
 
@@ -295,7 +296,7 @@ contents; `vitest.config.ts` mirrors this for tests with the same import specifi
 
 Cost-reduction is additive and never changes external request/response shapes.
 
-**What caches, live-measured against the deployed worker** (proven by `npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)):
+**What caches, live-measured against the deployed worker** (the optional `npm run verify:caching` diagnostic can remeasure this — see [docs/TESTING.md](docs/TESTING.md)):
 
 - **chat + onboarding (Opus 4.8):** the `tools` (TOOL_DEFINITIONS, ~6.4KB JSON)
   - `buildSystem` base block cache at **~1351 input tokens**; a repeat call reads
@@ -336,8 +337,8 @@ Cost-reduction is additive and never changes external request/response shapes.
 
 `FILES_KV` is bound in `wrangler.toml` (`[[kv_namespaces]]`), so dedup is active in
 production; the code no-ops gracefully to a plain upload if the binding is ever absent.
-The 1h cache and the placement file-block prefix are live-verified by the token-savings
-gate (`npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)).
+The 1h cache and placement file-block prefix can be live-measured by the optional
+token-savings diagnostic (`npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)).
 
 ### CORS Configuration
 
@@ -401,9 +402,9 @@ All configured in [wrangler.toml](wrangler.toml):
   - Auto-deploys from `main` branch
 
 Every environment provides the full variable set — `ENVIRONMENT`,
-`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`,
-`MODEL_PLACEMENT`, and the `CLAUDE_API_KEY` + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets.
-`src/config.ts` throws on any missing one.
+`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model
+bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, and the `CLAUDE_API_KEY` +
+`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets. `src/config.ts` throws on any missing one.
 
 ### View Live Logs
 
@@ -562,8 +563,8 @@ wrangler whoami          # Check authentication
   deploy rule, the validate-before-push loop
 - [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md) — coding standards (strict
   TypeScript, clean code, error handling, No Hardcoded Config Values)
-- [docs/TESTING.md](docs/TESTING.md) — the five test layers, the gate set, and
-  the live token-savings gate
+- [docs/TESTING.md](docs/TESTING.md) — the required offline gate set and the
+  optional live token-savings diagnostic
 - [docs/DECISIONS.md](docs/DECISIONS.md) — numbered decision log
 - [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — current limitations
 - [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) — prompt

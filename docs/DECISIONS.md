@@ -5,7 +5,9 @@
 Architectural decisions for the worker, with rationale. Present-tense — each
 entry describes the choice that stands and why, not a change history.
 
-### 1. Superseded by #11 (strict TypeScript).
+### 1. Strict TypeScript — see #11.
+
+The strict-TypeScript decision is recorded at [#11](#11-strict-typescript-no-build-step-supersedes-1).
 
 ### 2. GA 1-hour prompt cache on stable prefixes
 
@@ -32,7 +34,9 @@ it would be dead config.
 ### 4. No-filesystem `.md` text bundling
 
 Prompt text lives in one `.md` file per prompt under `src/prompts/`; the
-registry (`prompts.ts`) imports each as a string. Workers have no runtime
+barrel (`src/prompts/index.ts`) imports each as a string (composing the
+multi-block prompts) and the registry (`prompt-registry.ts`) reads its text
+through that barrel. Workers have no runtime
 filesystem, so the text is bundled at BUILD time, identically in both targets
 with the same import specifier (no `?raw` suffix):
 
@@ -144,7 +148,8 @@ as `fileIds` in `/chat`. Two cooperating mechanisms keep the cost down:
   exactly the placement screenshot. A metadata-lookup failure falls back to
   `document`.
 
-This is verified live by the token-savings gate (see [TESTING.md](TESTING.md)).
+This can be measured live with the optional token-savings diagnostic (see
+[TESTING.md](TESTING.md)).
 
 ### 10. AI tools live in named toolsets behind a registry
 
@@ -187,10 +192,10 @@ bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 
 Every URL and deploy-time tunable lives in configuration behind the single
 typed `Env` in `src/config.ts`: `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`,
-`CREDENTIALED_ORIGINS`, `MODEL_DEFAULT`, `MODEL_PLACEMENT` in wrangler.toml
-`[vars]` (production) / `.dev.vars` (local; documented in the committed
-`.dev.vars.example`), and the `CLAUDE_API_KEY` secret in Cloudflare encrypted
-secrets / `.dev.vars`. **A missing variable throws, naming the variable and
+`CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
+`MODEL_BALANCED` / `MODEL_FRONTIER` in wrangler.toml `[vars]` (production) /
+`.dev.vars` (local; documented in the committed `.dev.vars.example`), and the
+`CLAUDE_API_KEY` secret in Cloudflare encrypted secrets / `.dev.vars`. **A missing variable throws, naming the variable and
 its channel — there are no fallback defaults**, because a fallback silently
 turns a deployment mistake into wrong routing (a worker quietly talking to the
 wrong Personalizer is worse than a loud 500). The classification line: frozen
@@ -255,9 +260,9 @@ the wire form is the enum NAME, never its guid). Each descriptor declares an
 array is empty (always-active, e.g. personalizer) OR intersects the
 subscriber's available parties — no mapping, no switch, no static endpoint
 allowlist (supersedes the allowlist half of #10). The available-party set rides
-the router's existing per-request `validate-context-id` call, which now returns
+the router's per-request `validate-context-id` call, which returns
 `AvailableIntegrationParties: string[]` (liveness-filtered by Personalizer); the
-router stops discarding that result and threads it into `handleChat`
+router threads that result into `handleChat`
 (`availableParties`). No new call, no new cache — the parties are exactly as
 fresh as the auth gate the router already makes (a mid-session-enabled
 integration appears on the very next chat request, modulo Personalizer's own
@@ -277,3 +282,117 @@ The `google-ads` GAQL tool also gained an optional `pageToken` input, threaded
 to the wire body as `PageToken` (`{ Query, PageSize?, PageToken? }`); the
 response `NextPageToken` surfaces verbatim in the platform body, so the model
 pages by echoing it back. Additive and backward-compatible.
+
+### 15. `/messages` sets `max_tokens` from the registry EXACTLY (D6)
+
+`POST /messages` sets `max_tokens` to the resolved system-prompt entry's value
+EXACTLY, mirroring how it derives `model` (#11 / the registry as source of truth).
+`applyRegistryMaxTokens` runs between `applyRegistryModel` and
+`manageCacheControl`: `max_tokens = entry.maxTokens`, UNCONDITIONALLY. There is no
+floor, no cap, and no client-`max_tokens` read — a client-sent budget is
+OVERRIDDEN, so changing a registry `maxTokens` literal changes the outgoing
+Anthropic request one-for-one (proven per route by `test/max-tokens-exact.test.ts`
+
+- the EXACT block in `test/proxy.test.ts`). The `/chat` path is exact too
+  (`entry.maxTokens`, `chat.ts`) — a registered prompt owns its budget. An omitted
+  budget is otherwise an Anthropic 400 (the field is required), so this also makes
+  the registry-governed one-shot transport (a lib client that sends only the prompt
+  NAME + ephemeral data, no token budget) legal. A request with no system prompt, or
+  an unknown prompt name, is untouched — the caller owns its own budget, as it does
+  its own model. The registry is fully authoritative: there is no client
+  override or `max(client, entry)` floor.
+
+**Cross-repo deploy ordering (HARD): this app-ai change must deploy BEFORE the
+lib stops sending `max_tokens`.** Once the lib omits the field, an app-ai
+deployment WITHOUT `applyRegistryMaxTokens` would forward a body with no
+`max_tokens` and Anthropic would 400. Land + deploy this first, then the paired
+lib change.
+
+### 16. Brain defaults are FETCHED + projected + injected by app-ai (never serialized by the lib)
+
+The PROPOSE prompts (onboarding / cart-drawer / optimize — the entries flagged
+`injectsBrainDefaults`) benefit from knowing the store's DEFAULT box settings
+(per-box fallback method, style, image dimensions, image right-margin,
+add-to-cart title, items limit). Rather than have Studio serialize those into a
+transport field, app-ai FETCHES them server-side: `lib/brain-defaults.ts` calls
+the same authenticated Brain endpoint the toolsets use
+(`GET ${PERSONALIZER_API_URL}/v1/personalizerConfig?defaultRecommendationsSettings=true`,
+forwarding the `X-Personalizer-Context-ID`), behind a config seam
+(`recommendationsDefaultsUrl`) so it can later point at the platform's CDN-hosted
+object without touching the orchestration. It then DETERMINISTICALLY PROJECTS only
+the AI-relevant per-box fields, preserving the PAGE -> BOX hierarchy and computing
+the SAME effective appearance inheritance Studio does — the global
+`BoxOptions.AppearanceOptions` (desktop) + `AppearanceOptionsMobile` UNDER each
+per-page/per-box `AppearanceOptions` (per-box wins) — into a COMPACT, byte-STABLE
+canonical JSON (`{ pages: { <Page>: { <BoxType>: { … } } } }`, sorted page + box
+keys, fixed field order, absent fields omitted). Scoping per page means a
+same-typed box on two pages keeps its own settings (Product FBT = bundle, Cart
+FBT = carousel — no cross-leak), and identical global defaults produce identical
+bytes for every store so Anthropic's prompt cache HITS cross-tenant. The block is
+INJECTED as a SECOND cacheable system block (its own `cache_control` breakpoint)
+AFTER the stable system prompt and BEFORE the per-store screenshots (which stay in
+the user message, after the breakpoint). `manageCacheControl` counts the actual
+cached system blocks (2) so the ≤4 budget stays correct.
+
+**Caching.** One in-isolate promise/result caches the GLOBAL projected block for
+all tenants and coalesces concurrent cold requests. A successful value remains the
+isolate's last-known-good block; a cold fetch failure or non-ok status produces NO
+injection and stays retryable, so the propose request NEVER fails on defaults. No
+ETag, conditional request, content hash, defaults-version prompt binding, or
+response-header handshake exists. On the propose path (`/messages`, no grounding
+field) the defaults reach the model purely through this server-side fetch+inject —
+there is NO new lib transport field. The cache stores only global projected data
+(never tenant data); the context-ID authenticates the Brain fetch and is never
+logged or stored.
+
+### 17. Onboarding ruleset-version handshake (app-ai validates, lib sends)
+
+The onboarding PLAYBOOK is split across two repos: app-ai encodes the advisory
+framing in the prompts, the lib enforces the one deterministic mechanic. Today
+the ONLY enforced-deterministically-after-proposal rule is the Cart-page progress
+bar forced to the top (the lib's `rules.json` ships that ONE signed invariant).
+The box fallbacks (Upsell → Related Items; FBT → Cross-Sell) are NO LONGER
+lib-enforced rules — they are BRAIN SOFT DEFAULTS (seeded from the tenant's Brain
+default box settings and overridable by a valid AI value); the prompts frame them
+as advisory guidance only. If the two repos drift (a lib built against an older
+playbook talks to a newer app-ai, or vice versa) the QC review tolerances no
+longer match what the lib actually renders.
+
+A single version string, `ONBOARDING_RULESET_VERSION = 'limespot-onboarding-playbook-v2'`,
+is the seam. It is embedded VERBATIM as the FIRST LINE of
+`onboarding-shared/_block-fixed-rules.md` (composed into the four onboarding
+prompts' STABLE cached prefix — no new cache breakpoint; per-shop evidence still
+rides AFTER the breakpoint in the first user message) AND set on those four
+entries' `rulesetVersion`. A unit test pins the registry constant equal to the
+block's first line. The lib holds the equal string and sends it as the
+`X-Personalizer-Ruleset-Version` header on onboarding `/messages` calls;
+`validateRulesetVersion` compares and, on mismatch, throws a 409
+`RulesetVersionMismatchException` (Brain envelope naming BOTH versions) before
+inference. Bump the string whenever the enforced-rule set changes.
+
+The handshake also covers the THREE sibling playbook conductors that reuse the
+same shared onboarding blocks (box-placement / guidance / box-vocab /
+correction-verbs): `cartdrawer-batch-all`, `cartdrawer-review-all`, and
+`optimize-demand` each carry `rulesetVersion` too. They do NOT compose
+`_block-fixed-rules.md` (so the string is not embedded in their prompt text) —
+for them the version is a pure playbook-contract identifier: a lib built against
+a stale cart-drawer / optimize playbook is rejected the same way. Only the four
+onboarding prompts have the block-first-line pin.
+
+**Rollout — fail-OPEN interim default (Risk R1):** an ABSENT header SKIPS the
+check, so this deploys before every lib caller sends the header. Once the lib
+ships the header everywhere it can tighten to fail-closed (reject a missing
+header). Prompts without a `rulesetVersion` (probes / chat / image-selection)
+never participate.
+
+### 18. Onboarding propose/review JSON uses low effort
+
+The four `onboarding-batch{,-all}` and `onboarding-review{,-all}` routes run on
+Sonnet 5 and explicitly set `effort: 'low'`. A production replay
+of the 21-image whole-store request showed Sonnet 5's default adaptive thinking
+consume the complete output budget, return `stop_reason: max_tokens`, and produce
+no JSON text; Studio then had to fall back to per-page calls. The same payload at
+low effort completed with JSON text inside the budget. This is registry-owned
+worker policy: Studio does not send or know about effort. The per-page paths use
+the same setting because retained production logs showed the review fallback also
+consume its complete 2048-token output budget.

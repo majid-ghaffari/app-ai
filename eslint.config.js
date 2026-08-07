@@ -69,7 +69,7 @@ export default tseslint.config(
     },
   },
 
-  // Node integration scripts (the live token-savings gate) — inside the lint
+  // Node integration scripts (including the optional token-savings diagnostic) — inside the lint
   // gate like everything else, with Node globals instead of Worker ones.
   {
     files: ['scripts/**/*.mjs'],

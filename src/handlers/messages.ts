@@ -11,15 +11,17 @@
  * the raw upstream body in `MessageDetail`.
  */
 
-import { getSystemPrompt } from '../prompts';
+import { getSystemPrompt } from '../prompt-registry';
 import * as anthropic from '../lib/anthropic';
 import type { CacheableBlock, ClientMessagesPayload, Usage } from '../lib/anthropic';
 import { manageCacheControl, EXTENDED_CACHE_CONTROL } from '../lib/cache-control';
+import { getDefaultsBlock } from '../lib/brain-defaults';
 import { dedupUpload } from '../lib/file-dedup';
 import {
   jsonResponse,
   errorResponseFrom,
   anthropicErrorResponse,
+  WorkerError,
   type CorsHeaders,
 } from '../lib/responses';
 import { createLogger } from '../lib/logger';
@@ -52,6 +54,12 @@ export async function handleMessages(
       apiKey?: unknown;
     } & ClientMessagesPayload;
 
+    // Cross-repo ruleset handshake — reject a lib built against a stale onboarding
+    // playbook before any inference (throws a 409 the outer catch maps to the
+    // Brain envelope). No-op for non-onboarding prompts and (during rollout) for
+    // a caller that sends no version header.
+    validateRulesetVersion(request, systemPromptName, env);
+
     let attachmentFileCount = 0;
     if (systemPromptName) {
       try {
@@ -62,10 +70,35 @@ export async function handleMessages(
       }
     }
 
+    // The registry is authoritative for the inference model: when the caller
+    // omits `model`, fall back to the resolved system-prompt entry's model
+    // (a deploy-time choice — the entry's capability tier resolved via
+    // `resolveModel`). Additive + safe —
+    // a caller that sends its own `model` (e.g. image-selection sends Haiku) is
+    // untouched; only a body without `model` (the Website-Analysis probe) is
+    // defaulted, so a probe runs on its registry model per docs/prompts.
+    applyRegistryModel(claudePayload, systemPromptName, env);
+
+    // Set `max_tokens` EXACTLY to the resolved entry's registry value — the
+    // registry is authoritative for a registered prompt's output budget. Any
+    // client-sent `max_tokens` is overridden (there is no floor, no cap, no
+    // client read): changing a registry `maxTokens` literal changes the outgoing
+    // Anthropic request one-for-one. Between the model default and cache
+    // management so the budget rides the same forwarded payload.
+    applyRegistryMaxTokens(claudePayload, systemPromptName, env);
+
+    // PROPOSE prompts: fetch + project the global Brain default box settings
+    // and inject them as a SECOND cacheable system block (after the stable prompt,
+    // before the store screenshots that ride in the user message). Best-effort —
+    // a fetch failure degrades to no injection and never fails the request. The
+    // context-ID authenticates the Brain fetch and is never logged.
+    const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
+    await injectBrainDefaults(systemPromptName, claudePayload, contextId, env);
+
     manageCacheControl(claudePayload, attachmentFileCount);
 
     // Apply opt-in output effort from the registry entry, if the client didn't
-    // already set output_config (additive + safe — see prompts.ts entry shape).
+    // already set output_config (additive + safe — see prompt-registry.ts entry shape).
     applyRegistryEffort(claudePayload, systemPromptName, env);
 
     // Best-effort pre-flight token estimate for large payloads — log/warn only,
@@ -104,6 +137,16 @@ async function injectSystemPrompt(
 ): Promise<number> {
   const prompt = getSystemPrompt(systemPromptName, env);
 
+  // CACHE-FIRST STRUCTURE (see prompt-registry.ts → CACHING). `prompt.prompt` is the
+  // STABLE, shop-independent system text — for the composed onboarding prompts it
+  // is `composePrompt(...blocks)` in a deterministic order, byte-identical across
+  // every shop. We put ALL of it in the single cacheable system block with a 1h
+  // `cache_control` breakpoint, so repeated per-shop calls HIT the cached prefix
+  // after the first. The LIB-SIDE EXPECTATION that makes this work: per-shop
+  // VARIABLE data (the page screenshots + the per-page manifest) rides AFTER this
+  // breakpoint, in the first user MESSAGE — never in the system prompt — so it
+  // never invalidates the cached prefix. `manageCacheControl` (below) then
+  // distributes the remaining breakpoints across those user blocks.
   claudePayload.system = [
     { type: 'text', text: prompt.prompt, cache_control: { ...EXTENDED_CACHE_CONTROL } },
   ];
@@ -160,6 +203,166 @@ async function injectSystemPrompt(
     return attachmentBlocks.length;
   }
   return 0;
+}
+
+/**
+ * PROPOSE-path Brain-defaults injection. When the resolved entry declares
+ * `injectsBrainDefaults` (the onboarding / cart-drawer / optimize propose
+ * prompts), fetch + project the canonical global Brain default box settings
+ * (lib/brain-defaults.ts) and append them as a SECOND cacheable system block —
+ * AFTER the stable system prompt, and BEFORE the per-store screenshots that ride
+ * in the first user message (so the defaults block sits inside the cacheable
+ * prefix while the volatile evidence stays after it). Byte-stable across stores
+ * for the same global defaults → the block's own cache_control breakpoint HITS
+ * Anthropic's prompt cache cross-tenant.
+ *
+ * Best-effort and non-fatal: no system block yet, no defaults resolved (a
+ * cold-cache fetch failure), or an unknown prompt → the payload is left as-is
+ * (no injection). `contextId` authenticates the Brain fetch; it is never logged.
+ *
+ */
+async function injectBrainDefaults(
+  systemPromptName: string | null,
+  claudePayload: ClientMessagesPayload,
+  contextId: string,
+  env: Env,
+): Promise<void> {
+  if (!systemPromptName || !contextId) {
+    return;
+  }
+  let entry;
+  try {
+    entry = getSystemPrompt(systemPromptName, env);
+  } catch {
+    return;
+  }
+  if (!entry.injectsBrainDefaults) {
+    return;
+  }
+  // The stable system prompt must already be present (injectSystemPrompt ran);
+  // the defaults ride as the block AFTER it.
+  const system = claudePayload.system;
+  if (!Array.isArray(system) || system.length === 0) {
+    return;
+  }
+  const defaultsBlock = await getDefaultsBlock(contextId, env);
+  if (!defaultsBlock) {
+    return;
+  }
+  (system as CacheableBlock[]).push({
+    type: 'text',
+    text: defaultsBlock,
+    cache_control: { ...EXTENDED_CACHE_CONTROL },
+  });
+  log.info('Injected Brain defaults block');
+}
+
+/**
+ * Set `claudePayload.model` from the resolved registry entry's model WHEN the
+ * caller omitted it. The registry entry pairs each prompt with a capability tier
+ * that resolves to a deploy-time model (via `resolveModel`); a caller that
+ * already sent `model` owns it and is left untouched. No system prompt / unknown
+ * name / already-set model → the payload is unchanged.
+ */
+function applyRegistryModel(
+  claudePayload: ClientMessagesPayload,
+  systemPromptName: string | null,
+  env: Env,
+): void {
+  if (!systemPromptName || claudePayload.model) {
+    return;
+  }
+  try {
+    const entry = getSystemPrompt(systemPromptName, env);
+    claudePayload.model = entry.model;
+    log.info(`Applied registry model '${entry.model}' for prompt ${systemPromptName}`);
+  } catch {
+    // Unknown prompt / missing model var — leave the payload as-is; the
+    // downstream Anthropic call surfaces a clear error.
+  }
+}
+
+/**
+ * Enforce the onboarding ruleset-version handshake (cross-repo contract). When
+ * the resolved entry declares a `rulesetVersion` (the four onboarding
+ * propose/review prompts PLUS the three sibling playbook conductors —
+ * `cartdrawer-batch-all` / `cartdrawer-review-all` / `optimize-demand` — that
+ * reuse the same shared onboarding playbook blocks) AND the caller sent the
+ * `X-Personalizer-Ruleset-Version` header, the two MUST match; a mismatch throws
+ * a 409 `RulesetVersionMismatchException` (Brain envelope) naming BOTH versions,
+ * so a lib built against a stale playbook is rejected before inference rather
+ * than silently proposing against the wrong enforced rules.
+ *
+ * ROLLOUT — fail-OPEN interim default (Risk R1): when the header is ABSENT the
+ * check is SKIPPED (the request proceeds), so app-ai can deploy the handshake
+ * before every lib caller sends the header. Once the lib ships the header
+ * everywhere, this can tighten to fail-closed (reject a missing header). Entries
+ * without a `rulesetVersion` (probes / chat / image-selection) always skip.
+ */
+function validateRulesetVersion(request: Request, systemPromptName: string | null, env: Env): void {
+  if (!systemPromptName) {
+    return;
+  }
+  let entry;
+  try {
+    entry = getSystemPrompt(systemPromptName, env);
+  } catch {
+    return;
+  }
+  if (!entry.rulesetVersion) {
+    return;
+  }
+  const header = request.headers.get('X-Personalizer-Ruleset-Version');
+  if (header == null) {
+    // Fail-OPEN during rollout — see the ROLLOUT note above (Risk R1).
+    return;
+  }
+  if (header !== entry.rulesetVersion) {
+    throw new WorkerError(
+      `Onboarding ruleset version mismatch: caller sent '${header}', server expects '${entry.rulesetVersion}'.`,
+      {
+        status: 409,
+        exceptionType: 'RulesetVersionMismatchException',
+        messageDetail: `X-Personalizer-Ruleset-Version '${header}' does not match server '${entry.rulesetVersion}'`,
+      },
+    );
+  }
+  log.info(`Ruleset version handshake OK (${entry.rulesetVersion}) for prompt ${systemPromptName}`);
+}
+
+/**
+ * Set `claudePayload.max_tokens` EXACTLY to the resolved registry entry's
+ * `maxTokens`. The registry is authoritative: a registered prompt's output
+ * budget is a deploy-time choice that owns the wire value outright — there is no
+ * floor, no cap, and no client `max_tokens` read, so a client-sent budget is
+ * OVERRIDDEN and changing a registry `maxTokens` literal changes the outgoing
+ * Anthropic request one-for-one. Without this, an omitted `max_tokens` reaches
+ * Anthropic as a 400 (the field is required). No system prompt / unknown name →
+ * the payload is unchanged (the caller owns its own token budget, as it does its
+ * own model).
+ */
+function applyRegistryMaxTokens(
+  claudePayload: ClientMessagesPayload,
+  systemPromptName: string | null,
+  env: Env,
+): void {
+  if (!systemPromptName) {
+    return;
+  }
+  let entry;
+  try {
+    entry = getSystemPrompt(systemPromptName, env);
+  } catch {
+    // Unknown prompt — leave the caller's budget as-is (the downstream Anthropic
+    // call surfaces a clear error if it is missing / invalid).
+    return;
+  }
+  if (claudePayload.max_tokens !== entry.maxTokens) {
+    claudePayload.max_tokens = entry.maxTokens;
+    log.info(
+      `Applied registry max_tokens ${entry.maxTokens} (exact) for prompt ${systemPromptName}`,
+    );
+  }
 }
 
 /**

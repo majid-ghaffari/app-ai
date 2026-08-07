@@ -5,7 +5,7 @@
  * (its degradation is covered in test/token-saving.test.ts → file-dedup no-op).
  *
  * Also pins the PRODUCTION configuration values in wrangler.toml `[vars]` —
- * the deployed wire contract (Brain routing, model choices) is config now, so
+ * the deployed wire contract (Brain routing, model choices) is config, so
  * the contract proof reads the deploy manifest itself.
  */
 
@@ -17,8 +17,7 @@ import {
   anthropicApiBase,
   claudeApiKey,
   credentialedOrigins,
-  modelDefault,
-  modelPlacement,
+  resolveModel,
   type Env,
 } from '../src/config';
 import { ENV } from './helpers';
@@ -31,8 +30,16 @@ describe('config accessors — present values', () => {
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
     expect(claudeApiKey(ENV)).toBe('test-key');
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
-    expect(modelDefault(ENV)).toBe('claude-opus-4-8');
-    expect(modelPlacement(ENV)).toBe('claude-haiku-4-5');
+  });
+
+  it('resolveModel maps each capability tier to its bound variable value', () => {
+    expect(resolveModel(ENV, 'fast')).toBe('claude-haiku-4-5');
+    expect(resolveModel(ENV, 'balanced')).toBe('claude-sonnet-5');
+    expect(resolveModel(ENV, 'frontier')).toBe('claude-opus-4-8');
+    // The tier reads its OWN bound var, not another tier's.
+    expect(resolveModel(ENV, 'fast')).toBe(ENV.MODEL_FAST);
+    expect(resolveModel(ENV, 'balanced')).toBe(ENV.MODEL_BALANCED);
+    expect(resolveModel(ENV, 'frontier')).toBe(ENV.MODEL_FRONTIER);
   });
 
   it('parses CREDENTIALED_ORIGINS as a trimmed, empties-dropped comma list', () => {
@@ -75,12 +82,15 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     );
   });
 
-  it('the model accessors name MODEL_DEFAULT / MODEL_PLACEMENT', () => {
-    expect(() => modelDefault(EMPTY_ENV)).toThrow(
-      /Missing required configuration variable MODEL_DEFAULT/,
+  it('resolveModel names the tier variable (MODEL_FAST / MODEL_BALANCED / MODEL_FRONTIER) when absent', () => {
+    expect(() => resolveModel(EMPTY_ENV, 'fast')).toThrow(
+      /Missing required configuration variable MODEL_FAST/,
     );
-    expect(() => modelPlacement(EMPTY_ENV)).toThrow(
-      /Missing required configuration variable MODEL_PLACEMENT/,
+    expect(() => resolveModel(EMPTY_ENV, 'balanced')).toThrow(
+      /Missing required configuration variable MODEL_BALANCED/,
+    );
+    expect(() => resolveModel(EMPTY_ENV, 'frontier')).toThrow(
+      /Missing required configuration variable MODEL_FRONTIER/,
     );
   });
 
@@ -119,9 +129,10 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('ANTHROPIC_API_BASE = "https://api.anthropic.com"');
   });
 
-  it('pins the deploy-time model choices (default agent-loop model + placement model)', () => {
-    expect(productionVars()).toContain('MODEL_DEFAULT = "claude-opus-4-8"');
-    expect(productionVars()).toContain('MODEL_PLACEMENT = "claude-haiku-4-5"');
+  it('pins the tier→model bindings (fast + balanced + frontier)', () => {
+    expect(productionVars()).toContain('MODEL_FAST = "claude-haiku-4-5"');
+    expect(productionVars()).toContain('MODEL_BALANCED = "claude-sonnet-5"');
+    expect(productionVars()).toContain('MODEL_FRONTIER = "claude-opus-4-8"');
   });
 
   it('keeps the credentialed dev-origin allowlist', () => {
@@ -136,8 +147,9 @@ describe('production [vars] — the deployed configuration values', () => {
       'PERSONALIZER_API_URL',
       'ANTHROPIC_API_BASE',
       'CREDENTIALED_ORIGINS',
-      'MODEL_DEFAULT',
-      'MODEL_PLACEMENT',
+      'MODEL_FAST',
+      'MODEL_BALANCED',
+      'MODEL_FRONTIER',
     ]) {
       expect(vars).toContain(`${name} = `);
     }

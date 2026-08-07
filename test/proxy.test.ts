@@ -17,6 +17,7 @@ import * as anthropic from '../src/lib/anthropic';
 import { handleFileUpload, handleListFiles, handleDeleteFile } from '../src/handlers/files';
 import { handleMessages } from '../src/handlers/messages';
 import { handleHealth } from '../src/handlers/health';
+import { getSystemPrompt } from '../src/prompt-registry';
 import { ENV, CORS, stubFetch, fetchCall, headerOf, sentBody, kvMock } from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
@@ -36,6 +37,13 @@ describe('cors', () => {
     expect(h['Access-Control-Allow-Methods']).toContain('POST');
     expect(h['Access-Control-Allow-Origin']).toBeUndefined();
     expect(h['Access-Control-Allow-Credentials']).toBeUndefined();
+  });
+
+  it('allows the ruleset-version request header', () => {
+    const h = getCorsHeaders(requestWithOrigin('https://shop.example.com'), ENV);
+    // The lib SENDS this custom request header on the onboarding handshake.
+    expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-Ruleset-Version');
+    expect(h['Access-Control-Expose-Headers']).toBeUndefined();
   });
 
   it('allows credentials for an origin in the CREDENTIALED_ORIGINS config', () => {
@@ -301,7 +309,7 @@ describe('manageCacheControl', () => {
     const blocks = payload.messages?.[0]?.content as CacheableBlock[];
     const cached = blocks.filter((b) => b.cache_control);
     expect(cached).toHaveLength(3);
-    // KEPT user blocks now carry the extended 1h TTL (LEVER 1).
+    // KEPT user blocks carry the extended 1h TTL (LEVER 1).
     cached.forEach((b) => expect(b.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' }));
     expect(blocks.find((b) => b.type === 'document')?.cache_control).toBeUndefined();
   });
@@ -367,6 +375,17 @@ describe('handleHealth', () => {
     const body = (await res.json()) as { status: string; timestamp: string };
     expect(body.status).toBe('ok');
     expect(typeof body.timestamp).toBe('string');
+  });
+
+  it('returns the build revision marker (C0014 item 14) — "dev" under a define-less build', async () => {
+    // The FREE-stack preflight asserts `/health` carries a non-"dev" `buildRev` (the exact served
+    // revision injected by esbuild `--define __APP_AI_REV__`). Under vitest there is no define, so the
+    // `typeof` guard degrades to "dev" — the fail-closed default a live preflight rejects. This pins
+    // the field EXISTS as a string (a marker regression) + the graceful no-define fallback.
+    const res = handleHealth(CORS);
+    const body = (await res.json()) as { buildRev?: unknown };
+    expect(typeof body.buildRev).toBe('string');
+    expect(body.buildRev).toBe('dev');
   });
 });
 
@@ -546,5 +565,82 @@ describe('handleMessages', () => {
       error: { type: 'invalid_request_error', message: 'bad' },
     });
     expect(body.error).toBeUndefined();
+  });
+});
+
+describe('handleMessages — registry max_tokens EXACT', () => {
+  // A `balanced` entry whose registry `maxTokens` is 8192 — the EXACT value the
+  // registry forces onto the wire regardless of the client's ask. Pinned to the
+  // registry so a future entry-token change flows into this expectation.
+  const EXACT_PROMPT = 'onboarding-batch-all';
+  const EXACT = getSystemPrompt(EXACT_PROMPT, ENV).maxTokens;
+
+  function floorRequest(body: unknown, systemPrompt?: string): Request {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Personalizer-Context-ID': 'ctx',
+    };
+    if (systemPrompt) headers['X-Personalizer-System-Prompt'] = systemPrompt;
+    return new Request('https://app-ai.test/messages', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** The `max_tokens` the handler forwarded to the Messages API. */
+  async function forwardedMaxTokens(body: unknown, systemPrompt?: string): Promise<unknown> {
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+    await handleMessages(floorRequest(body, systemPrompt), ENV, CORS);
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    const idx = urls.findIndex((url) => url.endsWith('/v1/messages'));
+    return sentBody(fetchCall(fetchMock, idx).init).max_tokens;
+  }
+
+  it('pins the exact entry to the registry (8192)', () => {
+    expect(EXACT).toBe(8192);
+  });
+
+  it('a BELOW-registry client max_tokens (4096) is set to exactly the registry value (8192)', async () => {
+    expect(
+      await forwardedMaxTokens(
+        { max_tokens: 4096, messages: [{ role: 'user', content: 'go' }] },
+        EXACT_PROMPT,
+      ),
+    ).toBe(EXACT);
+  });
+
+  it('an ABOVE-registry client max_tokens (16000) is OVERRIDDEN down to the registry value (no cap kept, no floor)', async () => {
+    // The OLD floor behavior (Math.max) preserved 16000; exact-registry overrides
+    // it to the entry value. This is the load-bearing "no floor / no client read" proof.
+    expect(
+      await forwardedMaxTokens(
+        { max_tokens: 16000, messages: [{ role: 'user', content: 'go' }] },
+        EXACT_PROMPT,
+      ),
+    ).toBe(EXACT);
+  });
+
+  it('SETS the registry value (8192) when the client omits max_tokens entirely', async () => {
+    const sent = await forwardedMaxTokens(
+      { messages: [{ role: 'user', content: 'go' }] },
+      EXACT_PROMPT,
+    );
+    expect(sent).toBe(EXACT);
+  });
+
+  it('leaves max_tokens UNTOUCHED for a non-registered prompt name', async () => {
+    // No registry entry resolves for this name → the caller owns its own budget.
+    expect(
+      await forwardedMaxTokens(
+        { max_tokens: 4096, messages: [{ role: 'user', content: 'go' }] },
+        'not-a-registered-prompt',
+      ),
+    ).toBe(4096);
+  });
+
+  it('leaves max_tokens UNTOUCHED when no system prompt is selected (plain proxy)', async () => {
+    expect(await forwardedMaxTokens({ model: 'm', max_tokens: 4096, messages: [] })).toBe(4096);
   });
 });

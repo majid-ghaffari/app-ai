@@ -5,7 +5,7 @@
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "node scripts/dev.mjs",
     "dev:shim": "node scripts/dev-claude-shim.mjs",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",

@@ -49,11 +49,18 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 # Dev origins allowed to send credentialed CORS requests (comma-separated).
 # Every other Origin is echoed WITHOUT credentials — see src/lib/cors.ts.
 CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,http://localhost:3000"
-# Deploy-time model choices for the prompt registry (src/prompts.ts):
-# MODEL_DEFAULT drives chat/onboarding/proposals/analytics-insights/image-selection;
-# MODEL_PLACEMENT drives the latency-sensitive structured placement prompt.
-MODEL_DEFAULT = "claude-opus-4-8"
-MODEL_PLACEMENT = "claude-haiku-4-5"
+# CAPABILITY TIERS (provider-agnostic) bound to concrete models — the ONLY place
+# a model id appears. The prompt registry (src/prompt-registry.ts) tags each prompt with a
+# tier (`fast` / `balanced` / `frontier`), never a model id; `resolveModel`
+# (src/config.ts) maps a tier to the binding below. To bump a model version OR
+# switch provider (Claude → OpenAI / Gemini), edit ONLY these three values — the
+# registry and every prompt stay untouched.
+#   MODEL_FAST     — latency-sensitive / cheapest one-shot prompts.
+#   MODEL_BALANCED — the multi-modal / JSON reasoners.
+#   MODEL_FRONTIER — the most-capable flagship (the DEFAULT tier).
+MODEL_FAST = "claude-haiku-4-5"
+MODEL_BALANCED = "claude-sonnet-5"
+MODEL_FRONTIER = "claude-opus-4-8"
 
 # Observability
 [observability]

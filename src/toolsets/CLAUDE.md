@@ -12,12 +12,13 @@ data-driven off each descriptor's `integrationParties` gate (empty =
 always-active); adding a toolset never edits handler logic.
 
 This registry is SERVER-executed tools only (the worker dispatches each
-`tool_use` against a backend). The handler also has a DORMANT CLIENT-tool mode
-(a prompt registry entry's `clientTools`; no consumer on this branch — see the
-top-level CLAUDE.md → CLIENT-tool mode) whose tools would execute in the client,
-not the worker. Such client tools are NOT toolsets and would NOT live here: they
-belong WITH their prompt, because the worker never dispatches or credentials
-them — it only hands the model's calls back to the client.
+`tool_use` against a backend). The handler also has a CLIENT-tool mode
+(a prompt registry entry's `clientTools`; first consumer = the `onboarding-chat`
+prompt with `look_at_page`, #111 — see the top-level CLAUDE.md → CLIENT-tool mode)
+whose tools execute in the client, not the worker. Such client tools are NOT
+toolsets and do NOT live here: they live in `../lib/client-tools.ts`, WITH their
+prompt, because the worker never dispatches or credentials them — it only hands
+the model's calls back to the client.
 
 ## Files
 

@@ -49,7 +49,14 @@ export function manageCacheControl(
   }
   const firstContent = firstMessage.content;
 
-  const systemCacheBlocks = claudePayload.system ? 1 : 0;
+  // Count the ACTUAL cache_control breakpoints the system prefix claims — one for
+  // the stable prompt, plus a second when the propose path injected a Brain-defaults
+  // block (messages.ts). An array is counted precisely; a bare string prompt is one.
+  const systemCacheBlocks = Array.isArray(claudePayload.system)
+    ? (claudePayload.system as CacheableBlock[]).filter((block) => block.cache_control).length
+    : claudePayload.system
+      ? 1
+      : 0;
   const usedCacheSlots = systemCacheBlocks + attachmentFileCount;
   const remainingSlots = MAX_CACHE_BLOCKS - usedCacheSlots;
 

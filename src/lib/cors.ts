@@ -17,7 +17,7 @@ import type { CorsHeaders } from './responses';
 const BASE_HEADERS: CorsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'Content-Type, Authorization, Accept, X-Requested-With, X-Personalizer-Context-ID, X-Personalizer-System-Prompt',
+    'Content-Type, Authorization, Accept, X-Requested-With, X-Personalizer-Context-ID, X-Personalizer-System-Prompt, X-Personalizer-Ruleset-Version',
   'Access-Control-Max-Age': '86400',
 };
 

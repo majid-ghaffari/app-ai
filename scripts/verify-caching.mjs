@@ -1,5 +1,5 @@
 /**
- * Pre-release token-savings GATE — proves prompt caching engages against a
+ * Optional token-savings diagnostic — proves prompt caching engages against a
  * DEPLOYED worker.
  *
  * This is an INTEGRATION check, not a unit test: it needs network, a valid
@@ -47,11 +47,11 @@ function requireEnv(name, guidance) {
   throw new Error(`Missing required environment variable ${name}. ${guidance}`);
 }
 
-/** Resolve the deployed worker base URL to gate (explicit, never defaulted). */
+/** Resolve the deployed worker base URL to inspect (explicit, never defaulted). */
 function resolveTarget() {
   return requireEnv(
     'APP_AI_TARGET',
-    'Set it to the deployed worker base URL to gate — the production worker URL is documented in README → Environments.',
+    'Set it to the deployed worker base URL to inspect — the production worker URL is documented in README → Environments.',
   ).replace(/\/$/, '');
 }
 
@@ -66,7 +66,7 @@ function resolveContextId() {
   }
   const file = requireEnv(
     'APP_AI_CONTEXT_FILE',
-    'The caching gate needs a valid X-Personalizer-Context-ID for a dev store: ' +
+    'The caching diagnostic needs a valid X-Personalizer-Context-ID for a dev store: ' +
       'set APP_AI_CONTEXT_ID=<id>, or point APP_AI_CONTEXT_FILE at a shop-context ' +
       'fixture JSON ({ "contextID": ... }) minted by the lib E2E suite via the ' +
       'aidin@limespot.com master login.',
@@ -177,7 +177,7 @@ async function main() {
   const target = resolveTarget();
   const contextId = resolveContextId();
 
-  console.log(`Token-savings gate → ${target}\n`);
+  console.log(`Token-savings diagnostic → ${target}\n`);
 
   // (i) chat tools+system prefix (Opus 4.8). Identical bodies on both calls.
   console.log('[1/2] chat tools+system prefix (Opus 4.8)');
@@ -195,7 +195,7 @@ async function main() {
     contextId,
     new TextEncoder().encode(buildHtmlFixture()),
     'text/plain',
-    'caching-gate.html',
+    'caching-check.html',
   );
   console.log(`  uploaded fixture → ${fileId}`);
   const placementBody = {
@@ -206,10 +206,10 @@ async function main() {
   const place2 = await chat(target, contextId, 'placement', placementBody);
   assertCached('placement file-block prefix', place1, place2);
 
-  console.log('GATE PASSED — both cached prefixes engage against the deployed worker.');
+  console.log('CHECK PASSED — both cached prefixes engage against the deployed worker.');
 }
 
 main().catch((error) => {
-  console.error(`\nGATE FAILED: ${error.message}`);
+  console.error(`\nCHECK FAILED: ${error.message}`);
   process.exit(1);
 });

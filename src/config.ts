@@ -24,6 +24,12 @@
  * src outside this module; no `env.X || …` / `env.X ?? …` inline fallbacks).
  */
 
+// `ModelTier` is a compile-time-only type (the semantic capability tiers the
+// prompt registry uses). Importing it as `import type` is erased by the bundler,
+// so this does NOT create a runtime import cycle with `prompt-registry.ts` (which imports
+// `resolveModel` from here).
+import type { ModelTier } from './prompt-registry';
+
 /**
  * The worker's environment bindings (wrangler.toml + Cloudflare secrets).
  * Single source of truth — handlers/lib receive this whole object and read
@@ -48,10 +54,26 @@ export interface Env {
   readonly ANTHROPIC_API_BASE?: string;
   /** Comma-separated Origins allowed to send credentialed CORS requests. Non-secret var. */
   readonly CREDENTIALED_ORIGINS?: string;
-  /** Default Anthropic model for the prompt registry (chat/onboarding/…). Non-secret var. */
-  readonly MODEL_DEFAULT?: string;
-  /** Anthropic model for the latency-sensitive placement prompt. Non-secret var. */
-  readonly MODEL_PLACEMENT?: string;
+  /**
+   * Concrete model bound to the `fast` capability tier — the latency-sensitive /
+   * cheapest one-shot prompts (`placement`). Non-secret var; the ONLY place a
+   * `fast`-tier model id appears (swap it to bump a version or switch provider).
+   */
+  readonly MODEL_FAST?: string;
+  /**
+   * Concrete model bound to the `balanced` capability tier — the multi-modal /
+   * JSON reasoners (proposals, visual-verify, the onboarding batch/review passes,
+   * the behavioral/visual/generative probes). Non-secret var; the ONLY place a
+   * `balanced`-tier model id appears.
+   */
+  readonly MODEL_BALANCED?: string;
+  /**
+   * Concrete model bound to the `frontier` capability tier — the most-capable
+   * flagship, the DEFAULT tier (the agent-loop chat prompts + the heaviest
+   * classification). Non-secret var; the ONLY place a `frontier`-tier model id
+   * appears.
+   */
+  readonly MODEL_FRONTIER?: string;
   /** Anthropic API key. SECRET — Cloudflare encrypted secret / .dev.vars. */
   readonly CLAUDE_API_KEY?: string;
   /**
@@ -60,6 +82,17 @@ export interface Env {
    * degradation, not a hidden default).
    */
   readonly FILES_KV?: KVNamespace;
+  /**
+   * OPTIONAL override for the Brain-defaults source URL (lib/brain-defaults.ts).
+   * When set, the defaults provider fetches the canonical default
+   * RecommendationsSettings from THIS URL as-is (intended for the platform's
+   * CDN-hosted object, fetched without the merchant context-ID). When absent,
+   * the provider uses the authenticated Brain endpoint
+   * (`${PERSONALIZER_API_URL}/v1/personalizerConfig?defaultRecommendationsSettings=true`,
+   * forwarding the context-ID). Its absence changes behavior explicitly and
+   * documentedly — a config seam, not a hidden default.
+   */
+  readonly RECOMMENDATIONS_DEFAULTS_URL?: string;
 }
 
 /** The required string variables (everything in `Env` except `ENVIRONMENT` metadata and the optional `FILES_KV`). */
@@ -68,8 +101,9 @@ type RequiredVarName =
   | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
   | 'CREDENTIALED_ORIGINS'
-  | 'MODEL_DEFAULT'
-  | 'MODEL_PLACEMENT'
+  | 'MODEL_FAST'
+  | 'MODEL_BALANCED'
+  | 'MODEL_FRONTIER'
   | 'CLAUDE_API_KEY';
 
 /** The variables that are SECRETS (encrypted-secret channel, never wrangler.toml `[vars]`). */
@@ -109,19 +143,40 @@ export function anthropicApiBase(env: Env): string {
   return requireVar(env, 'ANTHROPIC_API_BASE');
 }
 
-/** Default Anthropic model for the prompt registry's agent-loop prompts. */
-export function modelDefault(env: Env): string {
-  return requireVar(env, 'MODEL_DEFAULT');
-}
+/** The config variable each capability tier is bound to (Layer 2 of the indirection). */
+const TIER_VAR: Record<ModelTier, RequiredVarName> = {
+  fast: 'MODEL_FAST',
+  balanced: 'MODEL_BALANCED',
+  frontier: 'MODEL_FRONTIER',
+};
 
-/** Anthropic model for the latency-sensitive, structured placement prompt. */
-export function modelPlacement(env: Env): string {
-  return requireVar(env, 'MODEL_PLACEMENT');
+/**
+ * Resolve a semantic capability `tier` (from the prompt registry) to the
+ * concrete model bound to it in configuration — the ONLY place a tier maps to a
+ * model id. Reads via the fail-fast `requireVar`, so a missing binding throws
+ * naming the variable (`MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`).
+ * Switching model versions OR provider is a config-only change here.
+ */
+export function resolveModel(env: Env, tier: ModelTier): string {
+  return requireVar(env, TIER_VAR[tier]);
 }
 
 /** The Anthropic API key. Only lib/anthropic.ts may call this. */
 export function claudeApiKey(env: Env): string {
   return requireVar(env, 'CLAUDE_API_KEY');
+}
+
+/**
+ * The configured Brain-defaults source URL, or `null` when unset. When a value
+ * is present the defaults provider fetches from it as-is (a CDN-hosted object,
+ * no context-ID); when `null` the provider builds the authenticated
+ * Brain endpoint from `personalizerApiUrl`. OPTIONAL by design — reading it never
+ * throws (unlike the required accessors), and it carries no inline `||` / `??`
+ * fallback (the ternary is an explicit presence test, not a config fallback).
+ */
+export function recommendationsDefaultsUrl(env: Env): string | null {
+  const value = env.RECOMMENDATIONS_DEFAULTS_URL;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /** Origins allowed to send credentialed CORS requests (parsed, trimmed, empties dropped). */

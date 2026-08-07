@@ -4,9 +4,9 @@ The process for iterating on and maintaining app-ai system prompts with Claude. 
 
 ## Where things live
 
-- **Runtime prompt text** lives ONLY under `src/prompts/` — a single `.md` for a simple prompt, or a `src/prompts/<name>/` folder for a multi-file prompt (`prompt.md` system text + a sample/attachment file such as `sample.md`). The registry in `src/prompts.ts` maps each prompt name to its text + metadata (model, max tokens, tools, attachments). All `.md` files are bundled at build time (Workers have no runtime filesystem), so anything in a prompt folder that is imported by `prompts.ts` ships to production.
-- **Maintenance docs** live at `docs/prompts/<name>.md` — one per prompt that has accumulated design decisions worth recording. A maintenance doc is an evergreen record of the prompt's goals, constraints (character/token budgets), selector or output rules, issues found and fixed, and version history. It is documentation, never bundled, never sent to the API.
-- Underscore-prefixed files inside a prompt folder (matching the LimeSpot `_` convention) remain a supported exclusion mechanism — never imported, never bundled — if a prompt folder ever needs a co-located non-runtime file.
+- **Runtime prompt text** lives ONLY under `src/prompts/` — a single `.md` for a simple prompt, a `src/prompts/<name>/` folder for a multi-file prompt (`prompt.md` system text + a sample/attachment file such as `sample.md`), or a COMPOSED prompt (a folder of `_`-prefixed BLOCK files, no `prompt.md`, assembled by `composePrompt(...)` in that folder's own `index.ts` from per-prompt fragments + SHARED blocks under `src/prompts/onboarding-shared/` — the onboarding, cart-drawer, and optimize-demand prompts). The `src/prompts/` barrel (`index.ts`) re-exports every prompt's final text as a named export; the registry in `src/prompt-registry.ts` maps each prompt name to that text + its metadata (model, max tokens, tools, attachments). All `.md` files are bundled at build time (Workers have no runtime filesystem), so anything imported by the barrel and read through the registry ships to production.
+- **Maintenance docs** live at `docs/prompts/<name>.md` — one per prompt that has design decisions worth recording. A maintenance doc is an evergreen, present-state record of the prompt's goals, constraints (character/token budgets), selector or output rules, and the rationale behind them. It describes what the prompt IS and why, never a change log. It is documentation, never bundled, never sent to the API.
+- Underscore-prefixed files inside a prompt folder follow the LimeSpot `_` convention. In a COMPOSED prompt they are BLOCK PARTS — explicitly imported by that prompt folder's `index.ts` and composed into the prompt (they just aren't a standalone `<name>` you select via the header). Elsewhere `_*.md` remains a supported exclusion mechanism (never imported) for a co-located non-runtime file. Editing a COMPOSED prompt means editing its block/fragment `.md` files — and, if the effective text changes on purpose, the matching baseline in `test/__snapshots__/` (the byte-equivalence gate `test/onboarding-prompt-blocks.test.ts` fails otherwise).
 
 ## Iteration sessions with Claude
 
@@ -55,19 +55,16 @@ Prompts on the hot path carry a character budget (recorded in their maintenance 
 ### Claude's responsibilities
 
 1. **Update after every significant change** to the prompt's runtime files (prompt.md, sample.md)
-2. **Document all key decisions** made during the conversation
-3. **Track issues found and fixed** with brief descriptions
-4. **Maintain version history** with dates and changes
-5. **Keep "Next Steps" current** — remove completed items, add new ones
-6. **Preserve all constraints and rules** that informed decisions
+2. **Document the key decisions** as present-state rationale — why the prompt is shaped the way it is
+3. **Keep "Next Steps" current** — remove completed items, add new ones
+4. **Preserve all constraints and rules** that inform the current design
 
 ### What to include
 
 - Project overview and goals
 - Current state of the runtime files (prompt.md, sample.md), with measured sizes
-- Key technical decisions and why they were made
+- Key technical decisions and why they hold
 - Lists of classes/patterns to avoid (with examples)
-- Issues discovered and how they were resolved
 - Character limits and other constraints
 - Working examples and edge cases covered
 - Next steps or open questions

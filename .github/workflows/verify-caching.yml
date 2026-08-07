@@ -1,13 +1,13 @@
-name: Verify Caching (pre-release gate)
+name: Verify Caching (optional diagnostic)
 
-# Pre-release token-savings gate (scripts/verify-caching.mjs). It is an
+# Optional token-savings diagnostic (scripts/verify-caching.mjs). It is an
 # INTEGRATION check against the DEPLOYED worker — it needs a master
 # X-Personalizer-Context-ID and a reachable /chat + /files target, so it cannot
 # run in plain push-CI without secrets. It runs ONLY on manual dispatch, and
 # only when the required repo secret is configured (the guard step exits the job
 # cleanly otherwise, so a fork or unconfigured repo never fails here).
 #
-# Required repo secrets (the gate script takes NO defaults — No Hardcoded
+# Optional workflow secrets (the diagnostic script takes NO defaults — No Hardcoded
 # Config Values, docs/CODE-PATTERNS.md):
 #   APP_AI_CONTEXT_ID  — a valid master context-ID for a dev store (lsdev1).
 #   APP_AI_TARGET      — the deployed worker base URL to gate.
@@ -27,7 +27,7 @@ jobs:
           APP_AI_TARGET: ${{ secrets.APP_AI_TARGET }}
         run: |
           if [ -z "$APP_AI_CONTEXT_ID" ] || [ -z "$APP_AI_TARGET" ]; then
-            echo "APP_AI_CONTEXT_ID and/or APP_AI_TARGET secret is not configured — skipping the caching gate."
+            echo "APP_AI_CONTEXT_ID and/or APP_AI_TARGET secret is not configured — skipping the optional caching diagnostic."
             echo "Add both under Settings → Secrets to enable this workflow."
             exit 0
           fi
@@ -45,7 +45,7 @@ jobs:
         if: steps.guard.outputs.ok == 'true'
         run: npm ci
 
-      - name: Run token-savings gate
+      - name: Run token-savings diagnostic
         if: steps.guard.outputs.ok == 'true'
         env:
           APP_AI_CONTEXT_ID: ${{ secrets.APP_AI_CONTEXT_ID }}

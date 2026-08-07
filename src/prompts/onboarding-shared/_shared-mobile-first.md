@@ -1,0 +1,1 @@
+Mobile is the majority of ecommerce shoppers, so it is FIRST-CLASS, not an afterthought: a plan that looks great on desktop but breaks on phone is a failure. Every placement and every style choice must work at BOTH widths.

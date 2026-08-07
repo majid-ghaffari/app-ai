@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleChat, buildSystem } from '../src/handlers/chat';
 import { composeToolsets } from '../src/toolsets/registry';
-import { getSystemPrompt } from '../src/prompts';
+import { getSystemPrompt } from '../src/prompt-registry';
 import type { EntityReference } from '../src/lib/references';
 import type { Env } from '../src/config';
 import {
@@ -52,13 +52,18 @@ interface SseBlockSpec {
 }
 
 /** Build an Anthropic-style SSE body from a list of content blocks. */
-function anthropicSse(blocks: SseBlockSpec[], stopReason: string): string {
+function anthropicSse(
+  blocks: SseBlockSpec[],
+  stopReason: string,
+  startUsage: Record<string, number> = { input_tokens: 10 },
+): string {
   // Real Anthropic SSE carries `type` inside the data JSON too (not just the
   // event: line). The worker switches on the data's `type`, so include it.
   const lines: string[] = [];
   const push = (type: string, data: Record<string, unknown>) =>
     lines.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-  push('message_start', { message: { usage: { input_tokens: 10 } } });
+  // Anthropic reports input + cache tokens on message_start; output on message_delta.
+  push('message_start', { message: { usage: startUsage } });
   blocks.forEach((block, index) => {
     if (block.type === 'text') {
       push('content_block_start', { index, content_block: { type: 'text' } });
@@ -119,6 +124,39 @@ describe('prompts module', () => {
 
   it('placement prompt instructs JSON-only output', () => {
     expect(getSystemPrompt('placement', ENV).prompt).toMatch(/ONLY a single JSON object/i);
+  });
+
+  it('chat prompt reasons over currentExperience grounding', () => {
+    const prompt = getSystemPrompt('chat', ENV).prompt;
+    expect(prompt).toMatch(/currentExperience/);
+    // It must tell the model the snapshot carries the current appearance to reason over.
+    expect(prompt).toMatch(/itemsPerPage/);
+  });
+
+  it('chat prompt documents the setAppearance directive + its whitelist', () => {
+    const prompt = getSystemPrompt('chat', ENV).prompt;
+    expect(prompt).toMatch(/setAppearance/);
+    // The arg shape + the "2-up" mapping the merchant asks for.
+    expect(prompt).toMatch(/"page"/);
+    expect(prompt).toMatch(/"patch"/);
+    expect(prompt).toMatch(/2-up/i);
+    // The whitelisted keys agree with the lib-side contract.
+    for (const key of ['Style', 'ItemsPerPage', 'ItemsLimit', 'ImageBorderRadius']) {
+      expect(prompt).toContain(key);
+    }
+  });
+
+  it('chat prompt documents the toggleBox directive (add/remove a box)', () => {
+    const prompt = getSystemPrompt('chat', ENV).prompt;
+    expect(prompt).toMatch(/toggleBox/);
+    // The arg shape (page/box/on) + add/remove intent.
+    expect(prompt).toMatch(/"box"/);
+    expect(prompt).toMatch(/"on"/);
+    expect(prompt).toMatch(/add or remove/i);
+    // A couple of box-type keys the lib maps (agrees with ONBOARDING_BOX_TO_BRAIN).
+    for (const key of ['BoughtTogether', 'RecentViews']) {
+      expect(prompt).toContain(key);
+    }
   });
 });
 
@@ -339,6 +377,34 @@ describe('handleChat — streaming', () => {
     expect(done.data.iterations).toBe(1);
   });
 
+  it('logs cache-hit token stats for the model turn (input/cache_creation/cache_read/output)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    stubFetch().mockResolvedValue(
+      sseResponse(
+        anthropicSse([{ type: 'text', text: 'cached reply' }], 'end_turn', {
+          input_tokens: 12,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 340,
+        }),
+      ),
+    );
+
+    const res = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'hi' }] }),
+      ENV,
+      CORS,
+    );
+    await readWorkerSse(res);
+
+    // Mirrors the /messages `logUsageStats` line — [Chat] scope + all four counts.
+    const usageLine = logSpy.mock.calls.find(
+      (call) => typeof call[1] === 'string' && call[1].startsWith('Tokens —'),
+    );
+    if (!usageLine) throw new Error('no [Chat] Tokens usage line was logged');
+    expect(usageLine[0]).toBe('[Chat]');
+    expect(usageLine[1]).toBe('Tokens — input: 12, cache_creation: 0, cache_read: 340, output: 5');
+  });
+
   it('runs the tool-use loop: tool_call → Brain → tool_result → final text', async () => {
     const anthropicTurn1 = anthropicSse(
       [{ type: 'tool_use', id: 'tu_1', name: 'get_store_analytics', input: {} }],
@@ -439,6 +505,59 @@ describe('handleChat — streaming', () => {
 
     // No tools were sent on the placement request.
     expect(sentBody(fetchCall(fetchMock, 0).init).tools).toBeUndefined();
+  });
+
+  // CLIENT-tool mode (#111): a `clientTools` prompt (`onboarding-chat`, carrying the
+  // `look_at_page` client tool) runs the loop in CLIENT-tool mode — on a tool_use the
+  // loop returns the calls in `done.toolCalls` and STOPS (the browser runs them, not
+  // the worker), rather than executing a tool + looping like the server-tool path.
+  it('onboarding-chat clientTools mode: a look_at_page tool_use returns done.toolCalls + stops, no server tool call', async () => {
+    const fetchMock = stubFetch();
+    // ONE Anthropic turn that asks for the client tool. There must be NO second
+    // Anthropic turn and NO Brain tool call — the loop stops here and hands off.
+    fetchMock.mockResolvedValue(
+      sseResponse(
+        anthropicSse(
+          [{ type: 'tool_use', id: 'tu_look', name: 'look_at_page', input: { page: 'Home' } }],
+          'tool_use',
+        ),
+      ),
+    );
+
+    const res = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'does the Home page look right?' }] },
+        { 'X-Personalizer-System-Prompt': 'onboarding-chat' },
+      ),
+      ENV,
+      CORS,
+    );
+    const events = await readWorkerSse(res);
+
+    // The done payload carries the client tool-call(s), stop_reason 'tool_use', and
+    // stops after ONE iteration — the worker never executed the tool.
+    const done = eventOf(events, 'done');
+    expect(done.data.stopReason).toBe('tool_use');
+    expect(done.data.iterations).toBe(1);
+    const toolCalls = done.data.toolCalls;
+    expect(Array.isArray(toolCalls)).toBe(true);
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls?.[0]?.name).toBe('look_at_page');
+    expect((toolCalls?.[0]?.input as { page?: string }).page).toBe('Home');
+
+    // The client tool is surfaced as a `tool_call` event, and NO `tool_result` event
+    // is emitted (the worker did not execute it — the browser will).
+    expect(eventOf(events, 'tool_call').data.name).toBe('look_at_page');
+    expect(events.some((e) => e.type === 'tool_result')).toBe(false);
+
+    // Exactly ONE fetch (the single Anthropic turn) — no Brain `/v2/ai-tools/` call.
+    expect(fetchMock.mock.calls).toHaveLength(1);
+    expect(fetchedUrls(fetchMock).some((u) => u.includes('/v2/ai-tools/'))).toBe(false);
+
+    // The tools SENT to Anthropic were the CLIENT tool (look_at_page), NOT the server
+    // toolset — client tools are sent in place of the server toolset.
+    const sentTools = sentBody(fetchCall(fetchMock, 0).init).tools;
+    expect(sentTools?.map((t) => t.name)).toEqual(['look_at_page']);
   });
 
   it('emits a Brain-shaped error event when Anthropic fails', async () => {
