@@ -30,11 +30,18 @@ Hardcoded Config Values").
 
 ### 3. Start Development Server
 
+Local development fulfills Anthropic inference through **Claude Code** without
+Anthropic API credits. `.dev.vars.example` points the Worker at the local
+Anthropic-compatible shim, so run both processes:
+
 ```bash
-npm run dev
+npm run dev:shim   # Claude-Code channel on :8788
+npm run dev        # wrangler dev on :8787
 ```
 
-Server runs at `http://localhost:8787`
+The Worker runs at `http://localhost:8787`. Using the paid API locally requires
+both `ANTHROPIC_API_BASE=https://api.anthropic.com` and `AI_CHANNEL=prod`; the
+development guard rejects an accidental one-setting switch.
 
 ### 4. Test
 

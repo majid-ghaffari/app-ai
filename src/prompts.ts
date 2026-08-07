@@ -53,7 +53,7 @@ import analyticsInsightsPrompt from './prompts/analytics-insights.md';
 import imageSelectionPrompt from './prompts/image-selection/prompt.md';
 import imageSelectionSample from './prompts/image-selection/sample.md';
 
-import type { Effort } from './lib/anthropic';
+import type { Effort, ToolDefinition } from './lib/anthropic';
 import { modelDefault, modelPlacement, type Env } from './config';
 
 /** A file prepended to the first message (uploaded via the Files API dedup). */
@@ -73,7 +73,19 @@ export interface PromptAttachment {
  *                  MODEL_PLACEMENT variables (src/config.ts) when the entry is
  *                  read through `getSystemPrompt(name, env)`
  *   - maxTokens:   default max_tokens for this prompt
- *   - usesTools:   whether the agent loop sends tool definitions
+ *   - usesTools:   whether the agent loop sends the SERVER toolset definitions
+ *                  (the integration toolsets the worker executes server→server).
+ *                  Mutually exclusive with `clientTools`.
+ *   - clientTools: OPTIONAL — when present, this prompt's tools execute on the
+ *                  CLIENT, not in the worker. The handler sends THESE definitions
+ *                  to the model (in place of the server toolset), and on a
+ *                  `tool_use` it returns the calls to the client in
+ *                  `done.toolCalls` and stops the turn (it never executes them).
+ *                  The client runs them and calls `/chat` again with the
+ *                  `tool_result`. Set `usesTools: false` alongside it. DORMANT
+ *                  capability: no prompt on this branch opts in, so the handler's
+ *                  client-tool branch (handlers/chat.ts) is dead code here — the
+ *                  field is the typed, unused hook a client-tool prompt would set.
  *   - description: short human-readable note (registry documentation)
  *   - attachments: files prepended to the first message (image-selection only)
  *   - effort:      OPTIONAL output effort. When set AND the entry's model
@@ -92,6 +104,10 @@ export interface SystemPromptEntry {
   description: string;
   attachments: PromptAttachment[];
   effort?: Effort;
+  /** CLIENT-executed tool schema (mutually exclusive with `usesTools`). See the
+   *  field docs above + handlers/chat.ts `clientTools` handling. DORMANT here:
+   *  no registry entry sets it on this branch, so it has no consumer yet. */
+  clientTools?: readonly ToolDefinition[];
 }
 
 /**

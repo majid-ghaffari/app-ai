@@ -21,8 +21,20 @@ PERSONALIZER_API_URL=http://127.0.0.1:5000
 # Personalizer's IntegrationBridge caller map.
 PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=local-dev-integration-bridge-token
 
+# ── AI channel ───────────────────────────────────────────────
 # Anthropic API origin, no trailing slash.
-ANTHROPIC_API_BASE=https://api.anthropic.com
+#
+# DEV DEFAULT = the FREE local Claude-Code shim (scripts/dev-claude-shim.mjs).
+# Start it with `npm run dev:shim`, then `npm run dev` fulfills every Worker
+# inference through the machine's Claude Code authentication without spending
+# Anthropic API credits.
+ANTHROPIC_API_BASE=http://127.0.0.1:8788
+
+# Using the real paid API locally requires both deliberate settings:
+#   ANTHROPIC_API_BASE=https://api.anthropic.com
+#   AI_CHANNEL=prod
+# The dev-shim guard rejects api.anthropic.com without that explicit opt-in.
+# AI_CHANNEL=prod
 
 # Origins allowed to send credentialed CORS requests (comma-separated).
 CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http://localhost:3000
