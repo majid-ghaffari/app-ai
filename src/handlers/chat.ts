@@ -58,13 +58,18 @@ import {
   buildReferencedEntitiesBlock,
   type EntityReference,
 } from '../lib/references';
-import { createLogger } from '../lib/logger';
+import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
+import {
+  createDevelopmentInferenceTrace,
+  traceableContent,
+  traceableMessages,
+  traceableSystem,
+  type DevelopmentInferenceTrace,
+} from '../lib/dev-inference-trace';
 import type { Env } from '../config';
 
 /** Hard cap on model↔tool iterations (CONTRACTS.md §1). */
 const MAX_ITERATIONS = 8;
-
-const log = createLogger('Chat');
 
 /** The client-supplied /chat request body (validated at each point of use). */
 interface ChatRequestBody {
@@ -124,15 +129,25 @@ export async function handleChat(
   env: Env,
   corsHeaders: CorsHeaders,
   availableParties: readonly IntegrationParty[] = [],
+  logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
   const systemPromptName = request.headers.get('X-Personalizer-System-Prompt') || 'chat';
   const wantsStream = (request.headers.get('Accept') || '').includes('text/event-stream');
   const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
+  const log = logging.logger('Chat', { prompt: systemPromptName });
+  const trace = createDevelopmentInferenceTrace(
+    logging.logger('InferenceTrace', { prompt: systemPromptName }),
+    'chat',
+    systemPromptName,
+  );
 
   let body: ChatRequestBody;
   try {
     body = (await request.json()) as ChatRequestBody;
-  } catch {
+  } catch (error) {
+    trace.record('request.failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return badRequest('Invalid JSON body', corsHeaders, wantsStream);
   }
 
@@ -196,9 +211,22 @@ export async function handleChat(
         fileBlockCount,
         refs,
         clientToolMode,
+        trace,
+        logger: log,
       },
       emit,
-    );
+    )
+      .then((done) => {
+        trace.record('request.completed', { ...done });
+        return done;
+      })
+      .catch((error: unknown) => {
+        trace.record('request.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        log.error('Chat request failed', error, { systemPromptName });
+        throw error;
+      });
 
   if (wantsStream) {
     return streamResponse(runner, corsHeaders);
@@ -353,6 +381,9 @@ interface AgentLoopParams {
   /** CLIENT-tool mode (a `clientTools` prompt): on a tool_use, return the calls
    *  in `done.toolCalls` and stop — the client executes them, never the worker. */
   clientToolMode?: boolean;
+  /** Structured trace routed by the deployment's TRACE-level sink configuration. */
+  trace: DevelopmentInferenceTrace;
+  logger: Logger;
 }
 
 /**
@@ -374,6 +405,8 @@ async function runAgentLoop(
     fileBlockCount = 0,
     refs = [],
     clientToolMode = false,
+    trace,
+    logger,
   }: AgentLoopParams,
   emit: Emit | null,
 ): Promise<DonePayload> {
@@ -410,11 +443,27 @@ async function runAgentLoop(
     // a 400. Gate on the model's capability so unsupported models simply omit it.
     if (effort && supportsEffort(model)) payload.output_config = { effort };
 
+    trace.record('request.forwarded', {
+      iteration: iterations,
+      model,
+      maxTokens,
+      outputConfig: payload.output_config,
+      system: traceableSystem(system),
+      messages: traceableMessages(payload),
+      tools: tools?.map((tool) => tool.name),
+    });
+
     const turn = await streamAnthropicTurn(payload, env, emit);
+    trace.record('response.received', {
+      iteration: iterations,
+      stopReason: turn.stopReason,
+      usage: turn.usage,
+      content: traceableContent(turn.content),
+    });
     // Observe cache effectiveness per model turn (docs/CACHING): each streamed
     // turn reports its own usage, so a multi-turn tool loop logs one line per
     // model call — mirrors the /messages `logUsageStats` format.
-    logUsageStats(turn.usage);
+    logUsageStats(turn.usage, logger);
     usage = turn.usage || usage;
     stopReason = turn.stopReason;
     if (turn.text) fullText += (fullText ? '\n' : '') + turn.text;
@@ -443,6 +492,7 @@ async function runAgentLoop(
           await emit({ type: 'tool_call', data: call });
         }
       }
+      trace.record('client_tools.returned', { iteration: iterations, toolCalls });
       return { text: fullText, stopReason: 'tool_use', iterations, usage, toolCalls };
     }
 
@@ -458,6 +508,22 @@ async function runAgentLoop(
       // Anthropic's tool_use blocks always carry a name; the composition
       // degrades an unknown/absent one to the Unknown-tool shape regardless.
       const exec = await toolsets.execute(toolUse.name as string, toolUse.input, { refs });
+      if (!exec.ok) {
+        logger.error('Tool execution failed', exec.result, {
+          iteration: iterations,
+          toolName: toolUse.name,
+          toolInput: toolUse.input,
+          summary: exec.summary,
+        });
+      }
+      trace.record('tool.executed', {
+        iteration: iterations,
+        name: toolUse.name,
+        input: toolUse.input,
+        ok: exec.ok,
+        summary: exec.summary,
+        result: exec.result,
+      });
       if (emit) {
         await emit({
           type: 'tool_result',
@@ -498,7 +564,7 @@ async function runAgentLoop(
  * messages.ts) so a single tail grep spans both surfaces. Token counts only —
  * no PII, no prompt bodies (docs/TOOLSETS.md → security standards).
  */
-function logUsageStats(usage: Usage | null | undefined): void {
+function logUsageStats(usage: Usage | null | undefined, log: Logger): void {
   if (!usage) {
     return;
   }

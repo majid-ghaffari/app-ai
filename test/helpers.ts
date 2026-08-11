@@ -14,6 +14,13 @@ export const ENV: Env = {
   PERSONALIZER_INTEGRATION_BRIDGE_TOKEN: 'svc-token-256bit-opaque',
   PERSONALIZER_API_URL: 'https://brain.test',
   ANTHROPIC_API_BASE: 'https://api.anthropic.com',
+  LOG_TARGETS_TRACE: 'ignore',
+  LOG_TARGETS_DEBUG: 'ignore',
+  LOG_TARGETS_INFO: 'ignore',
+  LOG_TARGETS_WARN: 'ignore',
+  LOG_TARGETS_ERROR: 'ignore',
+  LOG_TARGETS_FATAL: 'ignore',
+  LOG_SEQ_INGEST_URL: 'https://seq.test/ingest/clef',
   CREDENTIALED_ORIGINS:
     'https://local-app.limespot.com,http://localhost:4200,http://localhost:3000',
   MODEL_FAST: 'claude-haiku-4-5',

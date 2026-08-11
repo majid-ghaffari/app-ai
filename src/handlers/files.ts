@@ -21,10 +21,8 @@ import {
   anthropicErrorResponse,
   type CorsHeaders,
 } from '../lib/responses';
-import { createLogger } from '../lib/logger';
+import { createLoggingRuntime, type LoggingRuntime } from '../lib/logger';
 import type { Env } from '../config';
-
-const log = createLogger('Files');
 
 const FILES_API_BETA_HINT =
   '\n\nThe Files API may not be available for your account yet. It is currently in beta and requires special access.';
@@ -34,7 +32,9 @@ export async function handleFileUpload(
   request: Request,
   env: Env,
   corsHeaders: CorsHeaders,
+  logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
+  const log = logging.logger('Files');
   try {
     log.info('File upload request received');
 
@@ -64,6 +64,7 @@ export async function handleFileUpload(
         filename: file.name || 'upload',
       },
       env,
+      log,
     );
 
     log.info(`File uploaded successfully, file_id: ${fileId}${deduped ? ' (dedup hit)' : ''}`);
@@ -87,7 +88,12 @@ export async function handleFileUpload(
 }
 
 /** GET /files — list files. */
-export async function handleListFiles(env: Env, corsHeaders: CorsHeaders): Promise<Response> {
+export async function handleListFiles(
+  env: Env,
+  corsHeaders: CorsHeaders,
+  logging: LoggingRuntime = createLoggingRuntime(env),
+): Promise<Response> {
+  const log = logging.logger('Files');
   try {
     log.info('List files request received');
 
@@ -114,7 +120,9 @@ export async function handleDeleteFile(
   fileId: string,
   env: Env,
   corsHeaders: CorsHeaders,
+  logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
+  const log = logging.logger('Files');
   try {
     log.info(`Delete file request received for: ${fileId}`);
 

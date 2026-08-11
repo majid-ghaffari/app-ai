@@ -45,6 +45,22 @@ Server runs at `http://localhost:8787`. See [CLAUDE.md](CLAUDE.md) →
 local requires `ANTHROPIC_API_BASE=https://api.anthropic.com` **and**
 `AI_CHANNEL=prod` (the guard blocks it otherwise) — prod-only by policy.
 
+Local `LOG_TARGETS_*` values route every level to the terminal and private Seq, and `npm run dev`
+mirrors terminal output to `app-ai-dev.log`. Inference TRACE records include the selected prompt,
+complete model-visible text/tool/file input, assistant output, tool execution, status, usage, and
+elapsed time; file IDs and request context IDs remain available for correlation. Follow
+a run with:
+
+```bash
+tail -f app-ai-dev.log | grep InferenceTrace
+```
+
+Set `APP_AI_DEV_LOG_FILE` to choose another path. Logging policy is entirely configuration-driven:
+each `LOG_TARGETS_<LEVEL>` accepts `ignore`, `console`, `seq`, or a comma-separated fan-out.
+`LOG_SEQ_INGEST_URL` selects the CLEF endpoint and optional `LOG_SEQ_API_KEY` authenticates when
+required. Seq delivery failure never fails or delays inference. Production routes only error/fatal
+to Seq and emits no application console logs.
+
 ### 4. Test
 
 ```bash
@@ -181,6 +197,7 @@ app-ai/
 │   │   ├── agent-cache.ts    # /chat conversation-turn cache breakpoints (≤3, ~15-block intervals)
 │   │   ├── file-dedup.ts     # Files API SHA-256 → file_id dedup (KV-backed, graceful no-op)
 │   │   ├── references.ts     # /chat context.refs intake + Referenced-Entities system block
+│   │   ├── dev-inference-trace.ts # Local-only correlated model input/output trace
 │   │   └── logger.ts         # Scoped console logger
 │   ├── toolsets/             # AI-tool layer: named toolsets + registry (docs/TOOLSETS.md)
 │   │   ├── registry.ts       # composeToolsets(allowlist, authContext) — per-request tool surface
@@ -205,6 +222,7 @@ app-ai/
 │   ├── token-saving.test.ts  # caching/dedup/count_tokens/effort levers
 │   ├── config.test.ts        # config no-fallback contract + production [vars] pins
 │   ├── architecture.test.ts  # fitness scans (allowlists, credentials, error shape, config rule)
+│   ├── dev-inference-trace.test.ts # configured TRACE routing / correlation / file-id omission
 │   └── helpers.ts            # shared typed fixtures (Env, fetch mock, SSE parser, KV mock)
 ├── scripts/
 │   └── verify-caching.mjs    # optional live token-savings diagnostic — see docs/TESTING.md
@@ -230,18 +248,20 @@ variable, no fallback defaults.
 
 - Everything in `.dev.vars` (gitignored; overrides `[vars]` under
   `wrangler dev`). Copy [.dev.vars.example](.dev.vars.example) — it documents
-  every knob.
+  every knob, including all `LOG_TARGETS_*` routes and Seq transport settings.
 
 **Production:**
 
 - Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
   `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, and the tier→model bindings
-  `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` (values pinned by `test/config.test.ts`)
+  `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, plus `LOG_TARGETS_*` and
+  `LOG_SEQ_INGEST_URL` (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
   - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
     caller-auth token toward Personalizer's integration bridge)
+  - Optionally add `LOG_SEQ_API_KEY` when the Seq endpoint requires authentication
 
 ### Updating System Prompts
 
@@ -408,14 +428,15 @@ All configured in [wrangler.toml](wrangler.toml):
 Every environment provides the full variable set — `ENVIRONMENT`,
 `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model
 bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, and the `CLAUDE_API_KEY` +
-`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets. `src/config.ts` throws on any missing one.
+`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets, six `LOG_TARGETS_*` routes, and
+`LOG_SEQ_INGEST_URL` whenever any route selects Seq. `LOG_SEQ_API_KEY` is optional.
+`src/config.ts` throws on malformed or missing required configuration.
 
-### View Live Logs
+### View Logs
 
-```bash
-# Production logs
-npm run tail
-```
+Production application errors and fatals are queried in private Seq. Cloudflare application console
+logging is disabled by configuration. Local logs appear in the terminal and `app-ai-dev.log`, and
+are mirrored to Seq by the example local routes.
 
 ## Security
 

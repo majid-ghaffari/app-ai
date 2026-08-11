@@ -3,14 +3,15 @@
  * injected value (or `'dev'` when the define is absent).
  *
  * Two units, no network / no wrangler spawned:
- *   1. `scripts/dev.mjs` — `resolveShortRev` (fail-loud on a git failure / empty rev) and
- *      `composeWranglerArgs` (the exact `--define __APP_AI_REV__:"<sha>"` argv, extras appended).
+ *   1. `scripts/dev.mjs` — `resolveShortRev` (fail-loud on a git failure / empty rev),
+ *      `composeWranglerArgs` (the exact `--define __APP_AI_REV__:"<sha>"` argv, extras appended),
+ *      and `resolveDevLogPath` (override or stable local default).
  *   2. `src/build-rev.ts` — `BUILD_REV` reads the injected `__APP_AI_REV__` global when present and
  *      falls back to `'dev'` only when it is absent.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 // @ts-expect-error — .mjs sibling has no .d.ts; the launcher's pure helpers are exercised structurally.
-import { composeWranglerArgs, resolveShortRev } from '../scripts/dev.mjs';
+import { composeWranglerArgs, resolveDevLogPath, resolveShortRev } from '../scripts/dev.mjs';
 
 describe('dev launcher — build-rev define composition (F19)', () => {
   it('composes `--define __APP_AI_REV__:"<sha>"` from a resolved rev', () => {
@@ -41,6 +42,16 @@ describe('dev launcher — build-rev define composition (F19)', () => {
 
   it('FAILS LOUD when git yields an empty revision', () => {
     expect(() => resolveShortRev(() => '   \n')).toThrow(/empty revision/);
+  });
+
+  it('uses the stable local dev-log default', () => {
+    expect(resolveDevLogPath({})).toBe('app-ai-dev.log');
+  });
+
+  it('uses a trimmed APP_AI_DEV_LOG_FILE override', () => {
+    expect(resolveDevLogPath({ APP_AI_DEV_LOG_FILE: '  /tmp/app-ai-test.log  ' })).toBe(
+      '/tmp/app-ai-test.log',
+    );
   });
 });
 

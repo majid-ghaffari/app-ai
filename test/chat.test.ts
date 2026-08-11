@@ -13,6 +13,7 @@ import { composeToolsets } from '../src/toolsets/registry';
 import { getSystemPrompt } from '../src/prompt-registry';
 import type { EntityReference } from '../src/lib/references';
 import type { Env } from '../src/config';
+import { createLoggingRuntime } from '../src/lib/logger';
 import {
   ENV,
   CORS,
@@ -377,8 +378,36 @@ describe('handleChat — streaming', () => {
     expect(done.data.iterations).toBe(1);
   });
 
+  it('emits correlated model-turn input/output events when TRACE routes to console', async () => {
+    const logSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    stubFetch().mockResolvedValue(
+      sseResponse(anthropicSse([{ type: 'text', text: 'CAD is active' }], 'end_turn')),
+    );
+
+    const res = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'check CAD' }] }),
+      ENV,
+      CORS,
+      [],
+      createLoggingRuntime({ ...ENV, LOG_TARGETS_TRACE: 'console' }),
+    );
+    await readWorkerSse(res);
+
+    const traceEvents = logSpy.mock.calls
+      .filter((call) => call[0] === '[InferenceTrace]')
+      .map((call) => call[2] as Record<string, unknown>);
+    expect(traceEvents.map((event) => event.event)).toEqual([
+      'request.forwarded',
+      'response.received',
+      'request.completed',
+    ]);
+    expect(JSON.stringify(traceEvents[0])).toContain('check CAD');
+    expect(JSON.stringify(traceEvents[1])).toContain('CAD is active');
+    expect(new Set(traceEvents.map((event) => event.traceId)).size).toBe(1);
+  });
+
   it('logs cache-hit token stats for the model turn (input/cache_creation/cache_read/output)', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     stubFetch().mockResolvedValue(
       sseResponse(
         anthropicSse([{ type: 'text', text: 'cached reply' }], 'end_turn', {
@@ -393,6 +422,8 @@ describe('handleChat — streaming', () => {
       chatRequest({ messages: [{ role: 'user', content: 'hi' }] }),
       ENV,
       CORS,
+      [],
+      createLoggingRuntime({ ...ENV, LOG_TARGETS_INFO: 'console' }),
     );
     await readWorkerSse(res);
 

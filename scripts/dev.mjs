@@ -16,6 +16,7 @@
  * exact-marker FREE stack, and `'dev'` there is by design (see `src/build-rev.ts`).
  */
 import { spawn, execFileSync } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
@@ -42,6 +43,21 @@ export function composeWranglerArgs(rev, extraArgs = []) {
   return ['dev', '--define', `${APP_AI_REV_DEFINE}:"${rev}"`, ...extraArgs];
 }
 
+/** Resolve the persistent local log path; callers may place it elsewhere through the dev env. */
+export function resolveDevLogPath(env = process.env) {
+  const configured =
+    typeof env.APP_AI_DEV_LOG_FILE === 'string' ? env.APP_AI_DEV_LOG_FILE.trim() : '';
+  return configured.length > 0 ? configured : 'app-ai-dev.log';
+}
+
+/** Mirror one child stream to the terminal and the persistent local log. */
+function teeChildStream(childStream, terminalStream, logStream) {
+  childStream?.on('data', (chunk) => {
+    terminalStream.write(chunk);
+    logStream.write(chunk);
+  });
+}
+
 export function main(argv = process.argv.slice(2)) {
   let rev;
   try {
@@ -57,12 +73,26 @@ export function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  const child = spawn('wrangler', composeWranglerArgs(rev, argv), { stdio: 'inherit' });
+  const logPath = resolveDevLogPath();
+  const logStream = createWriteStream(logPath, { flags: 'a' });
+  logStream.write(`\n[app-ai dev] ${new Date().toISOString()} rev=${rev}\n`);
+  logStream.on('error', (error) => {
+    console.error(`[app-ai dev] Could not write ${logPath}:`, error);
+  });
+  console.log(`[app-ai dev] Mirroring worker output to ${logPath}`);
+
+  const child = spawn('wrangler', composeWranglerArgs(rev, argv), {
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+  teeChildStream(child.stdout, process.stdout, logStream);
+  teeChildStream(child.stderr, process.stderr, logStream);
   child.on('error', (error) => {
     console.error('[app-ai dev] Failed to launch wrangler:', error);
+    logStream.end();
     process.exit(1);
   });
   child.on('exit', (code, signal) => {
+    logStream.end();
     if (signal) {
       process.kill(process.pid, signal);
       return;

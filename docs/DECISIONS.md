@@ -401,3 +401,22 @@ budget for JSON. Whole-store propose/review uses `effort: 'medium'` so the model
 reason exhaustively across page consistency, currency formatting, scoped advanced
 CSS, prior-round history, and every independent correction while still staying
 inside the larger 8192-token output budget.
+
+### 19. Logging policy is level-routed configuration, with one request runtime
+
+Worker application code emits structured records through one request-scoped `LoggingRuntime`.
+The router establishes request ID, raw context ID, route, method, and validated subscriber context;
+handlers and shared helpers derive scoped loggers from that immutable runtime. Each severity has a
+required `LOG_TARGETS_<LEVEL>` binding whose value is `ignore` or a comma-separated fan-out to
+registered sinks. Environment names do not select behavior.
+
+The initial production routes ignore trace/debug/info/warn and send error/fatal to private Seq,
+with Cloudflare application console output disabled. Local configuration sends every level to both
+console and Seq. Seq CLEF delivery is asynchronous through `waitUntil`, fail-open, and optionally
+authenticated with the `LOG_SEQ_API_KEY` secret; the configured shared endpoint accepts anonymous
+ingestion. A rejected background task is caught and emitted through the same runtime.
+
+Diagnostic records retain errors, stacks, causes, complete provider input/output, tool activity, file IDs,
+request state, and raw context IDs. The serializer redacts only secret-bearing fields (API keys,
+authorization/cookies/passwords, and service tokens). The inference trace is a TRACE producer, not
+an environment branch, so it follows the same routing contract as every code-level record.

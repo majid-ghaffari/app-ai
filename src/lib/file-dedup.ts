@@ -30,9 +30,7 @@
 
 import * as anthropic from './anthropic';
 import type { Env } from '../config';
-import { createLogger } from './logger';
-
-const log = createLogger('FileDedup');
+import { silentLogger, type Logger } from './logger';
 
 /**
  * TTL on the hash→file_id KV record, in seconds (30 days). Files themselves
@@ -125,6 +123,7 @@ export async function sha256Hex(content: UploadContent): Promise<string> {
 export async function dedupUpload(
   { content, mimeType, filename }: UploadFile,
   env: Env,
+  log: Logger = silentLogger,
 ): Promise<DedupUploadResult> {
   const hash = await sha256Hex(content);
   const filesKv = env.FILES_KV;

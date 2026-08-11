@@ -7,8 +7,8 @@
  *   1. Party-driven composition — every composeToolsets call site in a handler
  *      passes the subscriber's available parties, never a static toolset-name
  *      allowlist literal; only handlers + the toolset layer touch the registry.
- *   2. Credentials never logged — no log/console call references a credential
- *      identifier; the model-visible system builder never sees the context-ID.
+ *   2. Secrets never logged — API keys/tokens stay out of log calls and the
+ *      model-visible system builder never sees the request context-ID.
  *   3. One error shape — the retired `{ error: { message } }` envelope pattern
  *      never reappears; every handler builds errors through lib/responses.
  *   4. No Hardcoded Config Values — no absolute URL literals in src code OR
@@ -101,10 +101,8 @@ describe('fitness: party-driven composition', () => {
   });
 });
 
-describe('fitness: credentials never enter logs or model context', () => {
-  const CREDENTIAL_IDENTIFIERS = [
-    'contextId',
-    'credentials',
+describe('fitness: secrets never enter logs or model context', () => {
+  const SECRET_IDENTIFIERS = [
     'CLAUDE_API_KEY',
     'apiKey',
     'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
@@ -119,7 +117,7 @@ describe('fitness: credentials never enter logs or model context', () => {
         /\b(?:log\.(?:info|warn|error)|console\.(?:log|warn|error|info|debug))\(/,
       );
       for (const argumentText of logArguments) {
-        for (const identifier of CREDENTIAL_IDENTIFIERS) {
+        for (const identifier of SECRET_IDENTIFIERS) {
           expect(
             argumentText,
             `${path}: a log call must never carry ${identifier} (docs/TOOLSETS.md security standards)`,
@@ -218,7 +216,16 @@ describe('fitness: No Hardcoded Config Values', () => {
       // FILES_KV is the one documented OPTIONAL binding (graceful dedup no-op)
       // and may be read off the typed Env directly.
       expect(code, `${path}: read config via the src/config.ts accessors`).not.toMatch(
-        /\benv\.(PERSONALIZER_API_URL|ANTHROPIC_API_BASE|CLAUDE_API_KEY|PERSONALIZER_INTEGRATION_BRIDGE_TOKEN|CREDENTIALED_ORIGINS|ENVIRONMENT)\b/,
+        /\benv\.(PERSONALIZER_API_URL|ANTHROPIC_API_BASE|LOG_TARGETS_TRACE|LOG_TARGETS_DEBUG|LOG_TARGETS_INFO|LOG_TARGETS_WARN|LOG_TARGETS_ERROR|LOG_TARGETS_FATAL|LOG_SEQ_INGEST_URL|LOG_SEQ_API_KEY|CLAUDE_API_KEY|PERSONALIZER_INTEGRATION_BRIDGE_TOKEN|CREDENTIALED_ORIGINS|ENVIRONMENT)\b/,
+      );
+    }
+  });
+
+  it('Worker application code never bypasses the configured logger with console calls', () => {
+    for (const [path, source] of Object.entries(sourceModules)) {
+      if (path.endsWith('src/lib/logger.ts')) continue;
+      expect(stripComments(source), `${path}: route logs through LoggingRuntime`).not.toMatch(
+        /\bconsole\.(?:log|debug|info|warn|error)\s*\(/,
       );
     }
   });

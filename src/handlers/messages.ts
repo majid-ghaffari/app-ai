@@ -24,7 +24,13 @@ import {
   WorkerError,
   type CorsHeaders,
 } from '../lib/responses';
-import { createLogger } from '../lib/logger';
+import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
+import {
+  createDevelopmentInferenceTrace,
+  traceableContent,
+  traceableMessages,
+  traceableSystem,
+} from '../lib/dev-inference-trace';
 import type { Env } from '../config';
 
 /**
@@ -48,19 +54,21 @@ const NON_BLOCKING_VISUAL_PROMPTS = new Set([
   'visual-verify',
 ]);
 
-const log = createLogger('Messages');
-
 export async function handleMessages(
   request: Request,
   env: Env,
   corsHeaders: CorsHeaders,
+  logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
+  const systemPromptName = request.headers.get('X-Personalizer-System-Prompt');
+  const log = logging.logger('Messages', { prompt: systemPromptName });
+  const trace = createDevelopmentInferenceTrace(
+    logging.logger('InferenceTrace', { prompt: systemPromptName }),
+    'messages',
+    systemPromptName,
+  );
   try {
-    const systemPromptName = request.headers.get('X-Personalizer-System-Prompt');
-
-    // The context-ID is already router-validated; it is a credential and is
-    // deliberately NOT logged (docs/TOOLSETS.md → security standards).
-    log.info(`Request${systemPromptName ? ` (prompt ${systemPromptName})` : ''}`);
+    log.info('Request received');
 
     const body = (await request.json()) as Record<string, unknown>;
     const { apiKey: _apiKey, ...claudePayload } = body as {
@@ -71,15 +79,14 @@ export async function handleMessages(
     // playbook before any inference (throws a 409 the outer catch maps to the
     // Brain envelope). No-op for non-onboarding prompts and (during rollout) for
     // a caller that sends no version header.
-    validateRulesetVersion(request, systemPromptName, env);
+    validateRulesetVersion(request, systemPromptName, env, log);
 
     let attachmentFileCount = 0;
     if (systemPromptName) {
       try {
-        attachmentFileCount = await injectSystemPrompt(systemPromptName, claudePayload, env);
+        attachmentFileCount = await injectSystemPrompt(systemPromptName, claudePayload, env, log);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        log.error(`Failed to load system prompt: ${reason}`);
+        log.error('Failed to load system prompt', error, { systemPromptName });
       }
     }
 
@@ -90,7 +97,7 @@ export async function handleMessages(
     // a caller that sends its own `model` (e.g. image-selection sends Haiku) is
     // untouched; only a body without `model` (the Website-Analysis probe) is
     // defaulted, so a probe runs on its registry model per docs/prompts.
-    applyRegistryModel(claudePayload, systemPromptName, env);
+    applyRegistryModel(claudePayload, systemPromptName, env, log);
 
     // Set `max_tokens` EXACTLY to the resolved entry's registry value — the
     // registry is authoritative for a registered prompt's output budget. Any
@@ -98,43 +105,66 @@ export async function handleMessages(
     // client read): changing a registry `maxTokens` literal changes the outgoing
     // Anthropic request one-for-one. Between the model default and cache
     // management so the budget rides the same forwarded payload.
-    applyRegistryMaxTokens(claudePayload, systemPromptName, env);
+    applyRegistryMaxTokens(claudePayload, systemPromptName, env, log);
 
     // PROPOSE prompts: fetch + project the global Brain default box settings
     // and inject them as a SECOND cacheable system block (after the stable prompt,
     // before the store screenshots that ride in the user message). Best-effort —
     // a fetch failure degrades to no injection and never fails the request. The
-    // context-ID authenticates the Brain fetch and is never logged.
+    // The context-ID authenticates the Brain fetch and is correlated by the request logger only.
     const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
-    await injectBrainDefaults(systemPromptName, claudePayload, contextId, env);
+    await injectBrainDefaults(systemPromptName, claudePayload, contextId, env, log);
 
-    manageCacheControl(claudePayload, attachmentFileCount);
+    manageCacheControl(claudePayload, attachmentFileCount, logging.logger('CacheControl'));
 
     // Apply opt-in output effort from the registry entry, if the client didn't
     // already set output_config (additive + safe — see prompt-registry.ts entry shape).
-    applyRegistryEffort(claudePayload, systemPromptName, env);
+    applyRegistryEffort(claudePayload, systemPromptName, env, log);
 
     // Best-effort pre-flight token estimate for large payloads — log/warn only,
     // never gate the live path.
     if (!systemPromptName || !NON_BLOCKING_VISUAL_PROMPTS.has(systemPromptName)) {
-      await preflightTokenEstimate(claudePayload, env);
+      await preflightTokenEstimate(claudePayload, env, log);
     }
+
+    trace.record('request.forwarded', {
+      model: claudePayload.model,
+      maxTokens: claudePayload.max_tokens,
+      outputConfig: claudePayload.output_config,
+      system: traceableSystem(claudePayload.system),
+      messages: traceableMessages(claudePayload),
+    });
 
     const response = await anthropic.createMessage(claudePayload, env);
     const data = (await response.json()) as {
       error?: { type?: string; message?: string };
       usage?: Usage;
+      stop_reason?: unknown;
+      content?: unknown;
     };
 
+    trace.record('response.received', {
+      status: response.status,
+      stopReason: data.stop_reason,
+      usage: data.usage,
+      content: traceableContent(data.content),
+    });
+
     if (!response.ok) {
-      log.error(`Anthropic error: ${data.error?.type} — ${data.error?.message}`);
+      log.error('Anthropic request failed', data.error, {
+        status: response.status,
+        response: data,
+      });
       return anthropicErrorResponse(data, response.status, 'Anthropic request failed', corsHeaders);
     }
 
-    logUsageStats(data.usage);
+    logUsageStats(data.usage, log);
     return jsonResponse(data, corsHeaders);
   } catch (error) {
-    log.error('Exception:', error instanceof Error ? error.message : error);
+    trace.record('request.failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    log.error('Messages request failed', error, { systemPromptName });
     return errorResponseFrom(error, corsHeaders, 'Internal proxy server error');
   }
 }
@@ -149,6 +179,7 @@ async function injectSystemPrompt(
   systemPromptName: string,
   claudePayload: ClientMessagesPayload,
   env: Env,
+  log: Logger,
 ): Promise<number> {
   const prompt = getSystemPrompt(systemPromptName, env);
 
@@ -184,6 +215,7 @@ async function injectSystemPrompt(
           filename: attachment.filename,
         },
         env,
+        log.child({ attachment: attachment.filename }),
       );
       fileId = result.fileId;
       log.info(
@@ -233,7 +265,7 @@ async function injectSystemPrompt(
  *
  * Best-effort and non-fatal: no system block yet, no defaults resolved (a
  * cold-cache fetch failure), or an unknown prompt → the payload is left as-is
- * (no injection). `contextId` authenticates the Brain fetch; it is never logged.
+ * (no injection). `contextId` authenticates the Brain fetch and remains request-scoped.
  *
  */
 async function injectBrainDefaults(
@@ -241,6 +273,7 @@ async function injectBrainDefaults(
   claudePayload: ClientMessagesPayload,
   contextId: string,
   env: Env,
+  log: Logger,
 ): Promise<void> {
   if (!systemPromptName || !contextId) {
     return;
@@ -260,7 +293,11 @@ async function injectBrainDefaults(
   if (!Array.isArray(system) || system.length === 0) {
     return;
   }
-  const defaultsBlock = await getDefaultsBlock(contextId, env);
+  const defaultsBlock = await getDefaultsBlock(
+    contextId,
+    env,
+    log.child({ component: 'defaults' }),
+  );
   if (!defaultsBlock) {
     return;
   }
@@ -283,6 +320,7 @@ function applyRegistryModel(
   claudePayload: ClientMessagesPayload,
   systemPromptName: string | null,
   env: Env,
+  log: Logger,
 ): void {
   if (!systemPromptName || claudePayload.model) {
     return;
@@ -314,7 +352,12 @@ function applyRegistryModel(
  * everywhere, this can tighten to fail-closed (reject a missing header). Entries
  * without a `rulesetVersion` (probes / chat / image-selection) always skip.
  */
-function validateRulesetVersion(request: Request, systemPromptName: string | null, env: Env): void {
+function validateRulesetVersion(
+  request: Request,
+  systemPromptName: string | null,
+  env: Env,
+  log: Logger,
+): void {
   if (!systemPromptName) {
     return;
   }
@@ -360,6 +403,7 @@ function applyRegistryMaxTokens(
   claudePayload: ClientMessagesPayload,
   systemPromptName: string | null,
   env: Env,
+  log: Logger,
 ): void {
   if (!systemPromptName) {
     return;
@@ -392,6 +436,7 @@ function applyRegistryEffort(
   claudePayload: ClientMessagesPayload,
   systemPromptName: string | null,
   env: Env,
+  log: Logger,
 ): void {
   if (!systemPromptName || claudePayload.output_config) {
     return;
@@ -417,6 +462,7 @@ function applyRegistryEffort(
 async function preflightTokenEstimate(
   claudePayload: ClientMessagesPayload,
   env: Env,
+  log: Logger,
 ): Promise<void> {
   // Cheap gate: only bother for payloads likely to be large (attachments or a
   // long message history). Avoids a network round-trip on every small request.
@@ -450,7 +496,7 @@ async function preflightTokenEstimate(
 }
 
 /** Log token-usage stats with cache-hit/creation markers. */
-function logUsageStats(usage: Usage | undefined): void {
+function logUsageStats(usage: Usage | undefined, log: Logger): void {
   if (!usage) {
     return;
   }

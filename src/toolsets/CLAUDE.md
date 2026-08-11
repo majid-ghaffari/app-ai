@@ -60,8 +60,9 @@ the model's calls back to the client.
   shapes are pinned by the lib repo's `admin/ai/CONTRACTS.md` §2 and the
   contract snapshot in `test/toolsets.test.ts` — schema changes are contract
   changes.
-- **Credentials:** resolved per request via `resolveCredentials`,
-  subscriber-scoped, never model-visible, never logged; endpoints expose a
+- **Credentials:** resolved per request via `resolveCredentials` and never model-visible. The
+  context-ID is retained only as private request-log correlation; service tokens are redacted and
+  never logged. Endpoints expose a
   toolset only when the subscriber's available parties satisfy its
   `integrationParties` gate (the five standards in docs/TOOLSETS.md).
 - **Brain is the source of truth** for every shape this layer touches — the

@@ -42,6 +42,8 @@ local_protocol = "http"
 #     pairs with the PERSONALIZER_API_URL [vars] value below. Never logged.
 #     Rotation: Personalizer accepts two active tokens per caller (current +
 #     next), so flip this secret after Personalizer has the next value.
+#   LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
+#     by the configured endpoint; set this secret when the endpoint requires one.
 [vars]
 ENVIRONMENT = "production"
 PERSONALIZER_API_URL = "https://personalizer.io"
@@ -61,10 +63,15 @@ CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,htt
 MODEL_FAST = "claude-haiku-4-5"
 MODEL_BALANCED = "claude-sonnet-5"
 MODEL_FRONTIER = "claude-opus-4-8"
-
-# Observability
-[observability]
-enabled = true
+# Logging is level-routed entirely by configuration. Production sends application
+# failures to private Seq and emits no Worker console output.
+LOG_TARGETS_TRACE = "ignore"
+LOG_TARGETS_DEBUG = "ignore"
+LOG_TARGETS_INFO = "ignore"
+LOG_TARGETS_WARN = "ignore"
+LOG_TARGETS_ERROR = "seq"
+LOG_TARGETS_FATAL = "seq"
+LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"
 
 # Bundle system-prompt .md files as raw text at build time.
 # Workers have no runtime filesystem, so `import x from './prompts/chat.md'`

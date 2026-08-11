@@ -15,6 +15,9 @@ import {
   personalizerApiUrl,
   personalizerIntegrationBridgeToken,
   anthropicApiBase,
+  logSeqApiKey,
+  logSeqIngestUrl,
+  logTargets,
   claudeApiKey,
   credentialedOrigins,
   resolveModel,
@@ -28,6 +31,8 @@ describe('config accessors — present values', () => {
   it('returns the configured values verbatim', () => {
     expect(personalizerApiUrl(ENV)).toBe('https://brain.test');
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
+    expect(logSeqIngestUrl(ENV)).toBe('https://seq.test/ingest/clef');
+    expect(logSeqApiKey(ENV)).toBeNull();
     expect(claudeApiKey(ENV)).toBe('test-key');
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
   });
@@ -61,6 +66,26 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   it('anthropicApiBase names ANTHROPIC_API_BASE', () => {
     expect(() => anthropicApiBase(EMPTY_ENV)).toThrow(
       /Missing required configuration variable ANTHROPIC_API_BASE.*wrangler\.toml/,
+    );
+  });
+
+  it('logSeqIngestUrl names LOG_SEQ_INGEST_URL', () => {
+    expect(() => logSeqIngestUrl(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable LOG_SEQ_INGEST_URL.*wrangler\.toml/,
+    );
+  });
+
+  it('logTargets validates ignore, fan-out, duplicates, and unknown targets', () => {
+    expect(logTargets({ ...ENV, LOG_TARGETS_INFO: 'console, seq,console' }, 'info')).toEqual([
+      'console',
+      'seq',
+    ]);
+    expect(logTargets({ ...ENV, LOG_TARGETS_INFO: 'ignore' }, 'info')).toEqual([]);
+    expect(() => logTargets({ ...ENV, LOG_TARGETS_INFO: 'ignore,seq' }, 'info')).toThrow(
+      /cannot combine 'ignore'/,
+    );
+    expect(() => logTargets({ ...ENV, LOG_TARGETS_INFO: 'future' }, 'info')).toThrow(
+      /unknown log target 'future'/,
     );
   });
 
@@ -135,6 +160,17 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('MODEL_FRONTIER = "claude-opus-4-8"');
   });
 
+  it('routes only production error/fatal to Seq and disables Cloudflare observability', () => {
+    const vars = productionVars();
+    for (const level of ['TRACE', 'DEBUG', 'INFO', 'WARN']) {
+      expect(vars).toContain(`LOG_TARGETS_${level} = "ignore"`);
+    }
+    expect(vars).toContain('LOG_TARGETS_ERROR = "seq"');
+    expect(vars).toContain('LOG_TARGETS_FATAL = "seq"');
+    expect(vars).toContain('LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"');
+    expect(Object.values(wranglerFiles)[0]).not.toContain('[observability]');
+  });
+
   it('keeps the credentialed dev-origin allowlist', () => {
     expect(productionVars()).toContain(
       'CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,http://localhost:3000"',
@@ -150,6 +186,13 @@ describe('production [vars] — the deployed configuration values', () => {
       'MODEL_FAST',
       'MODEL_BALANCED',
       'MODEL_FRONTIER',
+      'LOG_TARGETS_TRACE',
+      'LOG_TARGETS_DEBUG',
+      'LOG_TARGETS_INFO',
+      'LOG_TARGETS_WARN',
+      'LOG_TARGETS_ERROR',
+      'LOG_TARGETS_FATAL',
+      'LOG_SEQ_INGEST_URL',
     ]) {
       expect(vars).toContain(`${name} = `);
     }

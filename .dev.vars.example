@@ -6,8 +6,25 @@
 # a missing one (no fallback defaults). See docs/CODE-PATTERNS.md →
 # "No Hardcoded Config Values".
 
-# Deployment metadata (dashboard/tail context only; code never branches on it).
+# Deployment label. Logging behavior is controlled only by the LOG_TARGETS_* variables below.
 ENVIRONMENT=local
+
+# OPTIONAL dev-launcher output path. `npm run dev` mirrors Wrangler output here so another process
+# can inspect the active inference trace. Defaults to app-ai-dev.log (already covered by *.log in
+# .gitignore).
+# APP_AI_DEV_LOG_FILE=app-ai-dev.log
+
+# Each level fans out to a comma-separated target list (`console`, `seq`) or `ignore`.
+# Local development intentionally mirrors every level to the terminal and private Seq.
+LOG_TARGETS_TRACE=console,seq
+LOG_TARGETS_DEBUG=console,seq
+LOG_TARGETS_INFO=console,seq
+LOG_TARGETS_WARN=console,seq
+LOG_TARGETS_ERROR=console,seq
+LOG_TARGETS_FATAL=console,seq
+LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
+# OPTIONAL secret. The shared endpoint currently accepts anonymous CLEF ingestion.
+# LOG_SEQ_API_KEY=
 
 # Personalizer API base URL, no trailing slash. Miniflare/workerd fetch can't
 # accept nginx's self-signed cert on https://local.personalizer.io, so the

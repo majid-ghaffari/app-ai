@@ -39,9 +39,7 @@
  */
 
 import { personalizerApiUrl, recommendationsDefaultsUrl, type Env } from '../config';
-import { createLogger } from './logger';
-
-const log = createLogger('BrainDefaults');
+import { silentLogger, type Logger } from './logger';
 
 /** Brain endpoint path (no scheme — the base comes from `personalizerApiUrl`). */
 const BRAIN_DEFAULTS_PATH = 'v1/personalizerConfig?defaultRecommendationsSettings=true';
@@ -102,13 +100,17 @@ export function resetDefaultsCacheForTests(): void {
  * when the cold load fails. Successful results are shared for the isolate;
  * failures are not cached, so a later request can retry.
  *
- * `contextId` authenticates the Brain fetch and is NEVER logged or stored.
+ * `contextId` authenticates the Brain fetch and is never stored by this cache.
  */
-export async function getDefaultsBlock(contextId: string, env: Env): Promise<string | null> {
+export async function getDefaultsBlock(
+  contextId: string,
+  env: Env,
+  log: Logger = silentLogger,
+): Promise<string | null> {
   if (cachedBlock) return cachedBlock;
   if (pendingLoad) return pendingLoad;
 
-  pendingLoad = loadDefaultsBlock(contextId, env);
+  pendingLoad = loadDefaultsBlock(contextId, env, log);
   try {
     const block = await pendingLoad;
     if (block) cachedBlock = block;
@@ -119,7 +121,7 @@ export async function getDefaultsBlock(contextId: string, env: Env): Promise<str
 }
 
 /** Fetch, project, and frame the global defaults once for this isolate. */
-async function loadDefaultsBlock(contextId: string, env: Env): Promise<string | null> {
+async function loadDefaultsBlock(contextId: string, env: Env, log: Logger): Promise<string | null> {
   try {
     const cdnUrl = recommendationsDefaultsUrl(env);
     const url = cdnUrl ?? `${personalizerApiUrl(env)}/${BRAIN_DEFAULTS_PATH}`;

@@ -15,10 +15,8 @@
 
 import { WorkerError } from './responses';
 import { personalizerApiUrl, type Env } from '../config';
-import { createLogger } from './logger';
+import { silentLogger, type Logger } from './logger';
 import type { IntegrationParty } from '../toolsets/integration-party';
-
-const log = createLogger('Auth');
 
 /**
  * Personalizer's validate-context-id payload — the members this worker consumes of
@@ -47,6 +45,7 @@ export interface ContextValidation {
 export async function validateContextId(
   contextId: string | null,
   env: Env,
+  log: Logger = silentLogger,
 ): Promise<ContextValidation> {
   if (!contextId) {
     throw new WorkerError('Missing Context ID.', {
@@ -68,7 +67,7 @@ export async function validateContextId(
     });
   } catch (fetchError) {
     const reason = fetchError instanceof Error ? fetchError.message : String(fetchError);
-    log.error('Fetch to Personalizer failed:', reason);
+    log.error('Fetch to Personalizer failed', fetchError, { reason });
     throw new WorkerError(`Context validation is unreachable: ${reason}`, {
       status: 500,
       exceptionType: 'BrainUnreachableException',
@@ -79,7 +78,9 @@ export async function validateContextId(
     // Personalizer already answered with its own Brain-shaped error body — relay
     // its status + body unchanged so the client sees exactly what Personalizer said.
     const errorText = await response.text();
-    log.error(`Validation failed: ${response.status} ${response.statusText}`, errorText);
+    log.error(`Validation failed: ${response.status} ${response.statusText}`, undefined, {
+      responseBody: errorText,
+    });
     throw new WorkerError(`Context validation failed: ${response.status} ${response.statusText}`, {
       status: response.status,
       exceptionType: 'InvalidContextIDException',
@@ -88,6 +89,6 @@ export async function validateContextId(
   }
 
   const data = (await response.json()) as ContextValidation;
-  log.info(`Validated subscriber ${data.SubscriberTitle} (ID: ${data.SubscriberID})`);
+  log.info(`Validated subscriber ${data.SubscriberTitle} (ID: ${data.SubscriberID})`, data);
   return data;
 }

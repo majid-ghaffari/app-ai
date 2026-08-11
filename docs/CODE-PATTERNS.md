@@ -106,6 +106,21 @@ constant, it belongs in configuration (next section). Inline `4`s and
 - A module-internal value is not exported (e.g. the `systemPrompts` table is
   private to `prompt-registry.ts`; consumers go through `getSystemPrompt`).
 
+### Structured logging
+
+- Worker code logs through the request-scoped `LoggingRuntime`; direct `console.*` is allowed only
+  inside the registered Console sink in `lib/logger.ts`.
+- The deployment configures each level independently through `LOG_TARGETS_TRACE` through
+  `LOG_TARGETS_FATAL`. A value is `ignore` or a comma-separated target fan-out such as
+  `console,seq`; environment names do not imply logging behavior.
+- The router owns request/context/subscriber correlation and passes the runtime into handlers.
+  Shared helpers accept a `Logger` rather than creating ambient module loggers.
+- Seq delivery is attached to `waitUntil`, fail-open, and non-recursive. `LOG_SEQ_API_KEY` is
+  optional; when present it is sent as `X-Seq-ApiKey`.
+- Preserve diagnostic evidence (errors, stacks, causes, provider/tool payloads, file IDs, and raw
+  context IDs). Redact actual secret-bearing fields such as authorization, cookies, passwords,
+  service tokens, and API keys.
+
 ---
 
 ## No Hardcoded Config Values (ENFORCED)

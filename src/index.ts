@@ -19,7 +19,11 @@
  */
 
 import { getCorsHeaders } from './lib/cors';
-import { createLogger } from './lib/logger';
+import {
+  createLoggingRuntime,
+  type BackgroundTaskScheduler,
+  type LoggingRuntime,
+} from './lib/logger';
 import { validateContextId } from './lib/auth';
 import { errorResponse, errorResponseFrom, type CorsHeaders } from './lib/responses';
 import { handleHealth } from './handlers/health';
@@ -28,29 +32,38 @@ import { handleMessages } from './handlers/messages';
 import { handleChat } from './handlers/chat';
 import type { Env } from './config';
 
-const log = createLogger('Router');
-
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env);
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env, ctx ? (task) => ctx.waitUntil(task) : undefined);
   },
 } satisfies ExportedHandler<Env>;
 
 /** Route a request to its handler, with shared CORS / auth / error handling. */
-async function handleRequest(request: Request, env: Env): Promise<Response> {
+async function handleRequest(
+  request: Request,
+  env: Env,
+  schedule?: BackgroundTaskScheduler,
+): Promise<Response> {
   const { pathname } = new URL(request.url);
   const { method } = request;
+  const contextId = request.headers.get('X-Personalizer-Context-ID');
   let corsHeaders: CorsHeaders = {};
+  let logging: LoggingRuntime | undefined;
 
   try {
     corsHeaders = getCorsHeaders(request, env);
-
+    logging = createLoggingRuntime(env, schedule, {
+      requestId: crypto.randomUUID(),
+      contextId,
+      route: pathname,
+      method,
+    });
     if (method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
     if (pathname === '/health' && method === 'GET') {
-      return handleHealth(corsHeaders);
+      return handleHealth(corsHeaders, logging);
     }
 
     // Every endpoint except /health requires a valid context-ID. The same
@@ -58,23 +71,26 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     // IntegrationParty set (AvailableIntegrationParties) — captured here, not
     // discarded, and threaded into /chat for dynamic toolset composition
     // (no extra call, no cache — the parties are exactly as fresh as this gate).
-    const validation = await validateContextId(
-      request.headers.get('X-Personalizer-Context-ID'),
-      env,
-    );
+    const validation = await validateContextId(contextId, env, logging.logger('Auth'));
+    logging = logging.child({
+      ...(validation.SubscriberID === undefined ? {} : { subscriberId: validation.SubscriberID }),
+      ...(validation.SubscriberTitle === undefined
+        ? {}
+        : { subscriberTitle: validation.SubscriberTitle }),
+    });
 
     if (pathname === '/files' && method === 'POST') {
-      return await handleFileUpload(request, env, corsHeaders);
+      return await handleFileUpload(request, env, corsHeaders, logging);
     }
     if (pathname === '/files' && method === 'GET') {
-      return await handleListFiles(env, corsHeaders);
+      return await handleListFiles(env, corsHeaders, logging);
     }
     if (pathname.startsWith('/files/') && method === 'DELETE') {
       const fileId = pathname.split('/').pop() ?? '';
-      return await handleDeleteFile(fileId, env, corsHeaders);
+      return await handleDeleteFile(fileId, env, corsHeaders, logging);
     }
     if (pathname === '/messages' && method === 'POST') {
-      return await handleMessages(request, env, corsHeaders);
+      return await handleMessages(request, env, corsHeaders, logging);
     }
     if (pathname === '/chat' && method === 'POST') {
       return await handleChat(
@@ -82,12 +98,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env,
         corsHeaders,
         validation.AvailableIntegrationParties ?? [],
+        logging,
       );
     }
 
     return errorResponse('Resource not found.', corsHeaders, 404, 'RecordNotFoundException');
   } catch (error) {
-    log.error('Request handler error:', error);
+    logging?.logger('Router').error('Request handler error', error);
     return errorResponseFrom(error, corsHeaders);
   }
 }

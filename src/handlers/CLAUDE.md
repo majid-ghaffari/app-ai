@@ -16,6 +16,16 @@ and the AI-tool surface comes from the toolset registry (`../toolsets/`).
 | `messages.ts` | `POST /messages`                                  | Single-shot Messages proxy — the **LIVE smart-image** surface. Enforces the onboarding ruleset-version handshake (`validateRulesetVersion`, 409 on a supplied incompatible `X-Personalizer-Ruleset-Version`, fail-OPEN when absent), injects the registry system prompt, uploads attachments (dedup), sets `model` + `max_tokens` EXACTLY from the registry entry (registry authoritative — no client override / floor / cap), for an `injectsBrainDefaults` PROPOSE prompt fetches+projects the global Brain default box settings (page -> box, effective appearance inheritance) and injects them as a SECOND cacheable system block (`lib/brain-defaults.ts`), and manages the 4-block `cache_control` limit. A first-message block marked `limespot_stable_cache_prefix: true` receives the priority 1h breakpoint after system/attachment accounting; the internal marker is stripped before forwarding and blocks/file IDs are not reordered. The handler then applies opt-in `effort`; latency-critical visual/onboarding prompts proceed directly to inference, while other large payloads may run the best-effort advisory `count_tokens` pre-flight. Success bodies flow through unchanged; a non-ok Anthropic response returns the Brain-shaped envelope with Anthropic's status (`AnthropicApiException`, raw body in `MessageDetail`).                                                                                                                                                                                                                                                                                                                        |
 | `chat.ts`     | `POST /chat`                                      | Studio AI agent loop + SSE. Runs the Anthropic tool-use loop (`MAX_ITERATIONS=8`) against the tool surface composed per request from the toolset registry (`../toolsets/registry.ts`) — party-driven off the subscriber's `availableParties` (threaded in from the router's validate-context-id call): the always-active personalizer toolset (`/v2/ai-tools/*` data queries + `get_entity_context`) for everyone, plus each party-gated platform toolset whose party is available; see `../toolsets/CLAUDE.md`. Streaming `text`/`tool_call`/`tool_result`/`done`/`error` events; non-streaming clients get the `done` payload as JSON. `fileIds` become `image`/`document` blocks (typed by Files-API mime), with a 1h cache breakpoint on the file prefix (placement screenshot + HTML). `context.refs` (entity references, cap 5 — `lib/references.ts`) are sanitized, eagerly prefetched, rendered as the UNCACHED final Referenced-Entities system block, and threaded into the agent loop for `get_entity_context`'s analytics dispatch; requests without refs send a system array identical to a refs-free build (cache safety). **Also carries a LIVE CLIENT-tool mode** (first consumer: the `onboarding-chat` prompt, #111): a prompt whose registry entry sets `clientTools` sends THOSE definitions to the model in place of the server toolset, and on a `tool_use` returns the calls to the client in `done.toolCalls` (`stopReason: 'tool_use'`) and STOPS the turn — the worker executes nothing and makes no Brain proxy call; the client (the lib) runs the tools (`look_at_page` → a store screenshot) and calls `/chat` again with the `tool_result`. |
 
+## Structured logging and inference tracing
+
+The router creates one request-scoped `LoggingRuntime`, retaining request/context/subscriber fields,
+and handlers derive scoped loggers from it. Both `/messages` and `/chat` emit correlated TRACE
+records for model-visible text/tool input, assistant output and usage, failures, client tool calls,
+and server tool execution/results. Model-visible file IDs are retained; actual secret fields are
+redacted by the logger. `LOG_TARGETS_*` configuration alone selects console, Seq,
+multiple sinks, or ignore. Seq work is attached to Cloudflare `waitUntil`, fail-open, and never delays
+or changes the inference response.
+
 ## Conventions
 
 - Handlers receive `corsHeaders` from the router and spread them onto every `Response`.
@@ -39,7 +49,8 @@ and the AI-tool surface comes from the toolset registry (`../toolsets/`).
   `/chat` again with the `tool_result` (the screenshot on `fileIds`). `look_at_page`
   is defined in `../lib/client-tools.ts`; the wire schema the model sees is the
   `page?: string` hint. See the top-level CLAUDE.md → CLIENT-tool mode.
-- Use `createLogger(scope)` from `../lib/logger.ts` for scoped, tail-greppable logs.
+- Accept the router's `LoggingRuntime`, derive a scoped logger, and thread it into shared helpers.
+  Direct `console.*` calls are forbidden outside the logger's Console sink.
 - Every HTTP error body — and every SSE `error` event payload — is the Brain wire
   shape (`{ Message, ExceptionType, MessageDetail? }`, built by `../lib/responses.ts`),
   so clients keep one error parser across app-ai and Personalizer. Handlers never invent

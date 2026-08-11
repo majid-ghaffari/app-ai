@@ -10,10 +10,8 @@
  * their original order.
  */
 
-import { createLogger } from './logger';
+import { silentLogger, type Logger } from './logger';
 import type { CacheControl, CacheableBlock, ClientMessagesPayload } from './anthropic';
-
-const log = createLogger('CacheControl');
 
 /** Anthropic's hard limit on cache_control breakpoints per request. */
 const MAX_CACHE_BLOCKS = 4;
@@ -48,6 +46,7 @@ const DOCUMENT_SIZE_ESTIMATE = 100000;
 export function manageCacheControl(
   claudePayload: ClientMessagesPayload,
   attachmentFileCount = 0,
+  log: Logger = silentLogger,
 ): void {
   const firstMessage = claudePayload.messages?.[0];
   if (!firstMessage || !Array.isArray(firstMessage.content)) {

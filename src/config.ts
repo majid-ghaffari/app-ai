@@ -36,10 +36,7 @@ import type { ModelTier } from './prompt-registry';
  * values only through the accessors below.
  */
 export interface Env {
-  /**
-   * Deployment metadata (`production` / `local`) — surfaced for dashboard/tail
-   * context only; worker code does not branch on it.
-   */
+  /** Deployment label used for diagnostics; LOG_TARGETS_* alone controls log routing. */
   readonly ENVIRONMENT?: string;
   /** Personalizer API base URL, no trailing slash. Non-secret var. */
   readonly PERSONALIZER_API_URL?: string;
@@ -52,6 +49,17 @@ export interface Env {
   readonly PERSONALIZER_INTEGRATION_BRIDGE_TOKEN?: string;
   /** Anthropic API origin (`https://api.anthropic.com`), no trailing slash. Non-secret var. */
   readonly ANTHROPIC_API_BASE?: string;
+  /** Per-level comma-separated log sink routes (`console`, `seq`, or `ignore`). */
+  readonly LOG_TARGETS_TRACE?: string;
+  readonly LOG_TARGETS_DEBUG?: string;
+  readonly LOG_TARGETS_INFO?: string;
+  readonly LOG_TARGETS_WARN?: string;
+  readonly LOG_TARGETS_ERROR?: string;
+  readonly LOG_TARGETS_FATAL?: string;
+  /** Seq CLEF ingestion endpoint. Non-secret var. */
+  readonly LOG_SEQ_INGEST_URL?: string;
+  /** Optional Seq ingestion key. SECRET when configured. */
+  readonly LOG_SEQ_API_KEY?: string;
   /** Comma-separated Origins allowed to send credentialed CORS requests. Non-secret var. */
   readonly CREDENTIALED_ORIGINS?: string;
   /**
@@ -95,11 +103,18 @@ export interface Env {
   readonly RECOMMENDATIONS_DEFAULTS_URL?: string;
 }
 
-/** The required string variables (everything in `Env` except `ENVIRONMENT` metadata and the optional `FILES_KV`). */
+/** Required string variables; optional bindings and LOG_SEQ_API_KEY are intentionally excluded. */
 type RequiredVarName =
   | 'PERSONALIZER_API_URL'
   | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
+  | 'LOG_TARGETS_TRACE'
+  | 'LOG_TARGETS_DEBUG'
+  | 'LOG_TARGETS_INFO'
+  | 'LOG_TARGETS_WARN'
+  | 'LOG_TARGETS_ERROR'
+  | 'LOG_TARGETS_FATAL'
+  | 'LOG_SEQ_INGEST_URL'
   | 'CREDENTIALED_ORIGINS'
   | 'MODEL_FAST'
   | 'MODEL_BALANCED'
@@ -111,6 +126,18 @@ const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
   'CLAUDE_API_KEY',
   'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
 ];
+
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+export type LogTarget = 'console' | 'seq';
+
+const LOG_TARGET_VAR: Record<LogLevel, RequiredVarName> = {
+  trace: 'LOG_TARGETS_TRACE',
+  debug: 'LOG_TARGETS_DEBUG',
+  info: 'LOG_TARGETS_INFO',
+  warn: 'LOG_TARGETS_WARN',
+  error: 'LOG_TARGETS_ERROR',
+  fatal: 'LOG_TARGETS_FATAL',
+};
 
 /** Read one required variable, throwing a config error naming it when absent. */
 function requireVar(env: Env, name: RequiredVarName): string {
@@ -141,6 +168,37 @@ export function personalizerIntegrationBridgeToken(env: Env): string {
 /** Anthropic API origin (the client appends the versioned `/v1/...` paths). */
 export function anthropicApiBase(env: Env): string {
   return requireVar(env, 'ANTHROPIC_API_BASE');
+}
+
+/** Parse and validate the configured target fan-out for one log level. */
+export function logTargets(env: Env, level: LogLevel): readonly LogTarget[] {
+  const raw = requireVar(env, LOG_TARGET_VAR[level]);
+  const names = raw
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => name.length > 0);
+  if (names.length === 1 && names[0] === 'ignore') return [];
+  if (names.includes('ignore')) {
+    throw new Error(`${LOG_TARGET_VAR[level]} cannot combine 'ignore' with another target.`);
+  }
+  const unique = [...new Set(names)];
+  for (const name of unique) {
+    if (name !== 'console' && name !== 'seq') {
+      throw new Error(`${LOG_TARGET_VAR[level]} contains unknown log target '${name}'.`);
+    }
+  }
+  return unique as LogTarget[];
+}
+
+/** Seq's HTTPS CLEF ingestion endpoint. */
+export function logSeqIngestUrl(env: Env): string {
+  return requireVar(env, 'LOG_SEQ_INGEST_URL');
+}
+
+/** Optional Seq ingestion key; anonymous ingestion remains supported when absent. */
+export function logSeqApiKey(env: Env): string | null {
+  const value = env.LOG_SEQ_API_KEY;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /** The config variable each capability tier is bound to (Layer 2 of the indirection). */

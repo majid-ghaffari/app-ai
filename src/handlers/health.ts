@@ -3,13 +3,14 @@
  */
 
 import { jsonResponse, type CorsHeaders } from '../lib/responses';
-import { createLogger } from '../lib/logger';
+import { silentLoggingRuntime, type LoggingRuntime } from '../lib/logger';
 import { BUILD_REV } from '../build-rev';
 
-const log = createLogger('Health');
-
-export function handleHealth(corsHeaders: CorsHeaders): Response {
-  log.info('Health check requested');
+export function handleHealth(
+  corsHeaders: CorsHeaders,
+  logging: LoggingRuntime = silentLoggingRuntime,
+): Response {
+  logging.logger('Health').info('Health check requested');
   return jsonResponse(
     {
       status: 'ok',
