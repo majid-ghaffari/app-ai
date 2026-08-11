@@ -35,6 +35,19 @@ import type { Env } from '../config';
  */
 const LARGE_PAYLOAD_TOKEN_THRESHOLD = 100000;
 
+/** Latency-critical visual calls must never wait for an advisory count_tokens round-trip. */
+const NON_BLOCKING_VISUAL_PROMPTS = new Set([
+  'onboarding-batch',
+  'onboarding-batch-all',
+  'onboarding-review',
+  'onboarding-review-all',
+  'onboarding-currency-recovery',
+  'cartdrawer-batch-all',
+  'cartdrawer-review-all',
+  'optimize-demand',
+  'visual-verify',
+]);
+
 const log = createLogger('Messages');
 
 export async function handleMessages(
@@ -103,7 +116,9 @@ export async function handleMessages(
 
     // Best-effort pre-flight token estimate for large payloads — log/warn only,
     // never gate the live path.
-    await preflightTokenEstimate(claudePayload, env);
+    if (!systemPromptName || !NON_BLOCKING_VISUAL_PROMPTS.has(systemPromptName)) {
+      await preflightTokenEstimate(claudePayload, env);
+    }
 
     const response = await anthropic.createMessage(claudePayload, env);
     const data = (await response.json()) as {

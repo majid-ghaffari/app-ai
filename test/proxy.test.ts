@@ -339,6 +339,8 @@ describe('manageCacheControl', () => {
     // The trailing user image (past the 4 attachment blocks) → cache stripped.
     const blocks = payload.messages?.[0]?.content as CacheableBlock[];
     expect(blocks[5]?.cache_control).toBeUndefined();
+    const systemBlocks = payload.system as CacheableBlock[];
+    expect([...systemBlocks, ...blocks].filter((block) => block.cache_control)).toHaveLength(4);
   });
 
   it('counts only the caller-supplied attachments, not user-supplied leading cached blocks', () => {
@@ -361,6 +363,136 @@ describe('manageCacheControl', () => {
     // 1 system + 0 attachments → 3 slots remain ≥ 2 user blocks → both kept.
     const blocks = payload.messages?.[0]?.content as CacheableBlock[];
     expect(blocks.filter((b) => b.cache_control)).toHaveLength(2);
+  });
+
+  it('prioritizes the explicit stable-prefix breakpoint with one cached system block', () => {
+    const payload: ClientMessagesPayload = {
+      system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'file', file_id: 'file_stable' },
+              limespot_stable_cache_prefix: true,
+            },
+            { type: 'image', source: { type: 'file', file_id: 'file_current_1' } },
+            { type: 'image', source: { type: 'file', file_id: 'file_current_2' } },
+            { type: 'image', source: { type: 'file', file_id: 'file_current_3' } },
+          ],
+        },
+      ],
+    };
+
+    manageCacheControl(payload);
+
+    const blocks = payload.messages?.[0]?.content as CacheableBlock[];
+    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[0]?.limespot_stable_cache_prefix).toBeUndefined();
+    expect(blocks.filter((block) => block.cache_control)).toHaveLength(3);
+    expect(blocks[3]?.cache_control).toBeUndefined();
+  });
+
+  it('reserves the explicit stable-prefix breakpoint with two cached system blocks', () => {
+    const payload: ClientMessagesPayload = {
+      system: [
+        { type: 'text', text: 'prompt', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: 'defaults', cache_control: { type: 'ephemeral' } },
+      ],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'file', file_id: 'file_stable' },
+              limespot_stable_cache_prefix: true,
+            },
+            { type: 'image', source: { type: 'file', file_id: 'file_current_1' } },
+            { type: 'image', source: { type: 'file', file_id: 'file_current_2' } },
+          ],
+        },
+      ],
+    };
+
+    manageCacheControl(payload);
+
+    const blocks = payload.messages?.[0]?.content as CacheableBlock[];
+    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[1]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[2]?.cache_control).toBeUndefined();
+    expect(blocks.filter((block) => block.cache_control)).toHaveLength(2);
+  });
+
+  it('keeps an attachment and explicit stable-prefix breakpoint inside the four-slot limit', () => {
+    const payload: ClientMessagesPayload = {
+      system: [
+        { type: 'text', text: 'prompt', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: 'defaults', cache_control: { type: 'ephemeral' } },
+      ],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'file', file_id: 'file_attachment' },
+              cache_control: { type: 'ephemeral', ttl: '1h' },
+            },
+            {
+              type: 'image',
+              source: { type: 'file', file_id: 'file_stable' },
+              limespot_stable_cache_prefix: true,
+            },
+            { type: 'image', source: { type: 'file', file_id: 'file_current' } },
+          ],
+        },
+      ],
+    };
+
+    manageCacheControl(payload, 1);
+
+    const blocks = payload.messages?.[0]?.content as CacheableBlock[];
+    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[1]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[2]?.cache_control).toBeUndefined();
+    const systemBlocks = payload.system as CacheableBlock[];
+    expect([...systemBlocks, ...blocks].filter((block) => block.cache_control)).toHaveLength(4);
+  });
+
+  it('strips unmanaged text and later-message breakpoints before allocating the four slots', () => {
+    const payload: ClientMessagesPayload = {
+      system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'unmanaged', cache_control: { type: 'ephemeral' } },
+            {
+              type: 'image',
+              source: { type: 'file', file_id: 'stable' },
+              limespot_stable_cache_prefix: true,
+            },
+            { type: 'image', source: { type: 'file', file_id: 'current' } },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'old', cache_control: { type: 'ephemeral' } }],
+        },
+      ],
+    };
+
+    manageCacheControl(payload);
+
+    const first = payload.messages?.[0]?.content as CacheableBlock[];
+    const second = payload.messages?.[1]?.content as CacheableBlock[];
+    expect(first[0]?.cache_control).toBeUndefined();
+    expect(first[1]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(second[0]?.cache_control).toBeUndefined();
+    const system = payload.system as CacheableBlock[];
+    expect([...system, ...first, ...second].filter((block) => block.cache_control)).toHaveLength(3);
   });
 
   it('is a no-op when the first message content is not an array', () => {
@@ -521,6 +653,55 @@ describe('handleMessages', () => {
     const sent = sentBody(fetchCall(fetchMock, 0).init);
     expect(sent.apiKey).toBeUndefined();
     expect(sent.model).toBe('m');
+  });
+
+  it('forwards the stable-prefix breakpoint without the internal marker or reordering file blocks', async () => {
+    const fetchMock = stubFetch();
+    fetchMock
+      .mockResolvedValueOnce(jsonOk({ input_tokens: 12 }))
+      .mockResolvedValueOnce(jsonOk({ content: [] }));
+
+    await handleMessages(
+      messagesRequest({
+        model: 'm',
+        max_tokens: 1,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'file', file_id: 'file_original' },
+              },
+              {
+                type: 'image',
+                source: { type: 'file', file_id: 'file_round_0' },
+                limespot_stable_cache_prefix: true,
+              },
+              {
+                type: 'image',
+                source: { type: 'file', file_id: 'file_current_round' },
+              },
+            ],
+          },
+        ],
+      }),
+      ENV,
+      CORS,
+    );
+
+    const messagesCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+      String(url).endsWith('/v1/messages'),
+    );
+    const sent = sentBody(fetchCall(fetchMock, messagesCallIndex).init);
+    const blocks = sent.messages?.[0]?.content as CacheableBlock[];
+    expect(blocks.map((block) => (block.source as { file_id: string }).file_id)).toEqual([
+      'file_original',
+      'file_round_0',
+      'file_current_round',
+    ]);
+    expect(blocks[1]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks.every((block) => block.limespot_stable_cache_prefix === undefined)).toBe(true);
   });
 
   it('injects the selected system prompt as a cached system block', async () => {

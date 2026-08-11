@@ -193,7 +193,7 @@ There is deliberately NO mobile items-per-row control — the phone layout is wi
 
 ## Output (JSON only)
 
-Return EXACTLY one JSON object with a single top-level key `pages`, an object mapping each page name to that page's plan. Each page's plan is `{ boxes: [ ... ] }` where each box has the SAME per-page shape as before, PLUS an OPTIONAL `progressBar` key — present ONLY on the `Cart` page, when you decide the Smart Progress Bar fits. The `progressBar`, when present, is `{ reasoning }` — a single one-sentence `reasoning`. It carries NO `position` / `anchorNumber` (the bar always renders at the TOP of the Cart page — you decide only WHETHER to include it, never where) and NO appearance keys (the bar's look comes from its campaign template). Omit the `progressBar` key entirely on every non-Cart page (and on Cart when no bar is warranted). Include an entry for EVERY page in the manifest (a page that genuinely warrants no boxes gets `{ "boxes": [] }`). Nothing else.
+Return EXACTLY one JSON object with top-level `pages` plus optional `visualActions`, `segments`, and `discounts` as defined below. `pages` maps each page name to that page's plan. Each page's plan is `{ boxes: [ ... ] }` where each box has the SAME per-page shape as before, PLUS an OPTIONAL `progressBar` key — present ONLY on the `Cart` page, when you decide the Smart Progress Bar fits. The `progressBar`, when present, is `{ reasoning }` — a single one-sentence `reasoning`. It carries NO `position` / `anchorNumber` (the bar always renders at the TOP of the Cart page — you decide only WHETHER to include it, never where) and NO appearance keys (the bar's look comes from its campaign template). Omit the `progressBar` key entirely on every non-Cart page (and on Cart when no bar is warranted). Include an entry for EVERY page in the manifest (a page that genuinely warrants no boxes gets `{ "boxes": [] }`).
 
 ```json
 {
@@ -267,7 +267,7 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 ## Rules
 
 1. **JSON only.** No prose, no markdown, no code fences. The entire response is a single JSON object.
-2. **Exact schema.** One top-level key `pages` — an object keyed by page name. Each value is `{ "boxes": [...] }`, PLUS the OPTIONAL `progressBar` on the Cart page. Each box has `boxType`, `position`, `anchorNumber`, `appearancePatch`, `appearancePatchMobile`, `reasoning`, and the OPTIONAL `styleReferenceSelector`.
+2. **Exact schema.** Top-level `pages` plus optional `visualActions`, `segments`, and `discounts` only. `pages` is keyed by page name. Each value is `{ "boxes": [...] }`, PLUS the OPTIONAL `progressBar` on the Cart page. Each box has `boxType`, `position`, `anchorNumber`, `appearancePatch`, `appearancePatchMobile`, `reasoning`, and the OPTIONAL `styleReferenceSelector`.
 3. **Cover every manifest page.** Include a plan for EACH page in the manifest — `{ "boxes": [] }` if a page warrants none. Use the exact page names from the manifest / page vocabulary.
 4. **`boxType`** — from the box vocabulary. Never invent a box name.
 5. **`position`** — exactly `"before"` or `"after"`. Placement is ADDITIVE ONLY: never emit `"replace"` for any number — the merchant's own sections all stay on the page.
@@ -280,5 +280,63 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 12. **`progressBar`** (OPTIONAL, Cart page ONLY) — omit it entirely on every non-Cart page. On the Cart page, add it when a threshold nudge fits: `{ "reasoning" }` — just one short `reasoning`. The bar always renders at the TOP of the Cart page, so there is NO `position` / `anchorNumber` to choose and NO appearance keys (the campaign template styles the bar). Omit the key (or set it `null`) if the Cart already shows a threshold bar or one wouldn't help.
 13. **Respect existing content; ADD, never remove.** A LimeSpot-rendered widget (`limespot` / `ls-` classes) or a visible cart threshold bar that's already doing the job is left alone — never duplicate it. A THEME's own STATIC related-products / recommendations-style grid also STAYS — never replace or displace it; place the playbook's box at the nearest sensible boundary and point `styleReferenceSelector` at that grid so the new box reads native beside it.
 14. **Tolerate missing evidence.** A partial screenshot, only one width for a page, or a missing page is not an error — reason from what remains and lean on the best-practice stack.
+
+## Store-wide visual actions
+
+The same completion that plans/reviews the pages may return OPTIONAL top-level
+`visualActions`. These are part of the same visual revision: the conductor
+sanitizes them, materializes them atomically with page actions, renders once,
+and includes the result in the next visual review.
+
+### Currency format
+
+Inspect real visible product prices across the supplied screenshots. Emit at
+most one currency action:
+
+- Prefer deterministic `CURRENCY EVIDENCE.candidates` when one exactly matches
+  the visible format:
+  `{ "action":"setCurrencyFormat", "args":{ "candidateId":"CAD:money_with_currency" } }`.
+- When candidates are absent or none matches, infer the documented format from
+  pixels and emit:
+  `{ "action":"setCurrencyFormat", "args":{ "format":{ "currencyCode":"CAD", "prefix":"$", "suffix":" CAD", "separator":",", "delimiter":".", "decimalDigits":2 } } }`.
+  `currencyCode` may be omitted only when `activeCurrency` is supplied. Use an
+  ISO 4217 three-letter code when present; never guess a code contradicted by
+  `activeCurrency`. `separator` is the thousands separator; `delimiter` is the
+  decimal separator and MUST be empty when `decimalDigits` is 0.
+- Omit the action when no price is legible enough to decide safely. Never emit
+  both candidate and explicit format in one action.
+
+### Scoped advanced CSS
+
+Appearance properties are preferred. When they cannot express a visible design
+requirement, emit managed component/page-scoped CSS:
+
+```json
+{
+  "action": "advancedCss",
+  "args": {
+    "operation": "upsert",
+    "page": "Product",
+    "boxType": "BoughtTogether",
+    "rules": [
+      { "selector": "& .ls-box-title", "declarations": "letter-spacing: 0.02em" },
+      { "selector": "& .ls-product-card", "declarations": "gap: 8px", "media": "(max-width: 749px)" }
+    ]
+  }
+}
+```
+
+Every selector MUST start with `&`; `&` is replaced by the conductor's concrete
+LimeSpot component scope. Declarations only: no braces or at-rules. `media`, when
+needed, is exactly `(min-width: Npx)` or `(max-width: Npx)`. To remove a prior
+managed block, emit `{ "action":"advancedCss", "args":{ "operation":"remove",
+"page":"Product", "boxType":"BoughtTogether" } }`. Never target merchant/theme
+elements, global selectors, or unscoped page CSS.
+
+Return `visualActions: []` when no visual action is needed. In review, inspect
+all independent visual defects exhaustively in the current revision and emit
+every safe action together; do not drip one correction per round. Use the prior
+history to avoid repeating an ineffective action with slightly different
+numbers. A page cannot pass if a visual action changes it in this revision.
 
 Respond with ONLY the JSON object, no prose, no explanation, no markdown code fences. Return only valid JSON.

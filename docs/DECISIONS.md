@@ -14,7 +14,14 @@ The strict-TypeScript decision is recorded at [#11](#11-strict-typescript-no-bui
 Stable, reused prefixes carry `cache_control: { type: 'ephemeral', ttl: '1h' }`
 (`EXTENDED_CACHE_CONTROL` in `lib/cache-control.ts`): the `/messages` system
 block + reused file attachments, the `/chat` `buildSystem` base block, and the
-placement file-block prefix. The 1h TTL is GA — no beta header. A 1h write costs
+placement file-block prefix. `/messages` callers identify the terminal stable
+user-content prefix with `limespot_stable_cache_prefix: true`; the worker turns
+that internal marker into a priority 1h breakpoint within the four-slot budget,
+strips the marker before forwarding, and leaves the content/file-ID sequence
+unchanged. Any client-supplied breakpoint outside the proxy-owned attachment prefix
+is stripped before allocation, so text or later-message markers cannot silently exceed
+Anthropic's global four-breakpoint cap. Later volatile round content can miss its own ranked breakpoint without
+invalidating the earlier stable-prefix entry. The 1h TTL is GA — no beta header. A 1h write costs
 2× base input and reads cost 0.1×, so it breaks even at ≥3 reuses; the cached
 prefixes (system prompt, per-page screenshot/HTML) are reused far more often
 than that across a session. Volatile per-call content (the `/chat` context
@@ -385,14 +392,12 @@ ships the header everywhere it can tighten to fail-closed (reject a missing
 header). Prompts without a `rulesetVersion` (probes / chat / image-selection)
 never participate.
 
-### 18. Onboarding propose/review JSON uses low effort
+### 18. Onboarding effort matches payload scope
 
 The four `onboarding-batch{,-all}` and `onboarding-review{,-all}` routes run on
-Sonnet 5 and explicitly set `effort: 'low'`. A production replay
-of the 21-image whole-store request showed Sonnet 5's default adaptive thinking
-consume the complete output budget, return `stop_reason: max_tokens`, and produce
-no JSON text; Studio then had to fall back to per-page calls. The same payload at
-low effort completed with JSON text inside the budget. This is registry-owned
-worker policy: Studio does not send or know about effort. The per-page paths use
-the same setting because retained production logs showed the review fallback also
-consume its complete 2048-token output budget.
+Sonnet 5 with registry-owned effort policy; Studio does not send or know about
+effort. Per-page propose/review uses `effort: 'low'` to reserve the bounded output
+budget for JSON. Whole-store propose/review uses `effort: 'medium'` so the model can
+reason exhaustively across page consistency, currency formatting, scoped advanced
+CSS, prior-round history, and every independent correction while still staying
+inside the larger 8192-token output budget.

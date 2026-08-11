@@ -316,7 +316,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     injectsBrainDefaults: true,
     tier: 'balanced',
     maxTokens: 8192,
-    effort: 'low',
+    effort: 'medium',
     usesTools: false,
     description:
       'Onboarding HOLISTIC PROPOSE for the WHOLE STORE in one call; given several pages (each name + desktop+mobile marker screenshots) + a per-page manifest, returns { pages: { <page>: { boxes:[…], progressBar? } }, segments?: [{ title, rationale }], discounts?: [{ title, audience, discountRate, rationale }] } — the per-page box shape (all pages at once) + the OPTIONAL Cart-only progressBar { position, anchorNumber, reasoning } (the Smart Progress Bar, AI-placed like a box; no appearance keys) + the two STORE-WIDE OFF-PAGE natures (audience segments + discount/bundle campaigns). Structured output, the conductor applies each page box-by-box; off-page items get a non-visual review later. Sonnet, no tools.',
@@ -358,10 +358,24 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     tier: 'balanced',
     maxTokens: 8192,
-    effort: 'low',
+    effort: 'medium',
     usesTools: false,
     description:
       'Onboarding batch REVIEW for the WHOLE STORE in one call; given several applied pages (each name + desktop+mobile after-render screenshots + applied plan) + a per-page manifest, returns { pages: { <page>: { pass, feedback, corrections, failureClass } } } — the same per-page verdict shape, all pages at once. Structured output, the conductor batch-writes each page’s corrections. Sonnet, no tools.',
+    attachments: [],
+  },
+
+  // Exceptional bounded recovery when the holistic proposal omitted the required currency verdict.
+  // It reuses a compact subset of already-uploaded store tiles and returns the SAME visual-action
+  // union as propose/QC. It is not a Website-Analysis probe and does not fetch/capture anything.
+  'onboarding-currency-recovery': {
+    prompt: prompts.onboardingCurrencyRecovery,
+    tier: 'balanced',
+    maxTokens: 512,
+    effort: 'low',
+    usesTools: false,
+    description:
+      'Bounded pre-QC recovery for an omitted holistic currency verdict; selects a deterministic candidate (including none), or with no candidates returns one validated explicit six-argument format. JSON-only { visualActions: [setCurrencyFormat] }.',
     attachments: [],
   },
 

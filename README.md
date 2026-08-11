@@ -318,8 +318,12 @@ Cost-reduction is additive and never changes external request/response shapes.
 
 - **Extended 1h prompt cache.** Stable prefixes (the system prompt, reused file
   attachments, the `/chat` base prompt block) carry `cache_control: { type: 'ephemeral', ttl:
-'1h' }` (GA — no beta header). Conversation turns use the 5-minute default. See
-  `src/lib/cache-control.ts` (`EXTENDED_CACHE_CONTROL`).
+'1h' }` (GA — no beta header). For `/messages` customization/QC calls, the client places
+  `limespot_stable_cache_prefix: true` on the terminal original-plus-round-0 reference block;
+  the worker gives that 1h breakpoint priority within the four-slot system/attachment budget,
+  removes the internal marker before Anthropic forwarding, and leaves block/file-ID order intact.
+  Conversation turns use the 5-minute default. See `src/lib/cache-control.ts`
+  (`EXTENDED_CACHE_CONTROL`, `STABLE_CACHE_PREFIX_MARKER`).
 - **Agent-loop breakpoints.** `src/lib/agent-cache.ts` re-applies ≤3 conversation breakpoints
   each iteration (last block + ~every-15-blocks); the system base block holds the 4th, so the
   total never exceeds Anthropic's 4-block limit.

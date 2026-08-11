@@ -49,6 +49,7 @@ const NON_HANDSHAKE_PROMPTS = [
   'visual-verify',
   'probe-industry',
   'probe-style',
+  'onboarding-currency-recovery',
 ];
 
 afterEach(() => vi.restoreAllMocks());

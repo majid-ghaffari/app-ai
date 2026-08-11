@@ -30,6 +30,7 @@ export { default as probeCartWiring } from './probe-cart-wiring/prompt.md';
 export { default as probeStyle } from './probe-style/prompt.md';
 export { default as probeTemplate } from './probe-template/prompt.md';
 export { default as probeCurrency } from './probe-currency/prompt.md';
+export { default as onboardingCurrencyRecovery } from './onboarding-currency-recovery/prompt.md';
 
 // Composed prompts (each folder's index.ts assembles fragments + shared blocks).
 export { default as onboardingBatch } from './onboarding-batch';

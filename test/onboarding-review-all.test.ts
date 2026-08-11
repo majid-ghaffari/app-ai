@@ -53,7 +53,7 @@ describe('onboarding-review-all registry entry', () => {
     // Whole-store payload needs more output room than the single-page review (2048).
     const singlePage = getSystemPrompt('onboarding-review', ENV);
     expect(entry.maxTokens).toBeGreaterThan(singlePage.maxTokens);
-    expect(entry.effort).toBe('low');
+    expect(entry.effort).toBe('medium');
   });
 
   it('is NOT a `probe-<id>` name — an onboarding step, not a Website-Analysis probe', () => {
@@ -173,13 +173,14 @@ describe('POST /messages — onboarding-review-all routing', () => {
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     // No attachments → no /files upload (the lib uploads the screenshots itself).
     expect(urls.some((url) => url.includes('/files'))).toBe(false);
+    expect(urls.some((url) => url.includes('/count_tokens'))).toBe(false);
     const idx = urls.findIndex((url) => url.endsWith('/v1/messages'));
     expect(idx).toBeGreaterThanOrEqual(0);
     const sent = sentBody(fetchCall(fetchMock, idx).init);
     expect(sent.system?.[0]?.type).toBe('text');
     expect(sent.system?.[0]?.text).toMatch(/onboarding/i);
     expect(sent.model).toBe(ENV.MODEL_BALANCED);
-    expect(sent.output_config).toEqual({ effort: 'low' });
+    expect(sent.output_config).toEqual({ effort: 'medium' });
     expect(Array.isArray(sent.messages?.[0]?.content)).toBe(true);
   });
 

@@ -8,7 +8,7 @@ Only propose a correction you are reasonably confident resolves the issue. When 
 
 ## Output (JSON only)
 
-Return EXACTLY one JSON object with a single top-level key `pages`, an object mapping each page name to that page's verdict. Each page's verdict is `{ pass, feedback, corrections, failureClass }` — the SAME per-page shape the single-page review emits. Include an entry for EVERY page in the manifest. Nothing else.
+Return EXACTLY one JSON object with top-level `pages` and optional `visualActions`. `pages` maps each CURRENT page name to its verdict. Each page's verdict is `{ pass, feedback, corrections, failureClass }` — the SAME per-page shape the single-page review emits. Include an entry for EVERY CURRENT page in the manifest. `visualActions` carries the store-wide/scoped currency and advanced-CSS actions defined below; use `[]` when none.
 
 ```json
 {
@@ -67,7 +67,7 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 ## Rules
 
 1. **JSON only.** No prose, no markdown, no code fences. The entire response is a single JSON object.
-2. **Exact schema.** One top-level key `pages` — an object keyed by page name. Each value is a verdict `{ "pass", "feedback", "corrections", "failureClass" }` — no extra keys, no missing keys, per page.
+2. **Exact schema.** Top-level `pages` plus optional `visualActions` only. `pages` is keyed by page name. Each value is a verdict `{ "pass", "feedback", "corrections", "failureClass" }` — no extra keys, no missing keys, per page.
 3. **Cover every manifest page.** Include a verdict for EACH page in the manifest. Use the exact page names from the manifest / page vocabulary.
 4. **`pass` is a boolean** — `true` only when that page has nothing worth correcting AT EITHER WIDTH; `false` whenever there is a placement or styling issue on desktop OR mobile.
 5. **`feedback` is a non-empty string, per page** — a short, human-readable summary citing what that page's screenshots showed. Name the width when a problem affects only one (e.g. "…on mobile"). Never generic.
@@ -77,3 +77,4 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 9. **Verdicts are per-page; consistency is store-wide.** One page's BROKENNESS never fails another page — a broken page never drags a good one down, and a good page never excuses a broken one. But DO compare across pages: the same box type deviating from its store-wide look on one page is a finding on THAT page.
 10. **Tolerate missing evidence.** A missing screenshot / only one of the two widths for a page / partial plan / a page absent from the images is not an error — reason from what remains, say so in that page's `feedback`, and still emit a verdict for every manifest page.
 11. **No hallucinated specifics.** Only cite what is actually present in the evidence.
+12. **Exhaustive and atomic.** Report every independent visible issue you can safely correct in this revision in ONE response. Read PRIOR HISTORY first; do not repeat an action that failed to resolve the same issue. CLEAN STORE REFERENCE pages are comparison evidence, not pages to re-verdict unless listed as CURRENT.

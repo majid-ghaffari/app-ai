@@ -47,7 +47,7 @@ describe('onboarding-batch-all registry entry (progress-bar-aware)', () => {
     expect(entry.clientTools).toBeUndefined();
     expect(entry.attachments).toEqual([]);
     expect(entry.maxTokens).toBeGreaterThan(0);
-    expect(entry.effort).toBe('low');
+    expect(entry.effort).toBe('medium');
   });
 
   it('is NOT a `probe-<id>` name — an onboarding step, not a Website-Analysis probe', () => {
@@ -134,7 +134,7 @@ describe('POST /messages — onboarding-batch-all routing (progress-bar-aware)',
     expect(sent.system?.[0]?.type).toBe('text');
     expect(sent.system?.[0]?.text).toMatch(/onboarding/i);
     expect(sent.model).toBe(ENV.MODEL_BALANCED);
-    expect(sent.output_config).toEqual({ effort: 'low' });
+    expect(sent.output_config).toEqual({ effort: 'medium' });
     expect(Array.isArray(sent.messages?.[0]?.content)).toBe(true);
   });
 

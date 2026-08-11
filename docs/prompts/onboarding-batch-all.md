@@ -1,20 +1,20 @@
 # Onboarding Batch ALL (WHOLE-STORE PROPOSE) — Maintenance Doc
 
-The design/maintenance record for the `onboarding-batch-all` prompt — the WHOLE-STORE PROPOSE of onboarding "batch mode", the ONE HOLISTIC propose pass. It is the whole-store twin of [`onboarding-batch`](onboarding-batch.md): where `onboarding-batch` plans ONE page per call, `onboarding-batch-all` plans EVERY page (and the two store-wide off-page natures) in a SINGLE completion. It is a **COMPOSED prompt**: rather than one `prompt.md`, its system text is assembled by `composePrompt(...)` in the prompt's own barrel [`src/prompts/onboarding-batch-all/index.ts`](../../src/prompts/onboarding-batch-all/index.ts) from per-prompt fragment files in [`src/prompts/onboarding-batch-all/`](../../src/prompts/onboarding-batch-all/) (`_intro.md`, `_receive.md`, `_catalog-note.md`, `_pb-detail.md`, `_appearance-keys.md`, `_output-and-rules.md`) plus SHARED blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/) — including the enforced-rule block `_block-fixed-rules.md` (first line = the cross-repo `ONBOARDING_RULESET_VERSION`, see DECISIONS.md #17) shared by all four onboarding prompts, and THREE off-page blocks (`_block-audience-segments.md`, `_block-discount-specs.md`, `_block-store-wide-output.md`) that ONLY this prompt composes. The four onboarding prompts (`onboarding-batch` / `-all`, `onboarding-review` / `-all`) share the common blocks, so **an edit to a shared block updates every prompt that composes it.** The composed text is pinned by [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts) against the committed baseline in `test/__snapshots__/onboarding-batch-all.baseline.md`. The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
+The design/maintenance record for the `onboarding-batch-all` prompt — the WHOLE-STORE PROPOSE of onboarding "batch mode", the ONE HOLISTIC propose pass. It is the whole-store twin of [`onboarding-batch`](onboarding-batch.md): where `onboarding-batch` plans ONE page per call, `onboarding-batch-all` plans EVERY page, the shared whole-store visual actions, and the two store-wide off-page natures in a SINGLE completion. It is a **COMPOSED prompt**: rather than one `prompt.md`, its system text is assembled by `composePrompt(...)` in the prompt's own barrel [`src/prompts/onboarding-batch-all/index.ts`](../../src/prompts/onboarding-batch-all/index.ts) from per-prompt fragment files in [`src/prompts/onboarding-batch-all/`](../../src/prompts/onboarding-batch-all/) (`_intro.md`, `_receive.md`, `_catalog-note.md`, `_pb-detail.md`, `_appearance-keys.md`, `_output-and-rules.md`) plus SHARED blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/) — including `_block-visual-actions.md`, the enforced-rule block `_block-fixed-rules.md`, and the three off-page blocks (`_block-audience-segments.md`, `_block-discount-specs.md`, `_block-store-wide-output.md`) that only this prompt composes. The four onboarding prompts (`onboarding-batch` / `-all`, `onboarding-review` / `-all`) share the common blocks, so **an edit to a shared block updates every prompt that composes it.** The composed text is pinned by [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts) against the committed baseline in `test/__snapshots__/onboarding-batch-all.baseline.md`. The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
 
 ## Whole-store batch in one paragraph
 
-`onboarding-batch-all` proposes the WHOLE store in ONE call: given EVERY page at both widths in one completion, it returns `{ pages: { Home: { boxes }, Product: { boxes }, … } }`, so the merchant's "reading → thinking → reveal" show has a SINGLE masked wait rather than one per page. It is also the ONE HOLISTIC propose pass (CONDUCTOR-FRAMEWORK.md → "One holistic propose pass"): the same call ADDITIONALLY returns the two STORE-WIDE OFF-PAGE natures — audience `segments` + `discounts` (bundle/discount campaigns) — as optional top-level keys next to `pages`. This doc covers that whole-store PROPOSE; the QC-side twin is [`onboarding-review-all`](onboarding-review-all.md), the single-page propose is [`onboarding-batch`](onboarding-batch.md).
+`onboarding-batch-all` proposes the WHOLE store in ONE call: given EVERY page at both widths in one completion, it returns `{ pages: { Home: { boxes }, Product: { boxes }, … }, visualActions, segments, discounts }`, so the merchant's "reading → thinking → reveal" show has a SINGLE masked wait rather than one per page. The same holistic call proposes currency/advanced-CSS visual actions plus the two STORE-WIDE OFF-PAGE natures — audience `segments` + `discounts` (bundle/discount campaigns). This doc covers that whole-store PROPOSE; the QC-side twin is [`onboarding-review-all`](onboarding-review-all.md), the single-page propose is [`onboarding-batch`](onboarding-batch.md).
 
 It is registered like a probe (header-selected on `POST /messages`, JSON-only, no tools, Sonnet) but is NOT a `probe-<id>` name: probes are Website-Analysis capabilities; this is an onboarding step. The lib falls back to looping per-page `onboarding-batch` if `onboarding-batch-all` is unavailable or omits a page.
 
 ## `onboarding-batch-all`
 
-- **Purpose:** Given the WHOLE STORE (several pages, each at two widths), return ONE JSON object holding a per-page plan for EACH page — which boxes to place, at which numbered candidate (INSERT or REPLACE, from that page's fixed valid list), and how to style each so it looks native — PLUS the store-wide off-page `segments` + `discounts`.
+- **Purpose:** Given the WHOLE STORE (several pages, each at two widths), return ONE JSON object holding a per-page plan for EACH page — which boxes to place, at which numbered candidate, and how to style each so it looks native — PLUS store-wide/scoped currency or advanced-CSS `visualActions` and the off-page `segments` + `discounts`.
 - **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle` — Cart FBT is a `carousel`) plus STORE-MATCHED counts under the HARD ceilings (`ItemsPerPage` = the store's own cards-per-row, ≤6/line; grid ≤2 rows; bundle 3; slider 1; rows 2 — lower allowed, never more) and the uniform image cell (`ImageMaxWidth`+`ImageMaxHeight` pair). Bottom closers are Related Items then Recently Viewed (RV always last at the footer boundary); every other box anchors in its own page region (Collection Most Popular topmost; Search Most Popular `after` the anchor labeled "the search field", under the field and above the results; Cart Upsell above the line items). Boxes adopt the store's gutter via `ExtraClasses` (the theme's own wrapper class — commonly `page-width` / `container` / `content-container`), clone the store's button into `Default.QuickActions.AddToCart`, default arrows to `circleChevron` when the store shows none, and share ONE `Default.Title` style store-wide.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist.
 - **Max tokens:** `8192` (double the per-page `onboarding-batch`'s `4096` — the whole-store plan is a larger completion).
-- **Effort:** `low` — reserves the output budget for the required whole-store JSON instead of letting adaptive thinking consume it.
+- **Effort:** `medium` — supports exhaustive multi-page visual reasoning and a complete atomic action set within the 8192-token output budget.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none. The lib uploads every page's screenshots per request.
 - **Box vocabulary + page vocabulary:** from the shared [`_shared-box-vocab.md`](../../src/prompts/onboarding-shared/_shared-box-vocab.md) block and the fragment `_catalog-note.md`'s page-vocabulary section, composed into this and the single-page `onboarding-batch` prompt.
@@ -38,12 +38,13 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 13. `onboarding-batch-all/_appearance-keys.md` — the allowed DESKTOP-and-shared appearance keys.
 14. `onboarding-shared/_shared-mobile-rule.md` (shared) — the `appearancePatchMobile` header.
 15. `onboarding-batch-all/_output-and-rules.md` — the frozen output JSON + the numbered rules.
-16. `onboarding-shared/_block-audience-segments.md` (**shared, off-page — this prompt ONLY**) — propose audience segments.
-17. `onboarding-shared/_block-discount-specs.md` (**shared, off-page — this prompt ONLY**) — propose bundle/discount campaigns.
-18. `onboarding-shared/_block-store-wide-output.md` (**shared, off-page — this prompt ONLY**) — the `segments` / `discounts` top-level output keys next to `pages`.
-19. `onboarding-shared/_shared-json-tail.md` (shared) — the closing JSON-only hardening line.
+16. `onboarding-shared/_block-visual-actions.md` (**shared with whole-store review**) — optional currency-format and component/page-scoped advanced-CSS actions, using appearance properties first and managed `&`-scoped rules only when needed.
+17. `onboarding-shared/_block-audience-segments.md` (**shared, off-page — this prompt ONLY**) — propose audience segments.
+18. `onboarding-shared/_block-discount-specs.md` (**shared, off-page — this prompt ONLY**) — propose bundle/discount campaigns.
+19. `onboarding-shared/_block-store-wide-output.md` (**shared, off-page — this prompt ONLY**) — the `segments` / `discounts` top-level output keys next to `pages`.
+20. `onboarding-shared/_shared-json-tail.md` (shared) — the closing JSON-only hardening line.
 
-The three OFF-PAGE blocks (16–18) are the INTENDED divergence from `onboarding-batch`: they are appended AFTER the on-page output+rules, so the box/PB portion stays byte-identical to the per-page twin and only the store-wide segments/discounts output is added. The per-page `onboarding-batch` does NOT carry them (segments + discounts are store-wide, not a single-page decision). **Editing any shared block (`_shared-*` / `_block-*`) updates every prompt that composes it** — e.g. editing `_block-box-placement.md` changes BOTH propose prompts at once; editing an off-page block changes only this one.
+The three OFF-PAGE blocks (17–19) are the intended divergence from `onboarding-batch`; the shared visual-actions block is part of the pinned whole-store visual baseline and also composes into `onboarding-review-all`. The per-page `onboarding-batch` does not carry either category. **Editing any shared block (`_shared-*` / `_block-*`) updates every prompt that composes it** — e.g. editing `_block-box-placement.md` changes both propose prompts, editing `_block-visual-actions.md` changes both whole-store visual passes, and editing an off-page block changes only this prompt.
 
 ### Input (what the lib provides)
 
@@ -57,7 +58,7 @@ For the WHOLE STORE in one call — **no full HTML, no per-marker text descripto
 
 ### Frozen output contract
 
-The assistant text is a single JSON object with a top-level `pages` map keyed by page name, and OPTIONAL store-wide `segments` / `discounts` keys next to it:
+The assistant text is a single JSON object with a top-level `pages` map keyed by page name, optional store-wide/scoped `visualActions`, and optional store-wide `segments` / `discounts` keys next to it:
 
 ```json
 {
@@ -97,6 +98,7 @@ The assistant text is a single JSON object with a top-level `pages` map keyed by
       }
     }
   },
+  "visualActions": [],
   "segments": [{ "title": "First-Time Visitors", "rationale": "the journey-stage starter set" }],
   "discounts": [
     {
@@ -120,6 +122,8 @@ The assistant text is a single JSON object with a top-level `pages` map keyed by
 - `reasoning` — one short sentence.
 
 **`progressBar`** — the Smart Progress Bar, a Cart-page-ONLY optional key. Present only on the `Cart` page when a threshold / free-shipping nudge fits; OMITTED (or `null`) on every non-Cart page and on Cart when no bar is warranted. Shape `{ reasoning }` — a single one-sentence `reasoning` and NOTHING else: the model decides only WHETHER to include the bar. There is deliberately **NO `position` / `anchorNumber`** (D1 ratified deterministic top-of-Cart — the lib always renders the bar at the top of the Cart page, so the model can't affect its placement) and **NO appearance keys** (its look comes from its campaign template — Shopify Free Shipping, etc.; NO `appearancePatch` / `appearancePatchMobile` / `styleReferenceSelector`). The lib reads the include/omit decision + `reasoning` and places the bar deterministically.
+
+**`visualActions`** — OPTIONAL store-wide/scoped visual writes. `setCurrencyFormat` selects a supplied deterministic currency candidate when possible or emits an explicit documented format when pixels support it. `advancedCss` upserts/removes managed CSS for one LimeSpot page/component scope; selectors begin with `&`, declarations contain no braces/at-rules, and media is restricted to a min/max-width expression. Appearance properties remain preferred. The conductor sanitizes and materializes these actions atomically with the page plan before the first QC render.
 
 **`segments`** — OPTIONAL store-wide, sitting NEXT TO `pages` (never nested in a page). An array of `{ title, rationale }`: `title` from the segment vocabulary the grounding catalog / existing-config input provides (the lib resolves it to a real built-in segment template — never a free-invented name), `rationale` one short sentence. Off-page (no placement, no appearance, no screenshot). Omit the key or return `[]` when the store warrants none.
 

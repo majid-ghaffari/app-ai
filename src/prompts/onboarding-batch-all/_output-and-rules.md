@@ -7,7 +7,7 @@ There is deliberately NO mobile items-per-row control — the phone layout is wi
 
 ## Output (JSON only)
 
-Return EXACTLY one JSON object with a single top-level key `pages`, an object mapping each page name to that page's plan. Each page's plan is `{ boxes: [ ... ] }` where each box has the SAME per-page shape as before, PLUS an OPTIONAL `progressBar` key — present ONLY on the `Cart` page, when you decide the Smart Progress Bar fits. The `progressBar`, when present, is `{ reasoning }` — a single one-sentence `reasoning`. It carries NO `position` / `anchorNumber` (the bar always renders at the TOP of the Cart page — you decide only WHETHER to include it, never where) and NO appearance keys (the bar's look comes from its campaign template). Omit the `progressBar` key entirely on every non-Cart page (and on Cart when no bar is warranted). Include an entry for EVERY page in the manifest (a page that genuinely warrants no boxes gets `{ "boxes": [] }`). Nothing else.
+Return EXACTLY one JSON object with top-level `pages` plus optional `visualActions`, `segments`, and `discounts` as defined below. `pages` maps each page name to that page's plan. Each page's plan is `{ boxes: [ ... ] }` where each box has the SAME per-page shape as before, PLUS an OPTIONAL `progressBar` key — present ONLY on the `Cart` page, when you decide the Smart Progress Bar fits. The `progressBar`, when present, is `{ reasoning }` — a single one-sentence `reasoning`. It carries NO `position` / `anchorNumber` (the bar always renders at the TOP of the Cart page — you decide only WHETHER to include it, never where) and NO appearance keys (the bar's look comes from its campaign template). Omit the `progressBar` key entirely on every non-Cart page (and on Cart when no bar is warranted). Include an entry for EVERY page in the manifest (a page that genuinely warrants no boxes gets `{ "boxes": [] }`).
 
 ```json
 {
@@ -81,7 +81,7 @@ Return EXACTLY one JSON object with a single top-level key `pages`, an object ma
 ## Rules
 
 1. **JSON only.** No prose, no markdown, no code fences. The entire response is a single JSON object.
-2. **Exact schema.** One top-level key `pages` — an object keyed by page name. Each value is `{ "boxes": [...] }`, PLUS the OPTIONAL `progressBar` on the Cart page. Each box has `boxType`, `position`, `anchorNumber`, `appearancePatch`, `appearancePatchMobile`, `reasoning`, and the OPTIONAL `styleReferenceSelector`.
+2. **Exact schema.** Top-level `pages` plus optional `visualActions`, `segments`, and `discounts` only. `pages` is keyed by page name. Each value is `{ "boxes": [...] }`, PLUS the OPTIONAL `progressBar` on the Cart page. Each box has `boxType`, `position`, `anchorNumber`, `appearancePatch`, `appearancePatchMobile`, `reasoning`, and the OPTIONAL `styleReferenceSelector`.
 3. **Cover every manifest page.** Include a plan for EACH page in the manifest — `{ "boxes": [] }` if a page warrants none. Use the exact page names from the manifest / page vocabulary.
 4. **`boxType`** — from the box vocabulary. Never invent a box name.
 5. **`position`** — exactly `"before"` or `"after"`. Placement is ADDITIVE ONLY: never emit `"replace"` for any number — the merchant's own sections all stay on the page.

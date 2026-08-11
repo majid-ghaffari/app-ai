@@ -19,7 +19,7 @@
  * blocks (`_block-audience-segments`, `_block-discount-specs`,
  * `_block-store-wide-output`) APPENDED after the box/PB output+rules, before the
  * JSON tail — so it is NOT byte-equivalent to the batch-all baseline. Its gate
- * therefore proves a DIFFERENT invariant: the box+PB placement portion (the
+ * therefore proves a DIFFERENT invariant: the pinned on-page/visual portion (the
  * baseline body) stays byte-identical as a PREFIX, and the off-page additions are
  * present. The other three prompts are byte-identical to their baselines (the
  * off-page blocks compose into NONE of them — segments/discounts are store-wide,
@@ -112,13 +112,13 @@ describe('onboarding prompt blocks — byte-equivalence gate', () => {
     });
   }
 
-  describe('onboarding-batch-all: HOLISTIC — box/PB baseline unchanged + off-page ADDED', () => {
+  describe('onboarding-batch-all: HOLISTIC — visual baseline unchanged + off-page ADDED', () => {
     const composed = () => getSystemPrompt('onboarding-batch-all', ENV).prompt;
 
-    it('the box+PB placement portion (the baseline body) is byte-identical, as a PREFIX', () => {
+    it('the on-page/visual portion (the baseline body) is byte-identical, as a PREFIX', () => {
       const baseline = (BASELINE['onboarding-batch-all'] as string).trim();
       // The baseline body = the baseline WITHOUT its trailing JSON-only line. That
-      // whole box/PB placement instruction must survive verbatim as the composed
+      // whole on-page plan + visual-action instruction must survive verbatim as the composed
       // prompt's prefix — the holistic build only APPENDS off-page content, it never
       // edits the box/PB portion.
       const tailIndex = baseline.lastIndexOf(JSON_TAIL);

@@ -12,6 +12,7 @@ import sharedJsonTail from '../onboarding-shared/_shared-json-tail.md';
 import sharedBoxVocabReview from '../onboarding-shared/_shared-box-vocab-review.md';
 import sharedCorrectionVerbs from '../onboarding-shared/_shared-correction-verbs.md';
 import sharedReviewClassify from '../onboarding-shared/_shared-review-classify.md';
+import blockVisualActions from '../onboarding-shared/_block-visual-actions.md';
 import reviewAllIntro from './_intro.md';
 import reviewAllWhyAndReceive from './_why-and-receive.md';
 import reviewAllClassifyTail from './_classify-tail.md';
@@ -28,6 +29,7 @@ export default composePrompt(
   sharedCorrectionVerbs,
   reviewAllCorrectionVerbsDetail,
   sharedBoxVocabReview,
+  blockVisualActions,
   reviewAllOutputAndRules,
   sharedJsonTail,
 );

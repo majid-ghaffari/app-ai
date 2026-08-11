@@ -20,6 +20,7 @@ import blockPbPlacement from '../onboarding-shared/_block-pb-placement.md';
 import blockAudienceSegments from '../onboarding-shared/_block-audience-segments.md';
 import blockDiscountSpecs from '../onboarding-shared/_block-discount-specs.md';
 import blockStoreWideOutput from '../onboarding-shared/_block-store-wide-output.md';
+import blockVisualActions from '../onboarding-shared/_block-visual-actions.md';
 import batchAllIntro from './_intro.md';
 import batchAllReceive from './_receive.md';
 import batchAllCatalogNote from './_catalog-note.md';
@@ -43,6 +44,7 @@ export default composePrompt(
   batchAllAppearanceKeys,
   sharedMobileRule,
   batchAllOutputAndRules,
+  blockVisualActions,
   blockAudienceSegments,
   blockDiscountSpecs,
   blockStoreWideOutput,

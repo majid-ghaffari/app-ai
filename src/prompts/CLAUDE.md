@@ -80,9 +80,10 @@ loose `.md` files. The full set:
 | `proposals`            | single-file     | `/chat` · server tools  | Per-store SETUP proposer over real page evidence + real store data (`balanced` tier).     |
 | `analytics-insights`   | single-file     | `/chat` · none          | One-shot per-tab `{ kind, text }[]` insights over a tab's real analytics data.            |
 | `onboarding-batch`     | composed        | `/messages` · none      | Propose one page's boxes (INSERT-only by number + explicit playbook styling). Single-page (`balanced`).  |
-| `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: EVERY page in one call + off-page segments/discounts. |
+| `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: every page + visual actions + off-page segments/discounts. |
 | `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
-| `onboarding-review-all`| composed        | `/messages` · none      | Whole-store twin of `onboarding-review`: QC every page in one call.                        |
+| `onboarding-review-all`| composed        | `/messages` · none      | Whole-store iterative QC: current revisions + stable references/history → exhaustive page corrections and visual actions. |
+| `onboarding-currency-recovery` | single-file | `/messages` · none | Exceptional bounded pre-QC recovery when the holistic proposal omits its required currency verdict; reuses already-uploaded price tiles. |
 | `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface) + the OPTIONAL `progressBar` slot (the bar's second host, top of the drawer). |
 | `cartdrawer-review-all`| composed        | `/messages` · none      | QC verdict on the cart-drawer boxes (single surface).                                      |
 | `optimize-demand`      | composed        | `/messages` · none      | On-demand optimize: propose boxes for the current page, led by the merchant's demand.      |
@@ -104,7 +105,7 @@ BOTH ship:
 
 - **`onboarding-batch`** plans ONE page per call.
 - **`onboarding-batch-all`** plans EVERY page in a SINGLE completion (the fast-show's one masked wait) and
-  additionally returns the store-wide off-page `segments` + `discounts`. The lib falls back to looping
+  additionally returns store-wide/scoped `visualActions` plus off-page `segments` + `discounts`. The lib falls back to looping
   `onboarding-batch` per page when `-all` is unavailable or omits a page — so the single-page twin is a live
   fallback, not dead code.
 
@@ -113,6 +114,12 @@ The same single-page ↔ whole-store split holds for `onboarding-review` ↔ `on
 blocks. They share the `onboarding-shared/` library, so the shape looks similar — but each is its own
 registered prompt selected by its own header name, with its own maintenance doc. `-batch`/`-batch-all`
 propose; `-review`/`-review-all` judge — propose and QC are distinct passes, never the same prompt.
+
+The holistic proposal must always make an explicit currency decision. When deterministic candidates
+exist it selects one of them (including the explicit `none` decision); without candidates it may return
+a tightly validated six-argument inferred format. `onboarding-currency-recovery` is only the bounded
+omission-recovery seam before first QC. It sees a compact subset of the already-uploaded price-bearing
+tiles, never captures again, and returns the same `setCurrencyFormat` visual-action union.
 
 ## `probe-<id>` sub-convention
 
