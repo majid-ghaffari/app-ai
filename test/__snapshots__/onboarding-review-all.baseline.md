@@ -62,13 +62,14 @@ When both kinds of problem are present on a page, that page's `failureClass` is 
 
 Judge each page on its OWN evidence — one page failing does not fail its neighbours, and one page passing does not excuse a broken one. Consistency, though, is judged STORE-WIDE: comparing a page's boxes against the same box type on the other pages is part of each page's evidence.
 
-## Corrections — the three write verbs ONLY
+## Corrections — the four write verbs ONLY
 
-Every correction maps to a write the conductor already supports. Use ONLY these three actions — do NOT invent new mutation types:
+Every correction maps to a write the conductor already supports. Use ONLY these four actions — do NOT invent new mutation types:
 
 - **`styleBox`** — restyle a box so it matches the store. `args`: `{ "page": "<page>", "boxType": "<box>", "appearancePatch"?: { <allowed key>: <value> } | null, "appearancePatchMobile"?: { "ImageHeightMobile"?: <int>, "MarginRightMobile"?: <int> } | null }`. `appearancePatch` uses ONLY the desktop-and-shared keys: `Style` (`"carousel"` | `"grid"` | `"bundle"` | `"rows"` | `"slider"`), `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`, `NavigationArrowType`, `ExtraClasses` (the theme's content-wrapper class, e.g. `page-width` — fixes a full-bleed strip), plus the nested `Default.QuickActions.AddToCart` / `Default.NextPrev` CSS-declaration maps (fix an Add-to-cart button or arrow chrome that clashes with the store's own). `appearancePatchMobile` uses ONLY the mobile-only keys `ImageHeightMobile` (px, default 200) + `MarginRightMobile` (px, default 10) — no desktop keys, no mobile items-per-row. Use `appearancePatch` to fix a styling clash at both widths, and `appearancePatchMobile` to fix a MOBILE-ONLY styling break (e.g. cards too tall / cramped on phone) without changing desktop.
 - **`removeBox`** — remove a box that shouldn't be there (a redundant / clobbering box, or one that can't be made to render). `args`: `{ "page": "<page>", "boxType": "<box>" }`.
-- **`addBox`** — add a box the plan should have included, OR re-place one that landed in the wrong slot (as a `removeBox` + `addBox` pair). `args`: `{ "page": "<page>", "boxType": "<box>", "position": "before" | "after", "anchorNumber": <int>, "appearancePatch": { ... } | null, "appearancePatchMobile": { "ImageHeightMobile"?: <int>, "MarginRightMobile"?: <int> } | null }`. `position` + `anchorNumber` + the two patches use the SAME semantics as the propose step: `anchorNumber` is a numbered SECTION the page has, `position` is whether the box goes before or after it (placement is ADDITIVE ONLY — never `replace`; merchant content always stays), and `appearancePatchMobile` is the optional mobile-only override. Never invent a location or emit a selector — just the number + before/after.
+- **`addBox`** — add a box the page is MISSING (one the plan should have included). `args`: `{ "page": "<page>", "boxType": "<box>", "position": "before" | "after", "anchorNumber": <int>, "appearancePatch": { ... } | null, "appearancePatchMobile": { "ImageHeightMobile"?: <int>, "MarginRightMobile"?: <int> } | null }`. `position` + `anchorNumber` + the two patches use the SAME semantics as the propose step: `anchorNumber` is a numbered SECTION the page has, `position` is whether the box goes before or after it (placement is ADDITIVE ONLY — never `replace`; merchant content always stays), and `appearancePatchMobile` is the optional mobile-only override. Never invent a location or emit a selector — just the number + before/after. **Only for a box that is NOT already on the page** — an `addBox` naming a box the applied plan already has is DISCARDED. To relocate one that is already there, use `moveBox`.
+- **`moveBox`** — RELOCATE a box that is already on the page to a different numbered section (the fix for a box that rendered in the wrong slot or the wrong order). `args`: `{ "page": "<page>", "boxType": "<box>", "position": "before" | "after", "anchorNumber": <int> }`. Same anchor semantics as `addBox`: `anchorNumber` is a numbered SECTION the page has and `position` is which side of it the box moves to. It carries NO appearance keys — moving a box never restyles it (pair it with a separate `styleBox` when the look also needs fixing). **Never express a move as a `removeBox` + `addBox` pair** — the conductor discards that pair (the remove lands, the re-add is rejected as a reversal of it), which would DELETE the box instead of moving it. One `moveBox` is the only correct way to re-place an existing box.
 
 `boxType` is from the box vocabulary: `MostPopular`, `Trending`, `NewArrivals`, `YouMayLike`, `RecentViews`, `BoughtTogether`, `CrossSell`, `Upsell`, `RelatedItems`, `FeaturedCollection`.
 
@@ -182,12 +183,8 @@ Return EXACTLY one JSON object with top-level `pages` and optional `visualAction
       "feedback": "Recently Viewed rendered near the top of the page instead of after the cart contents; everything else looks good at both widths.",
       "corrections": [
         {
-          "action": "removeBox",
-          "args": { "page": "Cart", "boxType": "RecentViews" }
-        },
-        {
-          "action": "addBox",
-          "args": { "page": "Cart", "boxType": "RecentViews", "position": "after", "anchorNumber": 4, "appearancePatch": null, "appearancePatchMobile": null }
+          "action": "moveBox",
+          "args": { "page": "Cart", "boxType": "RecentViews", "position": "after", "anchorNumber": 4 }
         }
       ],
       "failureClass": "placement"
@@ -203,7 +200,7 @@ Return EXACTLY one JSON object with top-level `pages` and optional `visualAction
 3. **Cover every manifest page.** Include a verdict for EACH page in the manifest. Use the exact page names from the manifest / page vocabulary.
 4. **`pass` is a boolean** — `true` only when that page has nothing worth correcting AT EITHER WIDTH; `false` whenever there is a placement or styling issue on desktop OR mobile.
 5. **`feedback` is a non-empty string, per page** — a short, human-readable summary citing what that page's screenshots showed. Name the width when a problem affects only one (e.g. "…on mobile"). Never generic.
-6. **`corrections` is an array, per page** — each entry is `{ "action": "styleBox" | "removeBox" | "addBox", "args": { ... } }` whose `args.page` is that page. Each correction is a single RESPONSIVE change (one placement/style setting for both widths — there is no per-width correction). Empty `[]` when the page passes or when a real problem has no safe correction. Never invent an action outside these three.
+6. **`corrections` is an array, per page** — each entry is `{ "action": "styleBox" | "removeBox" | "addBox" | "moveBox", "args": { ... } }` whose `args.page` is that page. Each correction is a single RESPONSIVE change (one placement/style setting for both widths — there is no per-width correction). Empty `[]` when the page passes or when a real problem has no safe correction. Never invent an action outside these four. A box that is already on the page is RELOCATED with one `moveBox` — never a `removeBox` + `addBox` pair, which the conductor discards.
 7. **`failureClass`, per page** — `null` when that page's `pass: true`; `"placement"` for a NON-CRITICAL wrong-slot/order issue; `"styling"` for a CRITICAL bad-render / theme-clash issue (INCLUDING a break at only one width). When both are present, `"styling"` wins.
 8. **Pixels win.** Judge from what actually rendered in each page's screenshots, not from the plan. The plan tells you intent; the screenshots tell you the truth. Check both widths on every page.
 9. **Verdicts are per-page; consistency is store-wide.** One page's BROKENNESS never fails another page — a broken page never drags a good one down, and a good page never excuses a broken one. But DO compare across pages: the same box type deviating from its store-wide look on one page is a finding on THAT page.

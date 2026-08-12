@@ -2,4 +2,4 @@ When both kinds of problem are present on a page, that page's `failureClass` is 
 
 Judge each page on its OWN evidence — one page failing does not fail its neighbours, and one page passing does not excuse a broken one. Consistency, though, is judged STORE-WIDE: comparing a page's boxes against the same box type on the other pages is part of each page's evidence.
 
-## Corrections — the three write verbs ONLY
+## Corrections — the four write verbs ONLY

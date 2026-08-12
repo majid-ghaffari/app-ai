@@ -2,4 +2,4 @@ When both kinds of problem are present, the drawer's `failureClass` is `"styling
 
 A drawer-specific styling failure to watch for: a box too BIG for the narrow drawer — overflowing the column, forcing a horizontal scroll, or pushing the checkout CTA below the fold / out of reach. That is `"styling"` (critical); fix it by shrinking the box (`styleBox` with a lower `ItemsPerPage` / `ItemsLimit`, smaller images) or, if it can't be made to fit, `removeBox`.
 
-## Corrections — the three write verbs ONLY
+## Corrections — the four write verbs ONLY

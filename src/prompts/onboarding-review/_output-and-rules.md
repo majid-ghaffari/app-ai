@@ -57,12 +57,8 @@ A non-critical placement verdict:
   "feedback": "Recently Viewed rendered near the top of the page instead of the bottom; everything else looks good.",
   "corrections": [
     {
-      "action": "removeBox",
-      "args": { "page": "Home", "boxType": "RecentViews" }
-    },
-    {
-      "action": "addBox",
-      "args": { "page": "Home", "boxType": "RecentViews", "position": "before", "anchorNumber": 5, "appearancePatch": null, "appearancePatchMobile": null }
+      "action": "moveBox",
+      "args": { "page": "Home", "boxType": "RecentViews", "position": "before", "anchorNumber": 5 }
     }
   ],
   "failureClass": "placement"
@@ -75,7 +71,7 @@ A non-critical placement verdict:
 2. **Exact schema.** Keys `pass`, `feedback`, `corrections`, `failureClass` — no extra keys, no missing keys.
 3. **`pass` is a boolean** — `true` only when there is nothing worth correcting AT EITHER WIDTH; `false` whenever there is a placement or styling issue on desktop OR mobile.
 4. **`feedback` is a non-empty string** — a short, human-readable summary citing what the screenshots showed. Name the width when a problem affects only one (e.g. "…on mobile"). Never generic.
-5. **`corrections` is an array** — each entry is `{ "action": "styleBox" | "removeBox" | "addBox", "args": { ... } }`. Each correction is a single RESPONSIVE change (one placement/style setting for both widths — there is no per-width correction). Empty `[]` when the page passes or when a real problem has no safe correction. Never invent an action outside these three.
+5. **`corrections` is an array** — each entry is `{ "action": "styleBox" | "removeBox" | "addBox" | "moveBox", "args": { ... } }`. Each correction is a single RESPONSIVE change (one placement/style setting for both widths — there is no per-width correction). Empty `[]` when the page passes or when a real problem has no safe correction. Never invent an action outside these four. A box that is already on the page is RELOCATED with one `moveBox` — never a `removeBox` + `addBox` pair, which the conductor discards.
 6. **`failureClass`** — `null` when `pass: true`; `"placement"` for a NON-CRITICAL wrong-slot/order issue; `"styling"` for a CRITICAL bad-render / theme-clash issue (INCLUDING a break at only one width). When both are present, `"styling"` wins.
 7. **Pixels win.** Judge from what actually rendered in the two screenshots, not from the plan. The plan tells you intent; the screenshots tell you the truth. Check both widths.
 8. **Tolerate missing evidence.** A missing screenshot / only one of the two widths / partial plan is not an error — reason from what remains and say so in `feedback`.

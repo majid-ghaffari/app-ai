@@ -33,7 +33,7 @@ The assistant text is a single JSON object, exactly:
   "pass": true,
   "feedback": "short human-readable summary",
   "corrections": [
-    { "action": "styleBox" | "removeBox" | "addBox", "args": { } }
+    { "action": "styleBox" | "removeBox" | "addBox" | "moveBox", "args": { } }
   ],
   "failureClass": "placement" | "styling" | null
 }
@@ -41,7 +41,7 @@ The assistant text is a single JSON object, exactly:
 
 - `pass` — boolean; `true` only when nothing is worth correcting AT EITHER WIDTH (desktop and mobile).
 - `feedback` — non-empty string; a short summary citing what the screenshots showed. Names the width when a problem affects only one (e.g. "…cramped on mobile but fine on desktop").
-- `corrections` — array of `{ action, args }`. **Limited to the two existing write verbs** (no new mutation types): `styleBox` (an appearance patch, `args`: `{ page, boxType, appearancePatch?, appearancePatchMobile? }` — set `appearancePatch` to fix a both-widths clash, `appearancePatchMobile` (the two mobile knobs `ImageHeightMobile` / `MarginRightMobile`) to fix a MOBILE-ONLY break without touching desktop), and `addBox` / `removeBox` (toggle). Each correction is a single RESPONSIVE change (one placement/style setting for both widths — no per-width correction). `addBox` re-places by the SAME section semantics as propose — `args`: `{ page, boxType, position: "before"|"after", anchorNumber, appearancePatch|null, appearancePatchMobile|null }` (additive-only — never `replace`; a placement re-place is expressed as `removeBox` + `addBox` before/after the correct numbered section); `removeBox` `args`: `{ page, boxType }`. Empty `[]` on pass, or when a real problem has no safe correction.
+- `corrections` — array of `{ action, args }`. **Limited to the four existing write verbs** (no new mutation types): `styleBox` (an appearance patch, `args`: `{ page, boxType, appearancePatch?, appearancePatchMobile? }` — set `appearancePatch` to fix a both-widths clash, `appearancePatchMobile` (the two mobile knobs `ImageHeightMobile` / `MarginRightMobile`) to fix a MOBILE-ONLY break without touching desktop), `addBox` / `removeBox` (toggle), and `moveBox` (relocate). Each correction is a single RESPONSIVE change (one placement/style setting for both widths — no per-width correction). `addBox` adds a box the page does NOT already have, by the SAME section semantics as propose — `args`: `{ page, boxType, position: "before"|"after", anchorNumber, appearancePatch|null, appearancePatchMobile|null }` (additive-only — never `replace`); `removeBox` `args`: `{ page, boxType }`; `moveBox` RE-PLACES a box the page ALREADY has — `args`: `{ page, boxType, position: "before"|"after", anchorNumber }`, no appearance keys. A placement re-place is ONE `moveBox`, never a `removeBox` + `addBox` pair: the lib's `guardReviewCorrections` drops an `addBox` for a box already in the applied plan and treats add-after-remove on the same box as a reversal, so the pair would delete the box instead of moving it. Empty `[]` on pass, or when a real problem has no safe correction.
 - `failureClass` — **the crucial classification (hard operator requirement):**
   - `null` — everything looks good at both widths (`pass: true`, `corrections: []`).
   - `"placement"` — NON-CRITICAL: a box is in a slightly-wrong SLOT / order but otherwise fine. Surface a correction if fixable, but this alone does not make the page "broken".
