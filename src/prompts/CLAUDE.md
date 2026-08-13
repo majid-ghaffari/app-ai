@@ -115,6 +115,13 @@ blocks. They share the `onboarding-shared/` library, so the shape looks similar 
 registered prompt selected by its own header name, with its own maintenance doc. `-batch`/`-batch-all`
 propose; `-review`/`-review-all` judge — propose and QC are distinct passes, never the same prompt.
 
+All three review composers (`onboarding-review`, `onboarding-review-all`, and
+`cartdrawer-review-all`) expose exactly four correction verbs: `styleBox`, `removeBox`, `addBox`, and
+`moveBox`. `addBox` is only for a missing box; relocation of an existing box is one `moveBox` with
+`position` + `anchorNumber` and no appearance keys. A `removeBox` + `addBox` pseudo-move is forbidden;
+lib rejects both halves atomically. Keep the shared verb preamble, each prompt's verb-detail/rules
+fragments, maintenance docs, and byte baselines synchronized.
+
 The holistic proposal must always make an explicit currency decision. When deterministic candidates
 exist it selects one of them (including the explicit `none` decision); without candidates it may return
 a tightly validated six-argument inferred format. `onboarding-currency-recovery` is only the bounded

@@ -436,24 +436,22 @@ rewrites `PlacementSibling`/`PlacementMethod` from the anchor map. The lib unit-
 (`ai-batch-output.test.ts`) and states the contract in `ai-batch-runner.ts`: existing boxes are
 styled with `styleBox` or relocated with `moveBox`.
 
-A prompt that omits `moveBox` therefore has no way to express a relocation, and the remove + add
-pair that looks like a substitute is discarded rather than applied. `guardReviewCorrections` drops
-an `addBox` naming a box already present in the applied plan, and it keys `addBox`/`removeBox` for
-the same box into one `presence:<box>` slot so an add following a remove is rejected as a reversal.
-Both halves of that guard are load-bearing anti-oscillation behavior and are correct as written —
-the pair simply is not a move. Emitting one lands the removal, drops the re-add, and deletes the
-box from the merchant's store while the verdict still reads `failureClass: "placement"`, so the
-loss is silent.
+A prompt that omits `moveBox` therefore has no way to express a relocation. The remove + add pair
+that looks like a substitute is not a move, so lib rejects both halves atomically. It also drops an
+`addBox` naming a box already present in the applied plan and keys cross-round `addBox`/`removeBox`
+history for the same box into one `presence:<box>` slot so a later reversal is rejected. These are
+load-bearing non-destructive/anti-oscillation guards; the explicit verb is the only supported way to
+relocate an existing box.
 
 **Contract.** `moveBox` args are `{ page?, boxType, position, anchorNumber }` (`page` on the
 onboarding review prompts; omitted for the single-surface drawer). It carries no appearance keys —
 relocation never restyles, so a look fix is a separate `styleBox`. The prompts state the
 never-remove-and-re-add rule explicitly, because the failure it prevents is invisible to the model.
 
-**Scope.** Prompt text only: `onboarding-shared/_shared-correction-verbs.md` (shared verb-count
+**Scope.** Worker prompt text: `onboarding-shared/_shared-correction-verbs.md` (shared verb-count
 preamble) plus the per-prompt `_correction-verbs-detail.md`, `_classify-tail.md`, and
 `_output-and-rules.md` fragments of `onboarding-review`, `onboarding-review-all`, and
-`cartdrawer-review-all`, with the two affected `test/__snapshots__` baselines regenerated. No worker
-code changed, and no lib change is required — the verb was already accepted, validated, guarded and
-applied end to end. A model that never emits `moveBox` produces byte-identical behavior to a
-three-verb prompt, so the change is a strict superset.
+`cartdrawer-review-all`, with the two affected `test/__snapshots__` baselines regenerated. Lib owns
+the paired atomic guard and the four-verb validation/application runtime. A model that never emits
+`moveBox` produces byte-identical worker behavior to a three-verb prompt, so the worker change is a
+strict superset.

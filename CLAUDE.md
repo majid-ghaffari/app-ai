@@ -73,6 +73,11 @@ See [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md) for the detailed standards. S
 - **No Silent Skips** — tests never skip on a missing precondition; they throw with an actionable error.
 - **Current-state docs** — the documentation tree describes what IS (Documentation conventions above) and updates in the same commit as the code.
 
+The review prompts use four explicit correction verbs. `styleBox` changes appearance, `removeBox`
+removes, `addBox` creates a missing box, and `moveBox` relocates an existing box. Relocation is never
+encoded as remove+add; lib rejects both halves of that ambiguous pair atomically. The shared prompt
+contract and synchronization points are documented in [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md).
+
 ## Tech / Constraints
 
 - **Strict TypeScript (ES modules).** `tsconfig.json` declares the full strict family plus the beyond-strict correctness flags (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, …). No `any`, no `@ts-ignore`/`@ts-expect-error` — `unknown` + narrowing instead (docs/CODE-PATTERNS.md → Strict TypeScript). `npm run typecheck` (`tsc --noEmit`) is a required gate; there is no separate build step — wrangler/esbuild transpiles the TS natively at deploy time, vitest/vite at test time.
