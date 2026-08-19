@@ -24,6 +24,11 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 .dev.vars
+# Local backups/variants of the secrets file (e.g. .dev.vars.freeshim.bak) — same content class,
+# so they must never be committed either.
+.dev.vars.*
+# Local-only operator helper that pastes a real Anthropic key into .dev.vars.
+use-paid-api.sh
 
 # IDE
 .idea/

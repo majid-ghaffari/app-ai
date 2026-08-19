@@ -455,3 +455,42 @@ preamble) plus the per-prompt `_correction-verbs-detail.md`, `_classify-tail.md`
 the paired atomic guard and the four-verb validation/application runtime. A model that never emits
 `moveBox` produces byte-identical worker behavior to a three-verb prompt, so the worker change is a
 strict superset.
+
+### The onboarding review's `max_tokens` was truncating verdicts (2026-08-18)
+
+`onboarding-review-all` budgeted 8192. That ceiling bounds REASONING and the verdict JSON together,
+and at `effort: 'medium'` this prompt's reasoning alone routinely ran ~7–8k tokens for a SINGLE page
+— so the budget was spent before the verdict was written and the JSON was cut off mid-object.
+
+Measured on a live run: **10 of 33 completions stopped on `max_tokens`, every one of them this
+prompt.** A truncated verdict does not parse, so the round either burned a full repair retry
+(~60–90 s) or lost the pages the model never reached — which then count as unverified and degrade the
+run. That is also why those runs looked like "3/5 pages": not two pages that failed, but two pages the
+model never got to.
+
+The ceiling STAYS at 8192, because the cause was addressed instead: the pre-LimeSpot ORIGINAL
+screenshot set no longer rides the review call (see below), so there is materially less to reason
+over. `Completion hit max_tokens` is the signal to watch — if it reappears, raise this to 16384
+rather than letting verdicts truncate.
+
+**Why not the other levers.** Latency here is almost entirely output tokens (measured
+`corr(output, duration) = +0.96` over 27 review calls, ~85 output tok/s). The verdict JSON is only
+~420 tokens median, so trimming its `feedback` prose targets ~7% of the output while costing real
+signal — `feedback` is the ONLY channel for defects with no correction verb (box titles), and prior
+verdicts feed back as history to prevent repeated ineffective corrections. Lowering `effort` to `low` is the only remaining
+real lever and was deliberately NOT taken: it is the model's judgment budget on a vision task.
+
+**The ORIGINAL pre-customization screenshots are REMOVED from the review call.** The correlation
+across calls looked flat (`corr(cache_read, output) = −0.14`), but that measurement was too noisy to
+settle it and the direct evidence is decisive: across every block composing `onboarding-review-all`,
+the word ORIGINAL appears exactly ONCE — in "what you receive" — and never in a judgment,
+classification, or correction rule. The before/after anchor the prompt actually reasons against is
+the ROUND-0 BASELINE. So the model was handed a labelled set of images with no job, on a call whose
+latency is ~95% reasoning. The PROPOSE call is untouched: the original screenshots are its entire
+input. If a future rule genuinely needs the pre-LimeSpot state in review, add the rule FIRST and
+re-attach the set with it — images without a rule are cost without a verdict.
+
+A `max_tokens` stop is now logged as a WARN in `handlers/messages.ts`. It previously returned 200 with
+a truncated body and failed silently downstream, which is what made this cost a live debugging session
+to find. The partial body is still returned unchanged — the caller's repair/fallback path decides what
+to do with it; this only makes the cause findable in one grep.

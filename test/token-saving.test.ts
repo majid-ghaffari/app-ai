@@ -195,6 +195,46 @@ describe('LEVER 3 — file-dedup', () => {
     expect(putOpts?.expirationTtl).toBe(KV_RECORD_TTL_SECONDS);
   });
 
+  it('KV hit on an UNUSABLE id (400 malformed, e.g. a dev-shim id) also drops it and re-uploads', async () => {
+    // THE CROSS-CHANNEL POISONING REGRESSION. Switching ANTHROPIC_API_BASE from the dev shim to the
+    // real API leaves the hash→file_id records in FILES_KV untouched: identical page tiles hash to
+    // the same key, so the worker vended shim ids (`file_dev_…`) at api.anthropic.com. Those answer
+    // 400 "Invalid file source id", NOT 404 — and the old guard (`status !== 404`) read that as
+    // "exists", so every /messages carrying the block failed. Any non-OK metadata response must drop
+    // the record: re-uploading costs bandwidth, vending an unusable id costs the whole request.
+    const fetchMock = stubFetch();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonOk({ error: { message: 'Invalid file source id `file_dev_abc`' } }, 400),
+      )
+      .mockResolvedValueOnce(jsonOk({ id: 'file_fresh' }, 200));
+    const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_dev_abc', createdAt: 1 }));
+    const out = await dedupUpload(
+      { content: 'abc', mimeType: 'text/plain', filename: 'a.txt' },
+      env,
+    );
+    expect(out).toEqual({ fileId: 'file_fresh', deduped: false });
+    expect(kv.delete).toHaveBeenCalledWith(await sha256Hex('abc'));
+    expect(fetchCall(fetchMock, 0).url).toBe('https://api.anthropic.com/v1/files/file_dev_abc');
+    expect(fetchCall(fetchMock, 1).init.method).toBe('POST');
+  });
+
+  it('KV hit whose metadata check THROWS re-uploads rather than vending an unverified id', async () => {
+    // Fail-closed on a network blip too: the contract is "never return a dead file_id", and an id we
+    // could not verify may be dead. A needless re-upload is the cheap failure mode.
+    const fetchMock = stubFetch();
+    fetchMock
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(jsonOk({ id: 'file_fresh' }, 200));
+    const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_unverifiable', createdAt: 1 }));
+    const out = await dedupUpload(
+      { content: 'abc', mimeType: 'text/plain', filename: 'a.txt' },
+      env,
+    );
+    expect(out).toEqual({ fileId: 'file_fresh', deduped: false });
+    expect(kv.delete).toHaveBeenCalledWith(await sha256Hex('abc'));
+  });
+
   it('KV miss uploads, stores hash→fileId, returns deduped:false', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(jsonOk({ id: 'file_new' }));

@@ -357,6 +357,18 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     prompt: prompts.onboardingReviewAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     tier: 'balanced',
+    // 8192 bounds reasoning AND the verdict JSON together. It was briefly raised to 16384 because at
+    // `medium` effort this prompt's reasoning alone ran ~7-8k even for a SINGLE page and truncated
+    // the JSON mid-object (10 of 33 live completions stopped on `max_tokens`, every one this
+    // prompt). It is back at 8192 because the CAUSE was addressed instead: the pre-LimeSpot ORIGINAL
+    // screenshot set — which no rule in this prompt ever used — no longer rides the review call, so
+    // there is materially less to reason over.
+    //
+    // THIS IS THE NUMBER TO WATCH. If `Completion hit max_tokens` (logged in handlers/messages.ts)
+    // starts appearing again, the reasoning has outgrown the budget once more: raise this back to
+    // 16384 rather than letting verdicts truncate, because a truncated verdict does not parse and
+    // the round either burns a full repair retry or silently loses the pages the model never
+    // reached — which then count as unverified and degrade the merchant's run.
     maxTokens: 8192,
     effort: 'medium',
     usesTools: false,

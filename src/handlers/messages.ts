@@ -158,6 +158,21 @@ export async function handleMessages(
       return anthropicErrorResponse(data, response.status, 'Anthropic request failed', corsHeaders);
     }
 
+    // A `max_tokens` stop means the model was CUT OFF mid-answer. For a JSON-only prompt that is a
+    // silent corruption: the body still returns 200, the client parses a truncated object, and the
+    // work simply goes missing — for the onboarding review that meant pages the model never reached
+    // being recorded as unverified, degrading the run for no visible reason. It cost a live debugging
+    // session to find, so it is now LOUD. Not an error: the partial body is still returned unchanged
+    // (the caller's own repair/fallback path decides what to do with it) — this only makes the cause
+    // findable in one grep instead of a token-arithmetic exercise.
+    if (data.stop_reason === 'max_tokens') {
+      log.warn('Completion hit max_tokens — the answer was truncated', {
+        systemPromptName,
+        maxTokens: claudePayload.max_tokens,
+        outputTokens: data.usage?.output_tokens,
+      });
+    }
+
     logUsageStats(data.usage, log);
     return jsonResponse(data, corsHeaders);
   } catch (error) {

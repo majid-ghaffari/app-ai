@@ -18,9 +18,10 @@
  *   1. The KV record carries a conservative TTL (`KV_RECORD_TTL_SECONDS`) so old
  *      hash→id mappings age out on their own, well inside the file's lifetime.
  *   2. On a KV hit, the cached id is verified against the Files API metadata
- *      endpoint before reuse (`fileExists`). A 404 (file gone) drops the stale
- *      record and falls through to a fresh upload — dedup never returns a dead
- *      file_id, so a later /chat request can't 400 on a missing file we vended.
+ *      endpoint before reuse (`fileExists`). ANY non-OK response — file gone (404),
+ *      malformed id (400), unverifiable (network) — drops the stale record and falls
+ *      through to a fresh upload, so dedup never returns a file_id that a later
+ *      /messages or /chat request would reject.
  *
  * NOTE: file_id reuse still re-tokenizes the file content each request; the
  * token saving comes from pairing the file blocks with a `cache_control`
@@ -160,17 +161,28 @@ export async function dedupUpload(
 }
 
 /**
- * Whether `fileId` still resolves on the Files API. Returns true on a 200
- * metadata response, false on a 404. On any other status or a network error we
- * return `true` (assume present) so a transient Files-API blip doesn't force a
- * needless re-upload — the downstream request would surface a real failure.
+ * Whether `fileId` is usable — i.e. the Files API returns OK metadata for it.
+ *
+ * FAIL-CLOSED: anything other than an OK response (404 gone, 400 malformed, 403, or a network
+ * error) returns false, dropping the KV record and forcing a fresh upload. Re-uploading costs
+ * bandwidth; vending an id the inference call then rejects costs the whole request.
  */
 async function fileExists(fileId: string, env: Env): Promise<boolean> {
   try {
     const response = await anthropic.getFileMetadata(fileId, env);
-    return response.status !== 404;
+    // ANY non-OK metadata response means the id is not usable for inference — not just 404.
+    // Narrowing this to `status !== 404` let a MALFORMED id pass the guard: switching
+    // ANTHROPIC_API_BASE from the dev shim to the real API leaves the hash→file_id records in
+    // FILES_KV intact, so the same page tiles hash to the same key and the worker vended shim ids
+    // (`file_dev_…`) at the real API, which answers 400 (invalid id), not 404. The guard said
+    // "exists", and every /messages carrying that block failed with
+    // `Invalid file source id file_dev_…`. Re-uploading is always safe; vending an unusable id is not.
+    return response.ok;
   } catch {
-    return true;
+    // Cannot verify (network failure) → do NOT vend. Same reasoning: an unverified id risks failing
+    // the inference call it is embedded in, while a re-upload only costs bandwidth. This function's
+    // whole contract is "never return a dead file_id".
+    return false;
   }
 }
 
