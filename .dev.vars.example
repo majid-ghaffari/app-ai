@@ -74,6 +74,22 @@ MODEL_FRONTIER=claude-opus-4-8
 # SECRET — your Anthropic API key. Never commit the real value.
 CLAUDE_API_KEY=sk-ant-your-key-here
 
+# SECRETS — use distinct values containing at least 32 random bytes each.
+# The activation and audit-status keys are shared with limespot.com for separate purposes; the
+# session key stays app-ai-only.
+DEMO_ACTIVATION_SIGNING_SECRET=replace-with-a-random-local-activation-secret
+DEMO_SESSION_SIGNING_SECRET=replace-with-a-distinct-random-local-session-secret
+DEMO_AUDIT_STATUS_SIGNING_SECRET=replace-with-a-distinct-random-local-status-secret
+DEMO_AUDIT_STATUS_URL=http://127.0.0.1:5173/personalization-audit/api/status
+
+# Scoped Studio demo limits. Production values are declared in wrangler.toml.
+DEMO_SESSION_TTL_SECONDS=1800
+DEMO_MAX_UPLOADS=40
+DEMO_MAX_MESSAGES=3
+DEMO_MAX_UPLOAD_BYTES=8000000
+DEMO_MAX_TOTAL_UPLOAD_BYTES=64000000
+DEMO_MAX_MESSAGE_BYTES=1000000
+
 # OPTIONAL — Brain-defaults source URL override (src/lib/brain-defaults.ts).
 # When UNSET (the default), the PROPOSE prompts fetch the tenant's canonical Brain
 # default RecommendationsSettings from the authenticated endpoint

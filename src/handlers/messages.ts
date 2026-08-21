@@ -60,6 +60,7 @@ export async function handleMessages(
   env: Env,
   corsHeaders: CorsHeaders,
   logging: LoggingRuntime = createLoggingRuntime(env),
+  options: { readonly demo?: boolean } = {},
 ): Promise<Response> {
   const requestStartedAt = Date.now();
   const systemPromptName = request.headers.get('X-Personalizer-System-Prompt');
@@ -77,15 +78,22 @@ export async function handleMessages(
     log.info('Request received');
 
     const body = (await request.json()) as Record<string, unknown>;
-    const { apiKey: _apiKey, ...claudePayload } = body as {
+    const { apiKey: _apiKey, ...clientPayload } = body as {
       apiKey?: unknown;
     } & ClientMessagesPayload;
+    // Demo sessions carry a narrower server-owned request contract: only the
+    // validated evidence messages survive. The registry supplies system/model/
+    // budget/effort, and caller-supplied tools or provider knobs never reach the
+    // paid upstream API.
+    const claudePayload: ClientMessagesPayload = options.demo
+      ? { ...(clientPayload.messages === undefined ? {} : { messages: clientPayload.messages }) }
+      : clientPayload;
 
     // Cross-repo ruleset handshake — reject a lib built against a stale onboarding
     // playbook before any inference (throws a 409 the outer catch maps to the
     // Brain envelope). No-op for non-onboarding prompts and (during rollout) for
     // a caller that sends no version header.
-    validateRulesetVersion(request, systemPromptName, env, log);
+    validateRulesetVersion(request, systemPromptName, env, log, options.demo === true);
 
     let attachmentFileCount = 0;
     if (systemPromptName) {
@@ -103,7 +111,7 @@ export async function handleMessages(
     // a caller that sends its own `model` (e.g. image-selection sends Haiku) is
     // untouched; only a body without `model` (the Website-Analysis probe) is
     // defaulted, so a probe runs on its registry model per docs/prompts.
-    applyRegistryModel(claudePayload, systemPromptName, env, log);
+    applyRegistryModel(claudePayload, systemPromptName, env, log, options.demo === true);
 
     // Set `max_tokens` EXACTLY to the resolved entry's registry value — the
     // registry is authoritative for a registered prompt's output budget. Any
@@ -118,8 +126,10 @@ export async function handleMessages(
     // before the store screenshots that ride in the user message). Best-effort —
     // a fetch failure degrades to no injection and never fails the request. The
     // The context-ID authenticates the Brain fetch and is correlated by the request logger only.
-    const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
-    await injectBrainDefaults(systemPromptName, claudePayload, contextId, env, log);
+    if (!options.demo) {
+      const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
+      await injectBrainDefaults(systemPromptName, claudePayload, contextId, env, log);
+    }
 
     manageCacheControl(claudePayload, attachmentFileCount, logging.logger('CacheControl'));
 
@@ -351,8 +361,15 @@ function applyRegistryModel(
   systemPromptName: string | null,
   env: Env,
   log: Logger,
+  forceRegistryModel = false,
 ): void {
-  if (!systemPromptName || claudePayload.model) {
+  if (!systemPromptName || (claudePayload.model && !forceRegistryModel)) {
+    return;
+  }
+  if (forceRegistryModel) {
+    const entry = getSystemPrompt(systemPromptName, env);
+    claudePayload.model = entry.model;
+    log.info(`Applied registry model '${entry.model}' for prompt ${systemPromptName}`);
     return;
   }
   try {
@@ -387,6 +404,7 @@ function validateRulesetVersion(
   systemPromptName: string | null,
   env: Env,
   log: Logger,
+  requireHeader = false,
 ): void {
   if (!systemPromptName) {
     return;
@@ -402,6 +420,13 @@ function validateRulesetVersion(
   }
   const header = request.headers.get('X-Personalizer-Ruleset-Version');
   if (header == null) {
+    if (requireHeader) {
+      throw new WorkerError('The demo request is missing its onboarding ruleset version.', {
+        status: 409,
+        exceptionType: 'RulesetVersionMismatchException',
+        messageDetail: `X-Personalizer-Ruleset-Version is required; server expects '${entry.rulesetVersion}'`,
+      });
+    }
     // Fail-OPEN during rollout — see the ROLLOUT note above (Risk R1).
     return;
   }

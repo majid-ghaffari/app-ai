@@ -50,6 +50,9 @@ local_protocol = "http"
 #     next), so flip this secret after Personalizer has the next value.
 #   LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
 #     by the configured endpoint; set this secret when the endpoint requires one.
+#   DEMO_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
+#   DEMO_SESSION_SIGNING_SECRET — app-ai-only key for exchanged demo sessions.
+#   DEMO_AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
 [vars]
 ENVIRONMENT = "production"
 PERSONALIZER_API_URL = "https://personalizer.io"
@@ -78,6 +81,13 @@ LOG_TARGETS_WARN = "seq"
 LOG_TARGETS_ERROR = "seq"
 LOG_TARGETS_FATAL = "seq"
 LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"
+DEMO_AUDIT_STATUS_URL = "https://limespot.com/personalization-audit/api/status"
+DEMO_SESSION_TTL_SECONDS = "1800"
+DEMO_MAX_UPLOADS = "40"
+DEMO_MAX_MESSAGES = "3"
+DEMO_MAX_UPLOAD_BYTES = "8000000"
+DEMO_MAX_TOTAL_UPLOAD_BYTES = "64000000"
+DEMO_MAX_MESSAGE_BYTES = "1000000"
 
 # Bundle system-prompt .md files as raw text at build time.
 # Workers have no runtime filesystem, so `import x from './prompts/chat.md'`
@@ -101,3 +111,11 @@ fallthrough = true
 binding = "FILES_KV"
 id = "eb048ab9979f46ce93d8b0dfcdb9d58f"
 preview_id = "b524e2d6d53d482ead49f7ea60881dbd"
+
+[[durable_objects.bindings]]
+name = "DEMO_SESSIONS"
+class_name = "DemoSessionAuthority"
+
+[[migrations]]
+tag = "demo-sessions-v1"
+new_classes = ["DemoSessionAuthority"]

@@ -1,0 +1,832 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import worker from '../src/index';
+import { DemoSessionAuthority } from '../src/lib/demo-session-authority';
+import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
+import type { Env } from '../src/config';
+import { ENV, stubFetch, fetchedUrls, fetchCall, sentBody } from './helpers';
+
+const STORE_ORIGIN = 'https://lsdev.myshopline.com';
+
+interface NamedDurableObjectId {
+  readonly name: string;
+}
+
+const AUTHORITIES_BY_ENV = new WeakMap<Env, Map<string, DemoSessionAuthority>>();
+
+class MemoryDurableStorage {
+  private readonly values = new Map<string, unknown>();
+  private transactionTail: Promise<void> = Promise.resolve();
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+
+  async put(key: string, value: unknown): Promise<void> {
+    this.values.set(key, value);
+  }
+
+  async deleteAll(): Promise<void> {
+    this.values.clear();
+  }
+
+  async setAlarm(_scheduledTime: number): Promise<void> {}
+
+  async transaction<T>(callback: (storage: MemoryDurableStorage) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release = (): void => {};
+    this.transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await callback(this);
+    } finally {
+      release();
+    }
+  }
+}
+
+function durableEnv(overrides: Partial<Env> = {}): Env {
+  const authorities = new Map<string, DemoSessionAuthority>();
+  const resolveEnv = (): Env => env;
+  const namespace = {
+    idFromName(name: string): DurableObjectId {
+      return { name } as unknown as DurableObjectId;
+    },
+    get(id: DurableObjectId): DurableObjectStub {
+      const name = (id as unknown as NamedDurableObjectId).name;
+      let authority = authorities.get(name);
+      if (!authority) {
+        const storage = new MemoryDurableStorage();
+        const state = { storage } as unknown as DurableObjectState;
+        authority = new DemoSessionAuthority(state, resolveEnv());
+        authorities.set(name, authority);
+      }
+      return {
+        fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+          authority.fetch(input instanceof Request ? input : new Request(input, init)),
+      } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace;
+  const env: Env = { ...ENV, ...overrides, DEMO_SESSIONS: namespace };
+  AUTHORITIES_BY_ENV.set(env, authorities);
+  return env;
+}
+
+function authorityFor(env: Env, auditIdentifier: string): DemoSessionAuthority {
+  const authority = AUTHORITIES_BY_ENV.get(env)?.get(auditIdentifier);
+  if (!authority) throw new Error(`Missing test authority for ${auditIdentifier}`);
+  return authority;
+}
+
+async function activationToken(
+  env: Env,
+  tokenIdentifier = crypto.randomUUID(),
+  entitlement: object = { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+  email = 'merchant@example.com',
+  auditIdentifier = `audit-${tokenIdentifier}`,
+  attemptLimit?: 2 | null,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const staff = (entitlement as { type?: unknown }).type === 'limespot-staff-multi-store';
+  return signWebsiteActivation(
+    {
+      version: 1,
+      kind: 'activation',
+      issuer: 'limespot-website',
+      audience: 'app-ai',
+      tokenIdentifier,
+      auditIdentifier,
+      attemptLimit: attemptLimit === undefined ? (staff ? null : 2) : attemptLimit,
+      email,
+      emailVerified: true,
+      entitlement,
+      issuedAt: now,
+      expiresAt: now + 600,
+    },
+    env,
+  );
+}
+
+async function signWebsiteActivation(claims: object, env: Env): Promise<string> {
+  const secret = env.DEMO_ACTIVATION_SIGNING_SECRET;
+  if (!secret) throw new Error('test activation signing secret is missing');
+  const encode = (value: object): string => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
+  };
+  const header = encode({ alg: 'HS256', typ: 'JWT' });
+  const payload = encode(claims);
+  const unsigned = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(unsigned)),
+  );
+  let signatureBinary = '';
+  for (const byte of signature) signatureBinary += String.fromCharCode(byte);
+  const encodedSignature = btoa(signatureBinary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/u, '');
+  return `${unsigned}.${encodedSignature}`;
+}
+
+async function exchange(
+  env: Env,
+  token?: string,
+): Promise<{ accessToken: string; sessionIdentifier: string }> {
+  const resolvedToken = token ?? (await activationToken(env));
+  const response = await worker.fetch(
+    new Request('https://app-ai.test/demo/session/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://www.limespot.com' },
+      body: JSON.stringify({
+        activationToken: resolvedToken,
+        storeUrl: `${STORE_ORIGIN}/products/example?campaign=grader`,
+      }),
+    }),
+    env,
+  );
+  expect(response.status).toBe(201);
+  return response.json() as Promise<{ accessToken: string; sessionIdentifier: string }>;
+}
+
+function demoHeaders(
+  accessToken: string,
+  prompt?: string,
+  jsonContent = true,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    Origin: STORE_ORIGIN,
+    'X-LimeSpot-Demo-Store-Origin': STORE_ORIGIN,
+    ...(prompt
+      ? {
+          ...(jsonContent ? { 'Content-Type': 'application/json' } : {}),
+          'X-Personalizer-System-Prompt': prompt,
+          'X-Personalizer-Ruleset-Version': ONBOARDING_RULESET_VERSION,
+        }
+      : {}),
+  };
+}
+
+function uploadRequest(
+  accessToken: string,
+  name: string,
+  content = name,
+  prompts: readonly string[] = [
+    'onboarding-batch-all',
+    'onboarding-batch',
+    'onboarding-review-all',
+    'onboarding-currency-recovery',
+  ],
+): Request {
+  const formData = new FormData();
+  formData.set('file', new File([content], name, { type: 'image/webp' }));
+  for (const prompt of prompts) formData.append('prompt', prompt);
+  return new Request('https://app-ai.test/files', {
+    method: 'POST',
+    headers: demoHeaders(accessToken),
+    body: formData,
+  });
+}
+
+function messageRequest(accessToken: string, fileIdentifiers: readonly string[]): Request {
+  return new Request('https://app-ai.test/messages', {
+    method: 'POST',
+    headers: demoHeaders(accessToken, 'onboarding-batch-all'),
+    body: JSON.stringify({
+      model: 'caller-chosen-expensive-model',
+      tools: [{ name: 'caller_tool' }],
+      output_config: { effort: 'xhigh' },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            ...fileIdentifiers.map((fileIdentifier) => ({
+              type: 'image',
+              source: { type: 'file', file_id: fileIdentifier },
+            })),
+            { type: 'text', text: 'Analyze this store.' },
+          ],
+        },
+      ],
+    }),
+  });
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('demo session authorization', () => {
+  it('exchanges an email-verified activation exactly once and scopes a prefixed session', async () => {
+    const env = durableEnv();
+    const token = await activationToken(env, 'activation-one');
+    const request = () =>
+      worker.fetch(
+        new Request('https://app-ai.test/demo/session/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activationToken: token, storeUrl: `${STORE_ORIGIN}/x` }),
+        }),
+        env,
+      );
+
+    const first = await request();
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({
+      sessionIdentifier: expect.any(String),
+      accessToken: expect.stringMatching(/^ls_demo_/u),
+      expiresAt: expect.any(Number),
+    });
+
+    const second = await request();
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ ExceptionType: 'DemoActivationConsumedException' });
+  });
+
+  it('binds public activations to one origin and reserves multi-store entitlement for verified staff', async () => {
+    const env = durableEnv();
+    const publicToken = await activationToken(env, 'public-origin');
+    const publicMismatch = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: publicToken,
+          storeUrl: 'https://another-shop.test',
+        }),
+      }),
+      env,
+    );
+    expect(publicMismatch.status).toBe(403);
+
+    const invalidStaff = await activationToken(
+      env,
+      'fake-staff',
+      { type: 'limespot-staff-multi-store' },
+      'merchant@example.com',
+    );
+    const invalidStaffResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: invalidStaff,
+          storeUrl: 'https://another-shop.test',
+        }),
+      }),
+      env,
+    );
+    expect(invalidStaffResponse.status).toBe(401);
+
+    const staff = await activationToken(
+      env,
+      'staff-any-store',
+      { type: 'limespot-staff-multi-store' },
+      'sales@limespot.com',
+    );
+    const staffResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: staff,
+          storeUrl: 'https://another-shop.test/path',
+        }),
+      }),
+      env,
+    );
+    expect(staffResponse.status).toBe(201);
+
+    const insecureStaff = await activationToken(
+      env,
+      'staff-insecure-origin',
+      { type: 'limespot-staff-multi-store' },
+      'sales@limespot.com',
+    );
+    const insecureResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: insecureStaff,
+          storeUrl: 'http://another-shop.test/path',
+        }),
+      }),
+      env,
+    );
+    expect(insecureResponse.status).toBe(400);
+
+    const loopbackStaff = await activationToken(
+      env,
+      'staff-loopback-origin',
+      { type: 'limespot-staff-multi-store' },
+      'sales@limespot.com',
+    );
+    const loopbackResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: loopbackStaff,
+          storeUrl: 'http://127.0.0.1:5173/path',
+        }),
+      }),
+      env,
+    );
+    expect(loopbackResponse.status).toBe(201);
+
+    const unmeteredPublic = await activationToken(
+      env,
+      'public-without-limit',
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      'audit-public-without-limit',
+      null,
+    );
+    const unmeteredPublicResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: unmeteredPublic, storeUrl: STORE_ORIGIN }),
+      }),
+      env,
+    );
+    expect(unmeteredPublicResponse.status).toBe(401);
+
+    const cappedStaff = await activationToken(
+      env,
+      'staff-with-public-limit',
+      { type: 'limespot-staff-multi-store' },
+      'sales@limespot.com',
+      'audit-staff-with-public-limit',
+      2,
+    );
+    const cappedStaffResponse = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: cappedStaff, storeUrl: STORE_ORIGIN }),
+      }),
+      env,
+    );
+    expect(cappedStaffResponse.status).toBe(401);
+  });
+
+  it('preserves one public audit authority across reissued activation tokens', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
+    const env = durableEnv({ DEMO_SESSION_TTL_SECONDS: '1' });
+    const auditIdentifier = 'audit-stable-public';
+    const firstToken = await activationToken(
+      env,
+      'stable-first',
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      auditIdentifier,
+    );
+    expect((await exchange(env, firstToken)).sessionIdentifier).toBeTypeOf('string');
+
+    vi.advanceTimersByTime(2_000);
+    const secondToken = await activationToken(
+      env,
+      'stable-second',
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      auditIdentifier,
+    );
+    expect((await exchange(env, secondToken)).sessionIdentifier).toBeTypeOf('string');
+
+    const replay = await worker.fetch(
+      new Request('https://app-ai.test/demo/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: firstToken, storeUrl: STORE_ORIGIN }),
+      }),
+      env,
+    );
+    expect(replay.status).toBe(409);
+    vi.useRealTimers();
+  });
+
+  it('does not intercept unrelated bearer auth and rejects wrong origins, routes, and prompts', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ Message: 'context missing' }), { status: 401 }),
+    );
+
+    const unrelated = await worker.fetch(
+      new Request('https://app-ai.test/files', {
+        headers: {
+          Authorization: 'Bearer unrelated-service-token',
+          'X-Personalizer-Context-ID': 'regular-context',
+        },
+      }),
+      env,
+    );
+    expect(unrelated.status).toBe(401);
+    expect(fetchedUrls(fetchMock)).toEqual([
+      'https://brain.test/v2/administrator-authentication/validate-context-id',
+    ]);
+    fetchMock.mockClear();
+
+    const wrongOrigin = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers: {
+          ...demoHeaders(session.accessToken, 'onboarding-batch-all'),
+          'X-LimeSpot-Demo-Store-Origin': 'https://evil.test',
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
+      }),
+      env,
+    );
+    expect(wrongOrigin.status).toBe(403);
+
+    const list = await worker.fetch(
+      new Request('https://app-ai.test/files', {
+        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+      }),
+      env,
+    );
+    expect(list.status).toBe(403);
+
+    const wrongPrompt = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers: demoHeaders(session.accessToken, 'visual-verify'),
+        body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
+      }),
+      env,
+    );
+    expect(wrongPrompt.status).toBe(403);
+
+    const headerOnlyUpload = new FormData();
+    headerOnlyUpload.set('file', new File(['pixels'], 'header-only.webp'));
+    const headerOnly = await worker.fetch(
+      new Request('https://app-ai.test/files', {
+        method: 'POST',
+        headers: demoHeaders(session.accessToken, 'onboarding-batch-all', false),
+        body: headerOnlyUpload,
+      }),
+      env,
+    );
+    expect(headerOnly.status).toBe(403);
+
+    const invalidDestination = await worker.fetch(
+      uploadRequest(session.accessToken, 'invalid.webp', undefined, [
+        'onboarding-batch-all',
+        'visual-verify',
+      ]),
+      env,
+    );
+    expect(invalidDestination.status).toBe(403);
+
+    const duplicateDestination = await worker.fetch(
+      uploadRequest(session.accessToken, 'duplicate-prompt.webp', undefined, [
+        'onboarding-batch-all',
+        'onboarding-batch-all',
+      ]),
+      env,
+    );
+    expect(duplicateDestination.status).toBe(403);
+
+    const duplicateFiles = new FormData();
+    duplicateFiles.append('file', new File(['one'], 'one.webp'));
+    duplicateFiles.append('file', new File(['two'], 'two.webp'));
+    duplicateFiles.append('prompt', 'onboarding-batch-all');
+    const duplicateFileResponse = await worker.fetch(
+      new Request('https://app-ai.test/files', {
+        method: 'POST',
+        headers: demoHeaders(session.accessToken),
+        body: duplicateFiles,
+      }),
+      env,
+    );
+    expect(duplicateFileResponse.status).toBe(400);
+    expect(fetchedUrls(fetchMock)).toEqual([]);
+  });
+
+  it('serializes parallel uploads so every returned file remains owned by the session', async () => {
+    const env = durableEnv({ DEMO_MAX_UPLOADS: '8' });
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    let uploadSequence = 0;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/v1/files')) {
+        uploadSequence += 1;
+        await Promise.resolve();
+        return new Response(JSON.stringify({ id: `file-${uploadSequence}` }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const uploads = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        worker.fetch(uploadRequest(session.accessToken, `tile-${index}.webp`), env),
+      ),
+    );
+    expect(uploads.map((response) => response.status)).toEqual(
+      Array.from({ length: 8 }, () => 200),
+    );
+    const identifiers = await Promise.all(
+      uploads.map(async (response) => ((await response.json()) as { id: string }).id),
+    );
+
+    const allowed = await worker.fetch(messageRequest(session.accessToken, identifiers), env);
+    expect(allowed.status).toBe(200);
+    expect(fetchedUrls(fetchMock)).not.toContain(
+      'https://brain.test/v2/administrator-authentication/validate-context-id',
+    );
+  });
+
+  it('accepts all four repeated multipart upload destinations while inference remains proposal-only', async () => {
+    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ id: crypto.randomUUID() }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    const upload = await worker.fetch(uploadRequest(session.accessToken, 'all-prompts.webp'), env);
+    expect(upload.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const reviewInference = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers: demoHeaders(session.accessToken, 'onboarding-review-all'),
+        body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
+      }),
+      env,
+    );
+    expect(reviewInference.status).toBe(403);
+  });
+
+  it('rejects foreign or inline files and forces registry-owned inference authority', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) return new Response(null, { status: 204 });
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify({ id: 'file-owned' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    expect((await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env)).status).toBe(
+      200,
+    );
+
+    const foreign = await worker.fetch(messageRequest(session.accessToken, ['file-foreign']), env);
+    expect(foreign.status).toBe(403);
+
+    const inline = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'image', source: { type: 'base64', data: 'pixels' } }],
+            },
+          ],
+        }),
+      }),
+      env,
+    );
+    expect(inline.status).toBe(403);
+
+    const allowed = await worker.fetch(messageRequest(session.accessToken, ['file-owned']), env);
+    expect(allowed.status).toBe(200);
+    const messageCall = fetchedUrls(fetchMock).findIndex((url) => url.endsWith('/v1/messages'));
+    const forwarded = sentBody(fetchCall(fetchMock, messageCall).init);
+    expect(forwarded.model).toBe(ENV.MODEL_BALANCED);
+    expect(forwarded.tools).toBeUndefined();
+    expect(forwarded.output_config).toEqual({ effort: 'medium' });
+  });
+
+  it('atomically enforces upload quotas and releases reservations after upstream failure', async () => {
+    const env = durableEnv({ DEMO_MAX_UPLOADS: '1', DEMO_MAX_TOTAL_UPLOAD_BYTES: '20' });
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'file-retry' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    expect((await worker.fetch(uploadRequest(session.accessToken, 'first.webp'), env)).status).toBe(
+      503,
+    );
+    expect((await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env)).status).toBe(
+      200,
+    );
+    const overQuota = await worker.fetch(uploadRequest(session.accessToken, 'third.webp'), env);
+    expect(overQuota.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases upload quota when the upstream fetch throws so the request can be retried', async () => {
+    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const session = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock.mockRejectedValueOnce(new Error('network socket closed')).mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'file-after-throw' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const failed = await worker.fetch(uploadRequest(session.accessToken, 'throw.webp'), env);
+    expect(failed.status).toBe(500);
+    const retried = await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env);
+    expect(retried.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows exactly two successful public proposal attempts and reports ordered completion status', async () => {
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        'two-attempt-token',
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        'audit-two-attempts',
+      ),
+    );
+    const callbacks: Array<Record<string, unknown>> = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+        callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify({ id: 'file-attempts' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    expect(
+      (await worker.fetch(uploadRequest(session.accessToken, 'attempts.webp'), env)).status,
+    ).toBe(200);
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
+    ).toBe(200);
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
+    ).toBe(200);
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
+    ).toBe(429);
+
+    expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
+      ['started', 1],
+      ['completed', 1],
+      ['started', 2],
+      ['completed', 2],
+    ]);
+    expect(new Set(callbacks.map(({ eventIdentifier }) => eventIdentifier)).size).toBe(4);
+  });
+
+  it('releases a failed inference attempt and reuses the same public attempt number', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const callbacks: Array<Record<string, unknown>> = [];
+    const fetchMock = stubFetch();
+    let inference = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+        callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify({ id: 'file-retry' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      inference += 1;
+      if (inference === 1) {
+        return new Response(JSON.stringify({ error: { message: 'temporary' } }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    expect((await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env)).status).toBe(
+      200,
+    );
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, ['file-retry']), env)).status,
+    ).toBe(503);
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, ['file-retry']), env)).status,
+    ).toBe(200);
+    expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('retains callback events through an outage and retries the immutable outbox in order', async () => {
+    const auditIdentifier = 'audit-callback-outbox';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        'outbox-token',
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const callbackBodies: string[] = [];
+    let callbackAvailable = false;
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+        callbackBodies.push(String(init?.body));
+        return new Response(null, { status: callbackAvailable ? 204 : 503 });
+      }
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
+    expect(callbackBodies).toHaveLength(2);
+    expect(callbackBodies[1]).toBe(callbackBodies[0]);
+
+    callbackAvailable = true;
+    await authorityFor(env, auditIdentifier).alarm();
+
+    expect(callbackBodies).toHaveLength(4);
+    expect(callbackBodies[2]).toBe(callbackBodies[0]);
+    expect(callbackBodies.slice(2).map((body) => JSON.parse(body))).toMatchObject([
+      { status: 'started', attemptNumber: 1 },
+      { status: 'completed', attemptNumber: 1 },
+    ]);
+  });
+});

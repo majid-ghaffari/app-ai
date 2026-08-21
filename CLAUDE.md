@@ -2,23 +2,24 @@
 
 **CLAUDE.md Rule:** Any code change MUST update the CLAUDE.md of the affected folder (`src/handlers/CLAUDE.md`, `src/lib/CLAUDE.md`, `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate the change up to this root file. If you add/rename a handler, lib module, toolset, prompt, or route, update the relevant section here AND the matching folder doc. Keep the documentation tree always valid.
 
-A Cloudflare Worker that is a secure proxy in front of Anthropic. It holds the Anthropic API key, validates the merchant's `X-Personalizer-Context-ID` against the Personalizer backend, and proxies to Anthropic. Parts of it serve **production** (the live smart-image feature depends on `/files` + `/messages`).
+A Cloudflare Worker that is a secure proxy in front of Anthropic. It holds the Anthropic API key, validates ordinary merchant requests through Personalizer, and provides a separate origin-scoped extension demo exchange for stores without a LimeSpot Context-ID. Parts of it serve **production** (the live smart-image feature depends on `/files` + `/messages`).
 
 ## Project docs
 
 Standalone-project documentation lives at the repo root and under `docs/`:
 
-| Document                                             | Purpose                                                                                          |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [README.md](README.md)                               | Quick start, endpoints, deployment, token-saving levers (with live-measured numbers)             |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                   | Commit convention, push-to-main deploy rule, validate-before-push loop                           |
-| [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md)       | Coding standards — strict TypeScript, clean code, error handling, No Hardcoded Config Values     |
-| [docs/TESTING.md](docs/TESTING.md)                   | The required offline test layers plus the optional live token-savings diagnostic                 |
-| [docs/DECISIONS.md](docs/DECISIONS.md)               | Numbered decision log with rationale                                                             |
-| [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)         | Honest current limitations                                                                       |
-| [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) | Prompt authoring/iteration workflow (artifact rules, length enforcement, maintenance-doc upkeep) |
-| [docs/TOOLSETS.md](docs/TOOLSETS.md)                 | Toolset standards: what a toolset is, the registry, the credential seam + security standards     |
-| [docs/prompts/](docs/prompts/)                       | Per-prompt design/maintenance docs (`<name>.md`, e.g. `image-selection.md`)                      |
+| Document                                             | Purpose                                                                                           |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [README.md](README.md)                               | Quick start, endpoints, deployment, token-saving levers (with live-measured numbers)              |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                   | Commit convention, push-to-main deploy rule, validate-before-push loop                            |
+| [docs/CODE-PATTERNS.md](docs/CODE-PATTERNS.md)       | Coding standards — strict TypeScript, clean code, error handling, No Hardcoded Config Values      |
+| [docs/TESTING.md](docs/TESTING.md)                   | The required offline test layers plus the optional live token-savings diagnostic                  |
+| [docs/DECISIONS.md](docs/DECISIONS.md)               | Numbered decision log with rationale                                                              |
+| [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)         | Honest current limitations                                                                        |
+| [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) | Prompt authoring/iteration workflow (artifact rules, length enforcement, maintenance-doc upkeep)  |
+| [docs/TOOLSETS.md](docs/TOOLSETS.md)                 | Toolset standards: what a toolset is, the registry, the credential seam + security standards      |
+| [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md)               | Extension demo claims, entitlement, scope, quotas, global controls, and Durable Object deployment |
+| [docs/prompts/](docs/prompts/)                       | Per-prompt design/maintenance docs (`<name>.md`, e.g. `image-selection.md`)                       |
 
 Adding or renaming a `docs/*` file updates this table (propagation rule below).
 
@@ -85,6 +86,7 @@ contract and synchronization points are documented in [src/prompts/CLAUDE.md](sr
 - **No Hardcoded Config Values (ENFORCED).** Every URL and deploy-time tunable (Personalizer/Anthropic origins, credentialed CORS origins, model choices) lives in configuration — wrangler.toml `[vars]` (production) / `.dev.vars` + committed `.dev.vars.example` (local) — and is read ONLY through the typed accessors in `src/config.ts` (the single typed `Env` interface). **Missing config = a thrown error naming the variable and where to set it. No fallback defaults anywhere** — `env.X || …` / `env.X ?? …` is banned. True contract constants (wire field names, tool names, routes, prompt text, Anthropic's 4-breakpoint limit, the contract-frozen `MAX_ITERATIONS` / `MAX_CHAT_REFS`) stay in code. Full rule: docs/CODE-PATTERNS.md → "No Hardcoded Config Values"; enforced by the fitness scans in `test/architecture.test.ts` and the production-value pins in `test/config.test.ts`.
 - **The Anthropic API key never leaves the worker.** Only `src/lib/anthropic.ts` reads it, via `claudeApiKey(env)` from `src/config.ts`.
 - **The Personalizer integration-bridge token (`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, Workers Secret) never leaves the worker.** Only the platform toolsets' call-channel seam (`src/toolsets/integration-bridge.ts`) reads it, via `personalizerIntegrationBridgeToken(env)` from `src/config.ts`; it is sent solely as the `X-Personalizer-Integration-Bridge-Token` header toward Personalizer's integration bridge — never a `wrangler.toml` var, never logged, never model-visible.
+- **Demo signing keys are separated.** The website shares `DEMO_ACTIVATION_SIGNING_SECRET` for activation assertions and the distinct `DEMO_AUDIT_STATUS_SIGNING_SECRET` for app-ai callbacks; `DEMO_SESSION_SIGNING_SECRET` remains app-ai-only. All three are encrypted secrets with at least 32 bytes and never model-visible.
 - Deploy is automatic from `main` via Cloudflare's GitHub integration — **pushing `main` deploys to production.** Commit locally; do not push casually.
 
 ## Architecture
@@ -100,10 +102,14 @@ src/
 │   ├── health.ts         # GET  /health (no auth)
 │   ├── files.ts          # POST/GET /files, DELETE /files/{id}
 │   ├── messages.ts       # POST /messages — single-shot proxy (LIVE smart-image)
-│   └── chat.ts           # POST /chat — Studio AI agent loop + SSE
+│   ├── chat.ts           # POST /chat — Studio AI agent loop + SSE
+│   └── demo-session.ts   # POST /demo/session/exchange — one-time activation exchange
 ├── lib/                  # Shared modules (see lib/CLAUDE.md)
 │   ├── anthropic.ts      # THE Anthropic client: files + messages + streaming + countTokens (headers/beta in one place)
 │   ├── auth.ts           # validateContextId() against Personalizer
+│   ├── demo-auth.ts      # Scoped demo JWT validation + request reservations
+│   ├── demo-session-authority.ts # Durable Object: stable audit attempts, quotas, files, callback outbox
+│   ├── demo-audit-status.ts      # HMAC-signed website status callback transport
 │   ├── cors.ts           # getCorsHeaders()
 │   ├── responses.ts      # jsonResponse() / errorResponse() / errorPayload() / WorkerError — the ONE Brain-shaped error format
 │   ├── cache-control.ts  # manageCacheControl() — the 4-block prompt-cache limit + explicit stable user-prefix priority; EXTENDED_CACHE_CONTROL (1h TTL) const
@@ -139,16 +145,17 @@ mutate an account or subscription.
 
 ### Routes
 
-| Method | Path          | Handler            | Auth |
-| ------ | ------------- | ------------------ | ---- |
-| GET    | `/health`     | `handleHealth`     | No   |
-| POST   | `/files`      | `handleFileUpload` | Yes  |
-| GET    | `/files`      | `handleListFiles`  | Yes  |
-| DELETE | `/files/{id}` | `handleDeleteFile` | Yes  |
-| POST   | `/messages`   | `handleMessages`   | Yes  |
-| POST   | `/chat`       | `handleChat`       | Yes  |
+| Method | Path                     | Handler                     | Auth                             |
+| ------ | ------------------------ | --------------------------- | -------------------------------- |
+| GET    | `/health`                | `handleHealth`              | No                               |
+| POST   | `/demo/session/exchange` | `handleDemoSessionExchange` | Website activation JWT           |
+| POST   | `/files`                 | `handleFileUpload`          | Context-ID or scoped demo bearer |
+| GET    | `/files`                 | `handleListFiles`           | Context-ID only                  |
+| DELETE | `/files/{id}`            | `handleDeleteFile`          | Context-ID only                  |
+| POST   | `/messages`              | `handleMessages`            | Context-ID or scoped demo bearer |
+| POST   | `/chat`                  | `handleChat`                | Context-ID only                  |
 
-Auth = the router calls `validateContextId(X-Personalizer-Context-ID, env)` for every non-`/health` route before dispatch; a missing header is a 401 `MissingContextIDException`, a Personalizer rejection relays Personalizer's status + body unchanged, and an unreachable Personalizer is a 500 `BrainUnreachableException` (all in the Brain wire error shape — see Hard rules). Every authed route consumes the Anthropic API (paid tokens / Files storage), which is what the upfront gate protects. The server→server Personalizer fetches made INSIDE a gated request (`toolsets/personalizer/`, `lib/references.ts`) carry no second validation call — they forward the merchant's context-ID and Personalizer re-validates it on each proxied call; a Personalizer rejection there degrades to the tool/ref error shape, never an unhandled throw.
+Normal auth calls `validateContextId(X-Personalizer-Context-ID, env)` before dispatch. The alternate demo path exchanges an exact, email-verified website JWT once and accepts only an app-ai-signed `ls_demo_…` bearer plus the extension's active-tab-origin header. Demo scope is four onboarding upload destinations and two proposal inference prompts; it cannot list/delete files, call `/chat`, use Brain, or choose model/tools/effort. Its audit-keyed Durable Object atomically serializes tile uploads, quotas and owned file IDs, enforces two public successful completions across reissued links, and durably mirrors status to website D1. Exact claims, public-origin vs verified `@limespot.com` entitlement, callback signing, limits, global-cap ownership, and deployment are in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
 
 ### The Anthropic client (`lib/anthropic.ts`)
 
@@ -343,13 +350,15 @@ If it differs, the worker was launched without the define — restart it via `np
 - `test/references.test.ts` — `lib/references.ts`: intake sanitization + cap, `refCategoryPath`, per-type `resolveRef` (record → normalized entity-context payload vs analytics → metadata, throw on subscriber failure, Found:false pass-through), the FROZEN Referenced-Entities block string (contract snapshot), label fallbacks, allSettled degradation, analytics-only → zero Personalizer calls, one-subscriber-lookup-per-block.
 - `test/entity-context.test.ts` — `toolsets/personalizer/entity-context.ts`: the frozen AiToolEntityContext shape per record type (member order, Summary grammar incl. `0.##` amounts + schedule, Fields minimums, null-member omission), the campaign discount→html→image probe, tenant re-checks (cross-subscriber/deleted → Found:false), one-hop Related filtering, failure semantics (miss vs throw: 404/204/5xx → Found:false; malformed guid / unknown type / subscriber failure / 401/403 → throw), the shared subscriber lookup, and no validate-context-id roundtrip.
 - `test/proxy.test.ts` — the proxy surface: CORS, response/error shape, context validation, the Anthropic client (headers/beta/URLs, config-error rejection), `manageCacheControl` (legacy ranking plus explicit stable-prefix priority across one/two system blocks and attachments, the four-slot cap, marker stripping/order preservation), and the `/files` + `/messages` + `/health` handlers.
+- `test/demo-auth.test.ts` — activation/session claims, public-origin and verified-staff entitlement, one-use exchange, stable cross-link public cap, bearer/route/prompt scope, parallel upload ownership, failed-attempt reuse, server-owned inference settings, quotas, and durable ordered callback retry.
+- `test/demo-audit-status.test.ts` — exact callback JSON, timestamp and HMAC header contract plus retryable delivery failure.
 - `test/probes.test.ts` — the Website-Analysis probe mechanism: the registry resolves `probe-industry` (text/metadata/model), resolves the Sonnet probes `probe-cart-wiring` + `probe-style` on the `balanced` tier (≠ the default `frontier` tier, `usesTools: false`, no attachments) with their selector/style-descriptor prompt contracts, the `probe-<id>` convention (`PROBE_PREFIX` / `isProbeName`) + the `PROBE_SCHEMAS` index ↔ registry coherence, `/messages` routing the `probe-industry` / `probe-cart-wiring` / `probe-style` headers (system block injected, no attachments, model defaulted to the registry entry, caller blocks pass through), and the frozen `{ industry, confidence, findings }` output contract (schema/parse checks: well-formed, `Unknown`/empty-findings sink, rejects missing keys / out-of-range confidence / non-string findings).
 - `test/proposals.test.ts` — the TOOL-CAPABLE per-store SETUP PROPOSALS prompt: the registry resolves `proposals` on the `balanced` tier (Sonnet, ≠ the default `frontier` tier) + `usesTools: true`, the prompt reasons over page evidence (screenshots + cleaned HTML) AND instructs the model to pull real store data via the personalizer tools (AOV-derived progress-bar threshold), and `POST /chat` with the `proposals` header sends the personalizer tool surface + the page-evidence file blocks and drives the tool loop (tool_call → Brain `v2/ai-tools` → tool_result → final JSON proposal).
 - `test/config.test.ts` — `src/config.ts`: the no-fallback contract (every accessor throws on a missing/empty variable, naming it and where to set it), the `resolveModel(env, tier)` tier→model mapping (each tier → its bound var, throws named when absent) + the PRODUCTION `[vars]` pins read from wrangler.toml itself (`PERSONALIZER_API_URL = https://personalizer.io`, the Anthropic origin, the tier→model bindings `MODEL_FAST = claude-haiku-4-5` / `MODEL_BALANCED = claude-sonnet-5` / `MODEL_FRONTIER = claude-opus-4-8`, the credentialed-origin allowlist, and no secret in the file).
 - `test/architecture.test.ts` — fitness scans over `src/` + `scripts/` enforcing the standing invariants: explicit endpoint toolset allowlists; credentials never in logs or the model-visible system builder; one error shape (no bespoke `{ error: { message } }` envelopes); No Hardcoded Config Values (no absolute URL literals in src or scripts, no inline `||`/`??` fallbacks on `env`/`process.env` reads, required worker vars read only through `src/config.ts`). The dev Claude-Code shim (`scripts/dev-claude-shim.mjs`) is carved out of the no-URL-literal scan only — it is standalone local tooling with overridable dev-default endpoints, outside the worker's fail-fast config contract (never bundled); it still passes the env-fallback scan (it reads config via `envOr(name, fallback)` bracket access, not inline `||`/`??`).
 - `test/dev-shim.test.ts` — the free dev Claude-Code channel (`scripts/dev-claude-shim.mjs`): the pure Anthropic⇄Claude-Code translation layer (`systemToString`, `rehydrateBlock` file→inline base64 image/document + tool_result flatten + unknown-file degrade, `normalizeContent`, `buildPromptMessages` user turn + assistant-history preamble, `estimateTokens` char/4, `bareToolName` mcp-prefix strip, `stripCodeFence`, `usageFrom`, `extractFilePart` multipart), plus the **cred-burn GUARD** (`assertDevAiChannel`: throws when a dev/test run points `ANTHROPIC_API_BASE` at `api.anthropic.com` without `AI_CHANNEL=prod`; allows the local shim; opt-in with `AI_CHANNEL=prod`) and a check that `.dev.vars.example` ships the free-shim default.
 - `test/dev-inference-trace.test.ts` + `test/logger.test.ts` — correlated inference events, complete diagnostic text/tool/file decisions, per-level multi-sink routing, context/error detail, secret-field redaction, optional Seq authentication, fail-open delivery, and background rejection capture.
-- `test/helpers.ts` — shared typed fixtures: the complete `Env` fixture, fetch-mock accessors, the worker-SSE parser, the KV mock.
+- `test/helpers.ts` — shared typed fixtures: the complete `Env` fixture, fetch-mock accessors, the worker-SSE parser, and the KV mock.
 - `test/token-saving.test.ts` — the cost-reduction levers: 1h-TTL placement (system/context/kept user blocks), `applyConversationBreakpoints` (last-block, ~15-block intervals, cap + `reservedHeadBlocks`, stale-strip), `file-dedup` (sha256Hex vector, KV hit + stale-id verify/re-upload + miss + no-op, 30d TTL), `fileIds` document/image block typing + 1h file-prefix breakpoint + ≤4-breakpoint-with-file-prefix invariant, `countTokens` body/header, model+effort routing, and an end-to-end agent-loop breakpoint-count ≤4 assertion.
 
 Tests mock `fetch` and `env` — no real network. Don't weaken assertions to pass.

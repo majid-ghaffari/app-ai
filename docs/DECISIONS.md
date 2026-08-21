@@ -479,3 +479,31 @@ review responses cannot apply currency or CSS actions.
 Every attempt produces content-free structured telemetry for model/prompt/effort, total latency,
 token/cache usage, stop reason, evidence counts, revision/pass, attempt kind, and lib capture/upload
 spans. The operational SLO and release-eval contract live in `docs/QC-OBSERVABILITY.md`.
+
+### 22. Extension demos use key-separated JWTs and strongly consistent state
+
+The extension demo is an alternate auth path for stores without a LimeSpot Context-ID. A website
+activation assertion is signed with a website/app-ai shared key, consumed once, and exchanged for an
+app-ai-only `ls_demo_…` session signed with a distinct key. Public assertions name one exact store
+origin; only a signed, email-verified `@limespot.com` staff entitlement can choose another store.
+The extension background worker supplies its validated active-tab origin because MV3 request Origin
+is the extension, not the storefront. Exact claims and sender responsibilities are frozen in
+[DEMO-AUTH.md](DEMO-AUTH.md).
+
+Cloudflare KV is not used for activation consumption, quotas, file ownership, or attempt counting: it
+is eventually consistent, has no compare-and-swap operation, and loses concurrent read-modify-write
+updates when the onboarding conductor uploads many screenshot tiles in parallel.
+`DemoSessionAuthority` is one deterministically addressed Durable Object per signed stable
+`auditIdentifier`. It consumes activation identifiers, permits one live session, atomically reserves
+paid work, owns provider file IDs, and preserves the public two-completion count across expired
+sessions and reissued links. Failed inference releases the attempt number; only successful proposal
+inference consumes it. Demo scope remains four onboarding upload destinations and two proposal
+inference prompts; the server forces registry model/budget/effort and never calls Brain.
+
+Per-session byte/upload/message ceilings are app-ai's paid-work guard. Cross-session activation,
+identity/IP, daily-budget, and kill-switch controls belong to the limespot.com issuer, with provider
+hard spending controls outside it. App-ai HMAC-signs immutable `started`/`failed`/`completed` events
+with a third, purpose-specific secret and retries them from an ordered Durable Object outbox; website
+D1 is an idempotent operational mirror, while app-ai remains the attempt enforcement authority. The
+Durable Object binding and first migration are part of `wrangler.toml`, while all signing keys remain
+encrypted secrets.

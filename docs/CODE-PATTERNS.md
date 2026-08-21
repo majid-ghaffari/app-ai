@@ -128,20 +128,21 @@ constant, it belongs in configuration (next section). Inline `4`s and
 Every URL and every architecturally sensible deploy-time tunable lives in
 CONFIGURATION, not in code:
 
-| Channel                                | What                                                                                   |
-| -------------------------------------- | -------------------------------------------------------------------------------------- |
-| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/Anthropic origins, CORS allowlist, model choices) |
-| Cloudflare Dashboard encrypted secrets | `CLAUDE_API_KEY`, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`                              |
-| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`         |
-| `.dev.vars.example` (committed)        | Documents every knob with a working local value                                        |
+| Channel                                | What                                                                                                                  |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/Anthropic origins, CORS allowlist, model choices)                                |
+| Cloudflare Dashboard encrypted secrets | `CLAUDE_API_KEY`, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, and the three key-separated `DEMO_*_SIGNING_SECRET` values |
+| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`                                        |
+| `.dev.vars.example` (committed)        | Documents every knob with a working local value                                                                       |
 
 ### The rules
 
 1. **One typed `Env`.** `src/config.ts` declares the single `Env` interface
    and the accessors (`personalizerApiUrl`, `anthropicApiBase`, `claudeApiKey`,
-   `personalizerIntegrationBridgeToken`, `credentialedOrigins`, and `resolveModel`
-   — which maps a capability tier to its bound `MODEL_FAST` / `MODEL_BALANCED` /
-   `MODEL_FRONTIER`). Nothing else reads `env.X` for a required variable. The Node scripts (`scripts/`)
+   `personalizerIntegrationBridgeToken`, `credentialedOrigins`, the `demo*`
+   accessors, and `resolveModel` — which maps a capability tier to its bound
+   `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`). Nothing else reads
+   `env.X` for a required variable. The Node scripts (`scripts/`)
    follow the same discipline with explicit REQUIRED environment variables
    (`APP_AI_TARGET`, `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`) — no default
    target, no default fixture path.
@@ -152,7 +153,8 @@ CONFIGURATION, not in code:
 3. **Genuinely optional knobs change behavior explicitly and documentedly.**
    `FILES_KV` is the one optional binding: its absence makes the file-dedup
    layer no-op to a plain upload, stated in `src/lib/file-dedup.ts` and the
-   docs — not a hidden default.
+   docs — not a hidden default. `DEMO_SESSIONS` is required when the scoped demo
+   exchange or bearer path is used and fails closed when absent.
 4. **Contract constants stay in code.** Do NOT config-ify values that are
    frozen contracts or protocol facts: wire field names, tool names, HTTP
    routes, prompt text, Anthropic's 4-breakpoint `cache_control` limit and

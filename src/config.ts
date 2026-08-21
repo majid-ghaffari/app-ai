@@ -14,7 +14,8 @@
  * where to set it (the router's catch maps the throw to the Brain-shaped 500
  * envelope). The one genuinely optional binding is `FILES_KV`, whose absence
  * changes behavior explicitly and documentedly (lib/file-dedup.ts gracefully
- * no-ops to a plain upload).
+ * no-ops to a plain upload). `DEMO_SESSIONS` is required when the demo
+ * exchange/bearer feature is exercised and fails closed when absent.
  *
  * The `Env` interface below is the single source of truth for the worker's
  * bindings. Its members are deliberately typed optional: the runtime cannot
@@ -101,6 +102,28 @@ export interface Env {
    * documentedly — a config seam, not a hidden default.
    */
   readonly RECOMMENDATIONS_DEFAULTS_URL?: string;
+  /** HMAC key shared only by the website activation issuer and app-ai. SECRET. */
+  readonly DEMO_ACTIVATION_SIGNING_SECRET?: string;
+  /** HMAC key used only by app-ai to sign exchanged demo sessions. SECRET. */
+  readonly DEMO_SESSION_SIGNING_SECRET?: string;
+  /** HMAC key shared with the website only for audit-status callbacks. SECRET. */
+  readonly DEMO_AUDIT_STATUS_SIGNING_SECRET?: string;
+  /** Exact website endpoint that receives signed audit-attempt status callbacks. */
+  readonly DEMO_AUDIT_STATUS_URL?: string;
+  /** Strongly consistent authority for activation consumption, quotas, and file ownership. */
+  readonly DEMO_SESSIONS?: DurableObjectNamespace;
+  /** Lifetime of an exchanged demo session in seconds. */
+  readonly DEMO_SESSION_TTL_SECONDS?: string;
+  /** Maximum successful file uploads in one demo session. */
+  readonly DEMO_MAX_UPLOADS?: string;
+  /** Maximum successful inference requests in one demo session. */
+  readonly DEMO_MAX_MESSAGES?: string;
+  /** Maximum bytes accepted by one demo file upload. */
+  readonly DEMO_MAX_UPLOAD_BYTES?: string;
+  /** Maximum aggregate uploaded bytes reserved or completed by one demo session. */
+  readonly DEMO_MAX_TOTAL_UPLOAD_BYTES?: string;
+  /** Maximum JSON request bytes accepted by one demo inference. */
+  readonly DEMO_MAX_MESSAGE_BYTES?: string;
 }
 
 /** Required string variables; optional bindings and LOG_SEQ_API_KEY are intentionally excluded. */
@@ -120,12 +143,25 @@ type RequiredVarName =
   | 'MODEL_FAST'
   | 'MODEL_BALANCED'
   | 'MODEL_FRONTIER'
-  | 'CLAUDE_API_KEY';
+  | 'CLAUDE_API_KEY'
+  | 'DEMO_ACTIVATION_SIGNING_SECRET'
+  | 'DEMO_SESSION_SIGNING_SECRET'
+  | 'DEMO_AUDIT_STATUS_SIGNING_SECRET'
+  | 'DEMO_AUDIT_STATUS_URL'
+  | 'DEMO_SESSION_TTL_SECONDS'
+  | 'DEMO_MAX_UPLOADS'
+  | 'DEMO_MAX_MESSAGES'
+  | 'DEMO_MAX_UPLOAD_BYTES'
+  | 'DEMO_MAX_TOTAL_UPLOAD_BYTES'
+  | 'DEMO_MAX_MESSAGE_BYTES';
 
 /** The variables that are SECRETS (encrypted-secret channel, never wrangler.toml `[vars]`). */
 const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
   'CLAUDE_API_KEY',
   'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
+  'DEMO_ACTIVATION_SIGNING_SECRET',
+  'DEMO_SESSION_SIGNING_SECRET',
+  'DEMO_AUDIT_STATUS_SIGNING_SECRET',
 ];
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -249,4 +285,103 @@ export function credentialedOrigins(env: Env): readonly string[] {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
+}
+
+/** Website/app-ai HMAC key used only to verify activation tokens. */
+export function demoActivationSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'DEMO_ACTIVATION_SIGNING_SECRET');
+}
+
+/** App-ai-only HMAC key used to sign and verify exchanged demo sessions. */
+export function demoSessionSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'DEMO_SESSION_SIGNING_SECRET');
+}
+
+/** Website/app-ai HMAC key used only to authenticate audit-status callbacks. */
+export function demoAuditStatusSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'DEMO_AUDIT_STATUS_SIGNING_SECRET');
+}
+
+/** Exact website audit-status callback URL. */
+export function demoAuditStatusUrl(env: Env): string {
+  const value = requireVar(env, 'DEMO_AUDIT_STATUS_URL');
+  const url = new URL(value);
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('DEMO_AUDIT_STATUS_URL must use HTTPS except on loopback development hosts.');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('DEMO_AUDIT_STATUS_URL cannot contain credentials, a query, or a fragment.');
+  }
+  return url.toString();
+}
+
+/** Strongly consistent authority for one-time activation, quotas, and file ownership. */
+export function demoSessionAuthority(env: Env): DurableObjectNamespace {
+  if (env.DEMO_SESSIONS) return env.DEMO_SESSIONS;
+  throw new Error(
+    'Missing required configuration binding DEMO_SESSIONS. Bind the DemoSessionAuthority Durable Object in wrangler.toml.',
+  );
+}
+
+/** Exchanged demo-session lifetime in seconds. */
+export function demoSessionTtlSeconds(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_SESSION_TTL_SECONDS');
+}
+
+/** Maximum successful uploads in one demo session. */
+export function demoMaxUploads(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_MAX_UPLOADS');
+}
+
+/** Maximum successful inference calls in one demo session. */
+export function demoMaxMessages(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_MAX_MESSAGES');
+}
+
+/** Maximum byte length of one demo upload. */
+export function demoMaxUploadBytes(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_MAX_UPLOAD_BYTES');
+}
+
+/** Maximum aggregate uploaded bytes reserved or completed by one demo session. */
+export function demoMaxTotalUploadBytes(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_MAX_TOTAL_UPLOAD_BYTES');
+}
+
+/** Maximum serialized JSON bytes accepted by one demo inference request. */
+export function demoMaxMessageBytes(env: Env): number {
+  return positiveIntegerVar(env, 'DEMO_MAX_MESSAGE_BYTES');
+}
+
+function strongSigningSecret(
+  env: Env,
+  name:
+    | 'DEMO_ACTIVATION_SIGNING_SECRET'
+    | 'DEMO_SESSION_SIGNING_SECRET'
+    | 'DEMO_AUDIT_STATUS_SIGNING_SECRET',
+): string {
+  const secret = requireVar(env, name);
+  if (new TextEncoder().encode(secret).byteLength < 32) {
+    throw new Error(`${name} must contain at least 32 bytes.`);
+  }
+  return secret;
+}
+
+function positiveIntegerVar(
+  env: Env,
+  name:
+    | 'DEMO_SESSION_TTL_SECONDS'
+    | 'DEMO_MAX_UPLOADS'
+    | 'DEMO_MAX_MESSAGES'
+    | 'DEMO_MAX_UPLOAD_BYTES'
+    | 'DEMO_MAX_TOTAL_UPLOAD_BYTES'
+    | 'DEMO_MAX_MESSAGE_BYTES',
+): number {
+  const raw = requireVar(env, name);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
 }

@@ -73,16 +73,23 @@ curl http://localhost:8787/health
 
 ## API Endpoints
 
-All endpoints except `/health` require `X-Personalizer-Context-ID` header for authentication.
+Normal protected endpoints require `X-Personalizer-Context-ID`. The extension demo has a separate one-time activation/session path documented in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
 
-| Method | Endpoint      | Description                             | Auth Required |
-| ------ | ------------- | --------------------------------------- | ------------- |
-| GET    | `/health`     | Health check                            | No            |
-| POST   | `/files`      | Upload file to Claude                   | Yes           |
-| GET    | `/files`      | List uploaded files                     | Yes           |
-| DELETE | `/files/{id}` | Delete file                             | Yes           |
-| POST   | `/messages`   | Send message to Claude (single-shot)    | Yes           |
-| POST   | `/chat`       | Studio AI chat agent loop (SSE + tools) | Yes           |
+| Method | Endpoint                 | Description                             | Auth Required  |
+| ------ | ------------------------ | --------------------------------------- | -------------- |
+| GET    | `/health`                | Health check                            | No             |
+| POST   | `/demo/session/exchange` | Exchange a website activation JWT       | Activation JWT |
+| POST   | `/files`                 | Upload file to Claude                   | Yes            |
+| GET    | `/files`                 | List uploaded files                     | Yes            |
+| DELETE | `/files/{id}`            | Delete file                             | Yes            |
+| POST   | `/messages`              | Send message to Claude (single-shot)    | Yes            |
+| POST   | `/chat`                  | Studio AI chat agent loop (SSE + tools) | Yes            |
+
+Scoped `ls_demo_…` sessions may use only `POST /files` and proposal-only `POST
+/messages`. They are bound to the activated store, atomically quota-controlled
+by an audit-keyed `DemoSessionAuthority`, never call Brain, and cannot list/delete files or use
+`/chat`. The exact public/staff entitlement claims, headers, limits, and signed website-status
+callback contract are in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
 
 ### `POST /chat` — Studio AI agent runtime
 
@@ -255,12 +262,15 @@ variable, no fallback defaults.
 - Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
   `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, and the tier→model bindings
   `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, plus `LOG_TARGETS_*` and
-  `LOG_SEQ_INGEST_URL` (values pinned by `test/config.test.ts`)
+  `LOG_SEQ_INGEST_URL`, plus the `DEMO_*` session/quota limits (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
   - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
     caller-auth token toward Personalizer's integration bridge)
+  - Add distinct `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
+    `DEMO_AUDIT_STATUS_SIGNING_SECRET` values containing at least 32 random bytes each; configure
+    the exact website callback in `DEMO_AUDIT_STATUS_URL`
   - Optionally add `LOG_SEQ_API_KEY` when the Seq endpoint requires authentication
 
 ### Updating System Prompts
@@ -392,7 +402,9 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
    `wrangler.toml`; its raw defaults bypass the required revision stamp.
 4. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
-   - Add secrets with keys `CLAUDE_API_KEY` and `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`
+   - Add secrets with keys `CLAUDE_API_KEY`, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`,
+     `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
+     `DEMO_AUDIT_STATUS_SIGNING_SECRET`
 
 Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it
@@ -436,7 +448,8 @@ All configured in [wrangler.toml](wrangler.toml):
 Every environment provides the full variable set — `ENVIRONMENT`,
 `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model
 bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, and the `CLAUDE_API_KEY` +
-`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` secrets, six `LOG_TARGETS_*` routes, and
+`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` + three demo signing secrets, the exact
+`DEMO_AUDIT_STATUS_URL`, six `LOG_TARGETS_*` routes, and
 `LOG_SEQ_INGEST_URL` whenever any route selects Seq. `LOG_SEQ_API_KEY` is optional.
 `src/config.ts` throws on malformed or missing required configuration.
 
@@ -468,10 +481,12 @@ are mirrored to Seq by the example local routes.
      cross-origin access is safe and intended — the worker must serve arbitrary
      merchant domains, so a fixed allow-list is deliberately not used here.
 
-3. **Context Validation**
+3. **Authentication**
 
-   - All protected endpoints validate the context ID against the Personalizer API
-     before dispatch (`lib/auth.ts`).
+   - Normal protected endpoints validate the context ID against Personalizer
+     before dispatch (`lib/auth.ts`). Demo exchange/session requests use the
+     key-separated, one-time, scope/quota-controlled contract in
+     [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
    - Every error response uses Brain's wire shape
      (`{ "Message": ..., "ExceptionType": ..., "MessageDetail": ... }`) — app-ai
      errors are structurally identical to Brain errors, so clients keep one
@@ -504,6 +519,9 @@ Before deploying:
 - [ ] CORS origins restricted to production domains
 - [ ] No sensitive data in logs
 - [ ] Context validation working
+- [ ] `DEMO_SESSIONS` binding/migration, all three demo signing secrets, and exact status URL provisioned
+- [ ] Website/app-ai activation claims and signed status callback pass cross-repository contract tests
+- [ ] Website verification/rate limits/daily cap and the provider budget kill switch tested
 - [ ] Dependencies updated
 
 ## Troubleshooting

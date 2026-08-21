@@ -1,8 +1,8 @@
 /**
  * Configuration module (src/config.ts) — the no-fallback contract: every
  * required variable read fails fast with an error naming the variable and
- * where to set it; the optional FILES_KV binding is the only allowed absence
- * (its degradation is covered in test/token-saving.test.ts → file-dedup no-op).
+ * where to set it; FILES_KV alone is optional. Demo configuration is fail-fast
+ * when the scoped demo route is used.
  *
  * Also pins the PRODUCTION configuration values in wrangler.toml `[vars]` —
  * the deployed wire contract (Brain routing, model choices) is config, so
@@ -21,6 +21,17 @@ import {
   logTargets,
   claudeApiKey,
   credentialedOrigins,
+  demoActivationSigningSecret,
+  demoAuditStatusSigningSecret,
+  demoAuditStatusUrl,
+  demoMaxMessageBytes,
+  demoMaxMessages,
+  demoMaxTotalUploadBytes,
+  demoMaxUploadBytes,
+  demoMaxUploads,
+  demoSessionAuthority,
+  demoSessionSigningSecret,
+  demoSessionTtlSeconds,
   resolveModel,
   type Env,
 } from '../src/config';
@@ -37,6 +48,16 @@ describe('config accessors — present values', () => {
     expect(logSeqApiKey(ENV)).toBeNull();
     expect(claudeApiKey(ENV)).toBe('test-key');
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
+    expect(demoActivationSigningSecret(ENV)).toBe(ENV.DEMO_ACTIVATION_SIGNING_SECRET);
+    expect(demoSessionSigningSecret(ENV)).toBe(ENV.DEMO_SESSION_SIGNING_SECRET);
+    expect(demoAuditStatusSigningSecret(ENV)).toBe(ENV.DEMO_AUDIT_STATUS_SIGNING_SECRET);
+    expect(demoAuditStatusUrl(ENV)).toBe('https://limespot.test/personalization-audit/api/status');
+    expect(demoSessionTtlSeconds(ENV)).toBe(1800);
+    expect(demoMaxUploads(ENV)).toBe(40);
+    expect(demoMaxMessages(ENV)).toBe(3);
+    expect(demoMaxUploadBytes(ENV)).toBe(8000000);
+    expect(demoMaxTotalUploadBytes(ENV)).toBe(64000000);
+    expect(demoMaxMessageBytes(ENV)).toBe(1000000);
   });
 
   it('resolveModel maps each capability tier to its bound variable value', () => {
@@ -106,6 +127,35 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(() => personalizerIntegrationBridgeToken(EMPTY_ENV)).toThrow(
       /Missing required configuration variable PERSONALIZER_INTEGRATION_BRIDGE_TOKEN.*encrypted secret.*\.dev\.vars/,
     );
+  });
+
+  it('demo secrets require separate strong encrypted values', () => {
+    expect(() => demoActivationSigningSecret(EMPTY_ENV)).toThrow(
+      /DEMO_ACTIVATION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+    );
+    expect(() => demoSessionSigningSecret(EMPTY_ENV)).toThrow(
+      /DEMO_SESSION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+    );
+    expect(() => demoAuditStatusSigningSecret(EMPTY_ENV)).toThrow(
+      /DEMO_AUDIT_STATUS_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+    );
+    expect(() => demoAuditStatusUrl(EMPTY_ENV)).toThrow(/DEMO_AUDIT_STATUS_URL.*wrangler\.toml/);
+    expect(() =>
+      demoActivationSigningSecret({ DEMO_ACTIVATION_SIGNING_SECRET: 'too-short' }),
+    ).toThrow(/at least 32 bytes/);
+  });
+
+  it('demo numeric limits and the Durable Object binding fail fast', () => {
+    expect(() => demoSessionTtlSeconds(EMPTY_ENV)).toThrow(/DEMO_SESSION_TTL_SECONDS/);
+    expect(() => demoMaxUploads({ ...ENV, DEMO_MAX_UPLOADS: '0' })).toThrow(
+      /DEMO_MAX_UPLOADS must be a positive integer/,
+    );
+    expect(() => demoMaxMessages({ ...ENV, DEMO_MAX_MESSAGES: '1.5' })).toThrow(
+      /DEMO_MAX_MESSAGES must be a positive integer/,
+    );
+    expect(() => demoMaxTotalUploadBytes(EMPTY_ENV)).toThrow(/DEMO_MAX_TOTAL_UPLOAD_BYTES/);
+    expect(() => demoMaxMessageBytes(EMPTY_ENV)).toThrow(/DEMO_MAX_MESSAGE_BYTES/);
+    expect(() => demoSessionAuthority(EMPTY_ENV)).toThrow(/binding DEMO_SESSIONS/);
   });
 
   it('credentialedOrigins names CREDENTIALED_ORIGINS', () => {
@@ -186,6 +236,14 @@ describe('production [vars] — the deployed configuration values', () => {
     );
   });
 
+  it('binds the strongly consistent demo-session authority with its migration', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(manifest).toContain('name = "DEMO_SESSIONS"');
+    expect(manifest).toContain('class_name = "DemoSessionAuthority"');
+    expect(manifest).toContain('new_classes = ["DemoSessionAuthority"]');
+    expect(manifest).not.toContain('DEMO_SESSIONS_KV');
+  });
+
   it('declares every required variable except the secrets (encrypted, dashboard-managed)', () => {
     const vars = productionVars();
     for (const name of [
@@ -203,10 +261,20 @@ describe('production [vars] — the deployed configuration values', () => {
       'LOG_TARGETS_ERROR',
       'LOG_TARGETS_FATAL',
       'LOG_SEQ_INGEST_URL',
+      'DEMO_AUDIT_STATUS_URL',
+      'DEMO_SESSION_TTL_SECONDS',
+      'DEMO_MAX_UPLOADS',
+      'DEMO_MAX_MESSAGES',
+      'DEMO_MAX_UPLOAD_BYTES',
+      'DEMO_MAX_TOTAL_UPLOAD_BYTES',
+      'DEMO_MAX_MESSAGE_BYTES',
     ]) {
       expect(vars).toContain(`${name} = `);
     }
     expect(vars).not.toContain('CLAUDE_API_KEY');
     expect(vars).not.toContain('PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
+    expect(vars).not.toContain('DEMO_ACTIVATION_SIGNING_SECRET');
+    expect(vars).not.toContain('DEMO_SESSION_SIGNING_SECRET');
+    expect(vars).not.toContain('DEMO_AUDIT_STATUS_SIGNING_SECRET');
   });
 });
