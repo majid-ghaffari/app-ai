@@ -114,9 +114,27 @@ function chatRequest(body: unknown, headers: Record<string, string> = {}): Reque
 
 describe('prompts module', () => {
   it('exposes the Studio system prompts', () => {
-    for (const name of ['chat', 'onboarding', 'placement', 'image-selection']) {
+    for (const name of [
+      'chat',
+      'billing-assistant',
+      'onboarding',
+      'placement',
+      'image-selection',
+    ]) {
       expect(getSystemPrompt(name, ENV).prompt.length).toBeGreaterThan(0);
     }
+  });
+
+  it('keeps the billing assistant grounded, concise, and mutation-free', () => {
+    const entry = getSystemPrompt('billing-assistant', ENV);
+
+    expect(entry.usesTools).toBe(false);
+    expect(entry.maxTokens).toBe(768);
+    expect(entry.prompt).toMatch(/Grounding context \(JSON\)/);
+    expect(entry.prompt).toMatch(/latest grounding context/);
+    expect(entry.prompt).toMatch(/Never ask for or accept card numbers/);
+    expect(entry.prompt).toMatch(/cannot activate, cancel, change a subscription/);
+    expect(entry.prompt).toMatch(/one to three short paragraphs/);
   });
 
   it('throws on an unknown prompt name', () => {

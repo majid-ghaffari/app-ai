@@ -10,6 +10,7 @@
 
 // Single-file prompts (raw `.md` text used directly).
 export { default as chat } from './chat.md';
+export { default as billingAssistant } from './billing-assistant.md';
 export { default as onboardingChat } from './onboarding-chat.md';
 export { default as onboarding } from './onboarding.md';
 export { default as placement } from './placement.md';

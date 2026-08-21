@@ -134,6 +134,10 @@ src/
 │   └── <name>/index.ts   # COMPOSED prompt: its own barrel assembles the prompt from _-prefixed block fragments + onboarding-shared/ blocks via composePrompt
 ```
 
+The `billing-assistant` prompt is a no-tool `/chat` surface for subscription experiences. It
+answers only from the request's current pricing grounding, never accepts payment secrets, and cannot
+mutate an account or subscription.
+
 ### Routes
 
 | Method | Path          | Handler            | Auth |

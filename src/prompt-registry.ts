@@ -176,6 +176,16 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
+  'billing-assistant': {
+    prompt: prompts.billingAssistant,
+    tier: 'balanced',
+    maxTokens: 768,
+    usesTools: false,
+    description:
+      'Subscription and billing assistant; answers only from the current plan and store-specific pricing grounding, with no tools or account mutations.',
+    attachments: [],
+  },
+
   // Onboarding / visual chat (#111) — the CLIENT-tool twin of `chat`. Same SYSTEM
   // prompt + tier (DEFAULT `frontier`) as `chat`, but instead of the SERVER data toolset it carries the
   // CLIENT `look_at_page` tool, which executes in the merchant's BROWSER (the store

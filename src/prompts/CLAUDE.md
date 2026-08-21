@@ -74,6 +74,7 @@ loose `.md` files. The full set:
 | `image-selection`      | multi-file¹     | `/messages` · none      | Page HTML + screenshot → CSS selectors for image/text/CTA personalization. LIVE.          |
 | `visual-verify`        | single-file     | `/messages` · none      | Multi-modal render → `{ pass, reason, fix }` quality verdict. The shared visual gate.      |
 | `chat`                 | single-file     | `/chat` · server tools  | General Studio chat; runs the server-data tool-use agent loop.                            |
+| `billing-assistant`    | single-file     | `/chat` · none          | Grounded, explanatory subscription chat for billing experiences.                         |
 | `onboarding-chat`      | single-file     | `/chat` · client tool   | Visual chat twin of `chat`: drops server tools, carries the browser `look_at_page` tool.  |
 | `onboarding`           | single-file     | `/chat` · server tools  | New-merchant onboarding assistant; best-practice defaults over the agent loop.            |
 | `placement`            | single-file     | `/chat` · none          | One-shot JSON placement proposer on the `fast` tier (currently Haiku).                    |
