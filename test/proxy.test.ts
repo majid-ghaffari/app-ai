@@ -43,6 +43,8 @@ describe('cors', () => {
     const h = getCorsHeaders(requestWithOrigin('https://shop.example.com'), ENV);
     // The lib SENDS this custom request header on the onboarding handshake.
     expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-Ruleset-Version');
+    expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-QC-Attempt');
+    expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-QC-Capture-Ms');
     expect(h['Access-Control-Expose-Headers']).toBeUndefined();
   });
 
@@ -503,7 +505,7 @@ describe('manageCacheControl', () => {
 
 describe('handleHealth', () => {
   it('returns ok with a timestamp', async () => {
-    const res = handleHealth(CORS);
+    const res = handleHealth(CORS, ENV);
     const body = (await res.json()) as { status: string; timestamp: string };
     expect(body.status).toBe('ok');
     expect(typeof body.timestamp).toBe('string');
@@ -514,10 +516,28 @@ describe('handleHealth', () => {
     // revision injected by esbuild `--define __APP_AI_REV__`). Under vitest there is no define, so the
     // `typeof` guard degrades to "dev" — the fail-closed default a live preflight rejects. This pins
     // the field EXISTS as a string (a marker regression) + the graceful no-define fallback.
-    const res = handleHealth(CORS);
+    const res = handleHealth(CORS, ENV);
     const body = (await res.json()) as { buildRev?: unknown };
     expect(typeof body.buildRev).toBe('string');
     expect(body.buildRev).toBe('dev');
+  });
+
+  it('fails health closed when a production deployment has no attributable revision', async () => {
+    const res = handleHealth(CORS, { ...ENV, ENVIRONMENT: 'production' }, undefined, 'dev');
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      Message: 'App AI deployment has no attributable source revision.',
+      ExceptionType: 'UnattributableBuildException',
+      MessageDetail: 'Configure Cloudflare Workers Builds to deploy with `npm run deploy`.',
+    });
+  });
+
+  it('reports an attributable production revision as healthy', async () => {
+    const res = handleHealth(CORS, { ...ENV, ENVIRONMENT: 'production' }, undefined, 'fc00704');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; buildRev: string };
+    expect(body.status).toBe('ok');
+    expect(body.buildRev).toBe('fc00704');
   });
 });
 

@@ -79,9 +79,13 @@ decisions:
 There is one branch. Cloudflare's GitHub integration auto-deploys `main` to
 production, so **pushing `main` is a production deploy**. There is no staging
 environment and no manual deploy step in the normal flow. Commit locally;
-docs/test-only changes are deploy-safe, but any push is live. `npx wrangler
-deploy --dry-run` builds the bundle (verifying imports + the Text rule) without
-deploying.
+docs/test-only changes are deploy-safe, but any push is live. Workers Builds
+leaves its build command blank, sets its deploy command to `npm run deploy`, and
+uses `npm run deploy:preview` when previews are enabled. Those dashboard-owned settings cannot
+be encoded in Wrangler configuration. `npm run deploy:dry-run` builds the same
+revision-stamped bundle (verifying imports + the Text rule) without deploying.
+Production health fails with 503 when a raw, define-less build bypasses the
+launcher, so an unattributable worker cannot report healthy.
 
 ### 7. Brain's wire error shape, status mapped from the failure
 
@@ -192,7 +196,7 @@ envelope, the entity-context shapes), and the single typed `Env`
 (ESLint-enforced); `npm run typecheck` (`tsc --noEmit`) is a required gate.
 There is still NO build step and no new production dependency: wrangler/esbuild
 transpiles TypeScript natively at deploy time and vitest/vite at test time —
-`tsc` is the type-checker only. `npx wrangler deploy --dry-run` verifies the
+`tsc` is the type-checker only. `npm run deploy:dry-run` verifies the
 bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 
 ### 12. No Hardcoded Config Values — and where the config/code line sits
@@ -392,15 +396,15 @@ ships the header everywhere it can tighten to fail-closed (reject a missing
 header). Prompts without a `rulesetVersion` (probes / chat / image-selection)
 never participate.
 
-### 18. Onboarding effort matches payload scope
+### 18. Onboarding effort matches payload and recovery scope
 
 The four `onboarding-batch{,-all}` and `onboarding-review{,-all}` routes run on
 Sonnet 5 with registry-owned effort policy; Studio does not send or know about
 effort. Per-page propose/review uses `effort: 'low'` to reserve the bounded output
-budget for JSON. Whole-store propose/review uses `effort: 'medium'` so the model can
-reason exhaustively across page consistency, currency formatting, scoped advanced
-CSS, prior-round history, and every independent correction while still staying
-inside the larger 8192-token output budget.
+budget for JSON. Whole-store proposal uses `effort: 'medium'`. Whole-store review uses the
+registry's adaptive low fast path and medium recovery path; currency and advanced CSS are targeted
+hard gates rather than common-review reasoning. The 8192-token review budget remains a truncation
+ceiling, while the compact schema keeps the ordinary response far below it.
 
 ### 19. Logging policy is level-routed configuration, with one request runtime
 
@@ -410,9 +414,10 @@ handlers and shared helpers derive scoped loggers from that immutable runtime. E
 required `LOG_TARGETS_<LEVEL>` binding whose value is `ignore` or a comma-separated fan-out to
 registered sinks. Environment names do not select behavior.
 
-The initial production routes ignore trace/debug/info/warn and send error/fatal to private Seq,
-with Cloudflare application console output disabled. Local configuration sends every level to both
-console and Seq. Seq CLEF delivery is asynchronous through `waitUntil`, fail-open, and optionally
+Production routes ignore trace/debug and send info/warn/error/fatal to private Seq, with Cloudflare
+application console output disabled. This retains successful QC latency/token telemetry and
+`max_tokens` warnings durably. Local configuration sends every level to both console and Seq. Seq
+CLEF delivery is asynchronous through `waitUntil`, fail-open, and optionally
 authenticated with the `LOG_SEQ_API_KEY` secret; the configured shared endpoint accepts anonymous
 ingestion. A rejected background task is caught and emitted through the same runtime.
 
@@ -455,3 +460,22 @@ preamble) plus the per-prompt `_correction-verbs-detail.md`, `_classify-tail.md`
 the paired atomic guard and the four-verb validation/application runtime. A model that never emits
 `moveBox` produces byte-identical worker behavior to a three-verb prompt, so the worker change is a
 strict superset.
+
+### 21. Holistic QC uses adaptive effort and targeted specialist gates
+
+`onboarding-review-all` runs on the registry-owned balanced model at low effort by default. Lib sends
+content-free attempt metadata and sets the escalation flag only for incomplete page coverage,
+parse/schema failure, `max_tokens`, explicit uncertainty/escalation, or failed quality invariants;
+the registry maps an escalated request to medium effort. Lib never selects the provider, model, or
+effort value.
+
+The common-path schema is compact: required page verdicts and human feedback, optional closed issue
+codes, plus `needsEscalation`. Retry results replace verdicts by page key so corrections are
+idempotent. Deterministic currency validation/recovery remains a hard pre-QC gate.
+`advanced-css-required` routes only the affected pages to the medium-effort
+`onboarding-css-review` specialist, whose managed selectors remain component/page scoped. Common
+review responses cannot apply currency or CSS actions.
+
+Every attempt produces content-free structured telemetry for model/prompt/effort, total latency,
+token/cache usage, stop reason, evidence counts, revision/pass, attempt kind, and lib capture/upload
+spans. The operational SLO and release-eval contract live in `docs/QC-OBSERVABILITY.md`.

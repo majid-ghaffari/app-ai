@@ -33,6 +33,12 @@ port = 8787
 local_protocol = "http"
 
 # Production variables (used by Cloudflare auto-deploy from GitHub).
+# Workers Builds keeps its deploy commands in Dashboard → app-ai → Settings → Build;
+# Wrangler configuration cannot encode those settings. Required commands:
+#   Build command:                        (blank)
+#   Deploy command:                       npm run deploy
+#   Non-production branch deploy command: npm run deploy:preview
+# Both repository launchers inject the exact Git revision consumed by /health.
 # Production SECRETS are set via the Cloudflare Dashboard (encrypted secrets),
 # never in this file:
 #   CLAUDE_API_KEY      — the Anthropic API key (src/lib/anthropic.ts).
@@ -63,12 +69,12 @@ CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,htt
 MODEL_FAST = "claude-haiku-4-5"
 MODEL_BALANCED = "claude-sonnet-5"
 MODEL_FRONTIER = "claude-opus-4-8"
-# Logging is level-routed entirely by configuration. Production sends application
-# failures to private Seq and emits no Worker console output.
+# Logging is level-routed entirely by configuration. Production sends durable QC
+# telemetry plus failures to private Seq and emits no Worker console output.
 LOG_TARGETS_TRACE = "ignore"
 LOG_TARGETS_DEBUG = "ignore"
-LOG_TARGETS_INFO = "ignore"
-LOG_TARGETS_WARN = "ignore"
+LOG_TARGETS_INFO = "seq"
+LOG_TARGETS_WARN = "seq"
 LOG_TARGETS_ERROR = "seq"
 LOG_TARGETS_FATAL = "seq"
 LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"

@@ -95,6 +95,13 @@ export interface SystemPromptEntry {
   description: string;
   attachments: PromptAttachment[];
   effort?: Effort;
+  /**
+   * OPTIONAL adaptive effort policy for latency-sensitive QC. The caller may describe whether a
+   * request is the ordinary fast path or an evidence/schema/quality escalation, but this registry
+   * remains the authority that maps that neutral signal to provider-specific effort values.
+   * Mutually exclusive with `effort`.
+   */
+  adaptiveEffort?: { default: Effort; escalated: Effort };
   /** CLIENT-executed tool schema (mutually exclusive with `usesTools`). See the
    *  field docs above. Its live consumer is `onboarding-chat` (#111), which carries
    *  the `look_at_page` client tool; the generic client-tool capability seam. */
@@ -359,25 +366,25 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
   // EVERY applied page (Home/Product/Collection/Cart) at both widths + a per-page manifest (which
   // after-render images + applied plan belong to which page) in ONE completion, and returns
   // `{ pages: { Home: { pass, feedback, corrections, failureClass }, … } }`. Collapses N per-page
-  // review round-trips into one so the merchant's quality-control act has a single masked wait.
-  // `balanced` tier, like `onboarding-review`; the lib falls back to looping per-page
-  // `onboarding-review` if this is unavailable or omits a page. JSON-only, no tools. Design:
+  // review round-trips into one. `balanced` tier, like `onboarding-review`; low effort is the fast
+  // path and content-free recovery metadata selects medium effort for lean/chunk retries. JSON-only,
+  // no tools. Design:
   // docs/prompts/onboarding-review-all.md.
   'onboarding-review-all': {
     prompt: prompts.onboardingReviewAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     tier: 'balanced',
     maxTokens: 8192,
-    effort: 'medium',
+    adaptiveEffort: { default: 'low', escalated: 'medium' },
     usesTools: false,
     description:
-      'Onboarding batch REVIEW for the WHOLE STORE in one call; given several applied pages (each name + desktop+mobile after-render screenshots + applied plan) + a per-page manifest, returns { pages: { <page>: { pass, feedback, corrections, failureClass } } } — the same per-page verdict shape, all pages at once. Structured output, the conductor batch-writes each page’s corrections. Sonnet, no tools.',
+      'Adaptive onboarding REVIEW for the WHOLE STORE; given current pages at desktop+mobile plus round-0/clean references, plans, and history, returns compact { pages: { <page>: { pass, feedback, corrections, failureClass, issueCodes? } }, needsEscalation }. Low effort by default; medium on bounded recovery. Currency/CSS actions are outside the common response. Sonnet, no tools.',
     attachments: [],
   },
 
   // Exceptional bounded recovery when the holistic proposal omitted the required currency verdict.
-  // It reuses a compact subset of already-uploaded store tiles and returns the SAME visual-action
-  // union as propose/QC. It is not a Website-Analysis probe and does not fetch/capture anything.
+  // It reuses a compact subset of already-uploaded store tiles and returns one currency action. It
+  // is not a Website-Analysis probe and does not fetch/capture anything.
   'onboarding-currency-recovery': {
     prompt: prompts.onboardingCurrencyRecovery,
     tier: 'balanced',
@@ -386,6 +393,18 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     usesTools: false,
     description:
       'Bounded pre-QC recovery for an omitted holistic currency verdict; selects a deterministic candidate (including none), or with no candidates returns one validated explicit six-argument format. JSON-only { visualActions: [setCurrencyFormat] }.',
+    attachments: [],
+  },
+
+  'onboarding-css-review': {
+    prompt: prompts.onboardingCssReview,
+    rulesetVersion: ONBOARDING_RULESET_VERSION,
+    tier: 'balanced',
+    maxTokens: 2048,
+    effort: 'medium',
+    usesTools: false,
+    description:
+      'Targeted advanced-CSS QC specialist for pages the low-effort holistic review cannot repair through standard appearance keys. Returns the same page verdict shape plus only validated managed advancedCss visual actions. Sonnet, no tools.',
     attachments: [],
   },
 

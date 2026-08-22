@@ -83,7 +83,8 @@ loose `.md` files. The full set:
 | `onboarding-batch`     | composed        | `/messages` · none      | Propose one page's boxes (INSERT-only by number + explicit playbook styling). Single-page (`balanced`).  |
 | `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: every page + visual actions + off-page segments/discounts. |
 | `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
-| `onboarding-review-all`| composed        | `/messages` · none      | Whole-store iterative QC: current revisions + stable references/history → exhaustive page corrections and visual actions. |
+| `onboarding-review-all`| composed        | `/messages` · none      | Adaptive whole-store QC: low-effort current/references/history review; compact page verdicts escalate to medium when incomplete or uncertain. |
+| `onboarding-css-review`| single-file     | `/messages` · none      | Targeted medium-effort hard gate for pages explicitly marked `advanced-css-required`; emits only scoped managed CSS actions. |
 | `onboarding-currency-recovery` | single-file | `/messages` · none | Exceptional bounded pre-QC recovery when the holistic proposal omits its required currency verdict; reuses already-uploaded price tiles. |
 | `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface) + the OPTIONAL `progressBar` slot (the bar's second host, top of the drawer). |
 | `cartdrawer-review-all`| composed        | `/messages` · none      | QC verdict on the cart-drawer boxes (single surface).                                      |
@@ -128,6 +129,10 @@ exist it selects one of them (including the explicit `none` decision); without c
 a tightly validated six-argument inferred format. `onboarding-currency-recovery` is only the bounded
 omission-recovery seam before first QC. It sees a compact subset of the already-uploaded price-bearing
 tiles, never captures again, and returns the same `setCurrencyFormat` visual-action union.
+Common `onboarding-review-all` responses contain page corrections, closed issue codes, and
+`needsEscalation`, not visual actions. `advanced-css-required` pages enter
+`onboarding-css-review`; that medium-effort specialist is the only review stage allowed to emit
+managed scoped-CSS actions.
 
 ## `probe-<id>` sub-convention
 

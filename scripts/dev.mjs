@@ -12,8 +12,8 @@
  * no-define — if git cannot resolve a revision, so a worker that would report `buildRev:"dev"` can
  * never start green.
  *
- * The deploy path (`wrangler deploy`) is intentionally left define-less: production is not the
- * exact-marker FREE stack, and `'dev'` there is by design (see `src/build-rev.ts`).
+ * The production launcher uses the same helper (`scripts/deploy.mjs`), so every served worker has
+ * an attributable revision too. A production deployment must never silently report `"dev"`.
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
@@ -40,7 +40,12 @@ export function resolveShortRev(
 
 /** Compose the `wrangler dev` argv with the build-rev define, appending any extra args verbatim. */
 export function composeWranglerArgs(rev, extraArgs = []) {
-  return ['dev', '--define', `${APP_AI_REV_DEFINE}:"${rev}"`, ...extraArgs];
+  return composeRevisionedWranglerArgs('dev', rev, extraArgs);
+}
+
+/** Compose any revision-stamped wrangler command. Kept shared so dev and deploy cannot drift. */
+export function composeRevisionedWranglerArgs(command, rev, extraArgs = []) {
+  return [command, '--define', `${APP_AI_REV_DEFINE}:"${rev}"`, ...extraArgs];
 }
 
 /** Resolve the persistent local log path; callers may place it elsewhere through the dev env. */

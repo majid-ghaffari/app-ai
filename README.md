@@ -309,7 +309,7 @@ prompts bundle too) makes `import x from './prompts/x.md'` resolve to the file's
 contents; `vitest.config.ts` mirrors this for tests with the same import specifier.
 
 1. Edit the `.md` text and/or the `src/prompt-registry.ts` metadata
-2. `npx vitest run` and `npx wrangler deploy --dry-run` to verify
+2. `npx vitest run` and `npm run deploy:dry-run` to verify
 3. Commit and push to GitHub (auto-deploys to production)
 
 ### Token-Saving Levers
@@ -339,7 +339,9 @@ Cost-reduction is additive and never changes external request/response shapes.
 - **Extended 1h prompt cache.** Stable prefixes (the system prompt, reused file
   attachments, the `/chat` base prompt block) carry `cache_control: { type: 'ephemeral', ttl:
 '1h' }` (GA — no beta header). For `/messages` customization/QC calls, the client places
-  `limespot_stable_cache_prefix: true` on the terminal original-plus-round-0 reference block;
+  `limespot_stable_cache_prefix: true` only when a caller has a genuinely stable user prefix. The
+  onboarding review-all payload does not mark user evidence: it sends round-0, clean-reference, and
+  current images as variable content and sends no pre-customization originals;
   the worker gives that 1h breakpoint priority within the four-slot system/attachment budget,
   removes the internal marker before Anthropic forwarding, and leaves block/file-ID order intact.
   Conversation turns use the 5-minute default. See `src/lib/cache-control.ts`
@@ -384,11 +386,17 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
 
 1. Connect repository to Cloudflare via dashboard
 2. Configure branch-to-environment mapping (`main` → `app-ai`)
-3. Set the secrets in Cloudflare Dashboard:
+3. Under Worker `app-ai` → Settings → Build ([Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)), leave **Build command** blank and set **Deploy command** to exactly `npm run deploy`. If non-production branch builds are enabled, set their
+   command to exactly `npm run deploy:preview`. Cloudflare owns these two Git
+   integration settings in the dashboard and does not read them from
+   `wrangler.toml`; its raw defaults bypass the required revision stamp.
+4. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
    - Add secrets with keys `CLAUDE_API_KEY` and `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`
 
-**No manual deployment needed** - push to GitHub and Cloudflare auto-deploys.
+Pushing `main` then auto-deploys through the repository launcher. The launcher
+injects the checked-out Git revision; a production worker built without it
+returns 503 from `/health` instead of claiming to be healthy as `buildRev: "dev"`.
 
 ### Manual Deployment (Testing Only)
 
@@ -548,9 +556,11 @@ npm run test             # Run tests (watch); one-shot: npx vitest run
 npm run typecheck        # tsc --noEmit (strict)
 npm run lint             # ESLint over the whole repo
 npm run format-check     # Prettier check (exclusions documented in .prettierignore)
+npm run deploy:dry-run   # Build the revision-stamped bundle without deploying
 
 # Deployment (Manual - for testing only)
 npm run deploy           # Deploy to default environment
+npm run deploy:preview   # Upload a revision-stamped non-production version
 
 # Monitoring
 npm run tail             # View production logs
@@ -590,6 +600,8 @@ wrangler whoami          # Check authentication
   TypeScript, clean code, error handling, No Hardcoded Config Values)
 - [docs/TESTING.md](docs/TESTING.md) — the required offline gate set and the
   optional live token-savings diagnostic
+- [docs/QC-OBSERVABILITY.md](docs/QC-OBSERVABILITY.md) — adaptive QC telemetry,
+  latency SLO measurement, and the zero-critical-false-pass release gate
 - [docs/DECISIONS.md](docs/DECISIONS.md) — numbered decision log
 - [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — current limitations
 - [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md) — prompt

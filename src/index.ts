@@ -63,7 +63,7 @@ async function handleRequest(
     }
 
     if (pathname === '/health' && method === 'GET') {
-      return handleHealth(corsHeaders, logging);
+      return handleHealth(corsHeaders, env, logging);
     }
 
     // Every endpoint except /health requires a valid context-ID. The same

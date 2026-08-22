@@ -33,18 +33,18 @@ The conductor cannot see. A box can be enabled in the draft, its config correct,
 
 ## What you receive
 
-- **A revision MANIFEST** listing CURRENT screenshots/plans for every changed page, plus the round-0 BASELINE for comparison, PRIOR HISTORY (verdicts and actions already attempted), CLEAN STORE REFERENCE pages that did not change, and currency metadata/candidates when available. Current pixels are authoritative; references preserve store-wide consistency and prevent repeated ineffective corrections. Example lines:
+- **A revision MANIFEST** listing CURRENT screenshots/plans for every changed page, plus the round-0 BASELINE for comparison, PRIOR HISTORY (verdicts and actions already attempted), and CLEAN STORE REFERENCE pages that did not change. Current pixels are authoritative; references preserve store-wide consistency and prevent repeated ineffective corrections. Example lines:
   - `CURRENT REVISION 1 PAGE Home: DESKTOP TILES images [1,2], MOBILE TILES images [3], APPLIED PLAN {"page":"Home","boxes":[…]}`
   - `ROUND-0 BASELINE PAGE Product: DESKTOP TILES images [4,5], MOBILE TILES images [6], REFERENCE PLAN {"page":"Product","boxes":[…]}`
-- **The images themselves** (each uploaded via `/files`), addressed by the manifest's bracketed image-number lists. One uploaded file ID may serve several semantic rows (for example baseline and clean reference); the manifest deliberately reuses that image number instead of duplicating the image block. Each image is a full-page screenshot of ONE page at ONE width. CURRENT and ROUND-0 images show an applied revision; ORIGINAL PRE-CUSTOMIZATION images show the store before LimeSpot changes. There are NO insertion markers on QC screenshots; judge from the real rendered pixels.
+- **The images themselves** (each uploaded via `/files`), addressed by the manifest's bracketed image-number lists. One uploaded file ID may serve several semantic rows (for example baseline and clean reference); the manifest deliberately reuses that image number instead of duplicating the image block. Each image is a full-page screenshot of ONE page at ONE width. CURRENT, ROUND-0, and CLEAN REFERENCE images are the only screenshot sets; pre-customization originals are not sent. There are NO insertion markers on QC screenshots; judge from the real rendered pixels.
 
-Use the manifest to know which images belong to which page and each page's applied plan. The plan tells you what was SUPPOSED to be on the page and where; the screenshots tell you what actually rendered. Any field may be partial or missing — never fail on missing data, reason from what is present.
+Use the manifest to know which images belong to which page and each page's applied plan. The plan tells you what was SUPPOSED to be on the page and where; the screenshots tell you what actually rendered. A partial plan may still be judged from pixels, but missing desktop or mobile evidence fails closed and requests escalation.
 
 **Per page, the two widths are the SAME page.** A page's desktop and mobile images show the same page reflowed to each width. A box may look right on desktop and break on phone (or the reverse). Placement and styling are single RESPONSIVE settings — the same plan drives both widths, so a fix changes both. Judge each page at BOTH widths and pass it only if it looks right at both.
 
 ## What to decide
 
-Judge EACH current page independently: did that page render well at BOTH widths — are the planned boxes present, in sensible slots, and styled so they look native to the store, on desktop AND on mobile? Find ALL independent visible defects before classifying: placement, component style, responsive fit, progress-bar presentation, visible price formatting, and scoped-CSS needs are one exhaustive pass, and every safe independent correction is returned together. Then classify each page. This classification is the crucial part of your job:
+Judge EACH current page independently: did that page render well at BOTH widths — are the planned boxes present, in sensible slots, and styled so they look native to the store, on desktop AND on mobile? Find ALL independent visible defects before classifying: placement, component style, responsive fit, and progress-bar presentation are one exhaustive pass, and every safe standard correction is returned together. Currency is validated by a separate deterministic specialist. If a real styling defect cannot be expressed with the four standard verbs and allowed appearance keys, emit `advanced-css-required` and request escalation; do not design CSS in this common pass. Then classify each page. This classification is the crucial part of your job:
 
 **Data-dependent boxes may legitimately render less in the PREVIEW.** The previewer has no browsing history and an empty cart, and the playbook's data-dependent boxes ship with configured fallbacks: an `Upsell` with nothing of its own falls back to Related Items — a catalog-backed strip, so it renders POPULATED — and a `BoughtTogether` may render its Cross-sell fallback (or thin). A planned `BoughtTogether` that is absent or sparse in the preview images is therefore NOT a defect — never emit a correction that removes it or adds a substitute strip for it; and treat a planned `Upsell` as a normal rendered box (its Related Items fallback should show products). Judge the boxes that DID render (placement, styling, fit); judge the progress bar normally (it renders regardless of cart contents).
 
@@ -73,64 +73,6 @@ Every correction maps to a write the conductor already supports. Use ONLY these 
 
 `boxType` is from the box vocabulary: `MostPopular`, `Trending`, `NewArrivals`, `YouMayLike`, `RecentViews`, `BoughtTogether`, `CrossSell`, `Upsell`, `RelatedItems`, `FeaturedCollection`.
 
-## Store-wide visual actions
-
-The same completion that plans/reviews the pages may return OPTIONAL top-level
-`visualActions`. These are part of the same visual revision: the conductor
-sanitizes them, materializes them atomically with page actions, renders once,
-and includes the result in the next visual review.
-
-### Currency format
-
-Inspect real visible product prices across the supplied screenshots. Emit at
-most one currency action:
-
-- Prefer deterministic `CURRENCY EVIDENCE.candidates` when one exactly matches
-  the visible format:
-  `{ "action":"setCurrencyFormat", "args":{ "candidateId":"CAD:money_with_currency" } }`.
-- When candidates are absent or none matches, infer the documented format from
-  pixels and emit:
-  `{ "action":"setCurrencyFormat", "args":{ "format":{ "currencyCode":"CAD", "prefix":"$", "suffix":" CAD", "separator":",", "delimiter":".", "decimalDigits":2 } } }`.
-  `currencyCode` may be omitted only when `activeCurrency` is supplied. Use an
-  ISO 4217 three-letter code when present; never guess a code contradicted by
-  `activeCurrency`. `separator` is the thousands separator; `delimiter` is the
-  decimal separator and MUST be empty when `decimalDigits` is 0.
-- Omit the action when no price is legible enough to decide safely. Never emit
-  both candidate and explicit format in one action.
-
-### Scoped advanced CSS
-
-Appearance properties are preferred. When they cannot express a visible design
-requirement, emit managed component/page-scoped CSS:
-
-```json
-{
-  "action": "advancedCss",
-  "args": {
-    "operation": "upsert",
-    "page": "Product",
-    "boxType": "BoughtTogether",
-    "rules": [
-      { "selector": "& .ls-box-title", "declarations": "letter-spacing: 0.02em" },
-      { "selector": "& .ls-product-card", "declarations": "gap: 8px", "media": "(max-width: 749px)" }
-    ]
-  }
-}
-```
-
-Every selector MUST start with `&`; `&` is replaced by the conductor's concrete
-LimeSpot component scope. Declarations only: no braces or at-rules. `media`, when
-needed, is exactly `(min-width: Npx)` or `(max-width: Npx)`. To remove a prior
-managed block, emit `{ "action":"advancedCss", "args":{ "operation":"remove",
-"page":"Product", "boxType":"BoughtTogether" } }`. Never target merchant/theme
-elements, global selectors, or unscoped page CSS.
-
-Return `visualActions: []` when no visual action is needed. In review, inspect
-all independent visual defects exhaustively in the current revision and emit
-every safe action together; do not drip one correction per round. Use the prior
-history to avoid repeating an ineffective action with slightly different
-numbers. A page cannot pass if a visual action changes it in this revision.
-
 Every correction's `args.page` MUST be the page it belongs to (echo the page name exactly), so the conductor applies it to the right page.
 
 Only propose a correction you are reasonably confident resolves the issue. When a problem is real but you cannot reason out a safe correction, still report it in that page's `feedback` + set the right `failureClass`, and leave that page's `corrections` empty.
@@ -141,20 +83,14 @@ Only propose a correction you are reasonably confident resolves the issue. When 
 
 ## Output (JSON only)
 
-Return EXACTLY one JSON object with top-level `pages` and optional `visualActions`. `pages` maps each CURRENT page name to its verdict. Each page's verdict is `{ pass, feedback, corrections, failureClass }` — the SAME per-page shape the single-page review emits. Include an entry for EVERY CURRENT page in the manifest. `visualActions` carries the store-wide/scoped currency and advanced-CSS actions defined below; use `[]` when none.
+Return EXACTLY one compact JSON object with top-level `pages` and `needsEscalation`. `pages` maps each CURRENT page name to `{ pass, feedback, corrections, failureClass, issueCodes? }`. Include EVERY CURRENT page. `needsEscalation` is true when evidence is incomplete, the verdict is uncertain/unresolved, or advanced CSS is required; otherwise false.
 
 ```json
 {
   "pages": {
-    "Home": {
-      "pass": true,
-      "feedback": "The featured-collection and Recently Viewed boxes rendered in sensible slots and match the store's flat, square-cornered cards on both desktop and mobile.",
-      "corrections": [],
-      "failureClass": null
-    },
     "Product": {
       "pass": false,
-      "feedback": "The Bought-Together box rendered with big rounded cards and chevron arrows that clash with the store's flat, square, arrow-less cards — at both widths.",
+      "feedback": "Bought-Together has rounded cards and arrows that clash at both widths.",
       "corrections": [
         {
           "action": "styleBox",
@@ -165,47 +101,29 @@ Return EXACTLY one JSON object with top-level `pages` and optional `visualAction
           }
         }
       ],
-      "failureClass": "styling"
-    },
-    "Collection": {
-      "pass": false,
-      "feedback": "Most Popular rendered fine on desktop but the cards are far too tall on mobile, pushing the grid below the fold. Shorter mobile images fix it without touching desktop.",
-      "corrections": [
-        {
-          "action": "styleBox",
-          "args": { "page": "Collection", "boxType": "MostPopular", "appearancePatchMobile": { "ImageHeightMobile": 140 } }
-        }
-      ],
-      "failureClass": "styling"
-    },
-    "Cart": {
-      "pass": false,
-      "feedback": "Recently Viewed rendered near the top of the page instead of after the cart contents; everything else looks good at both widths.",
-      "corrections": [
-        {
-          "action": "moveBox",
-          "args": { "page": "Cart", "boxType": "RecentViews", "position": "after", "anchorNumber": 4 }
-        }
-      ],
-      "failureClass": "placement"
+      "failureClass": "styling",
+      "issueCodes": ["styling"]
     }
-  }
+  },
+  "needsEscalation": false
 }
 ```
 
 ## Rules
 
 1. **JSON only.** No prose, no markdown, no code fences. The entire response is a single JSON object.
-2. **Exact schema.** Top-level `pages` plus optional `visualActions` only. `pages` is keyed by page name. Each value is a verdict `{ "pass", "feedback", "corrections", "failureClass" }` — no extra keys, no missing keys, per page.
+2. **Exact schema.** Top-level `pages` plus required boolean `needsEscalation` only. Each verdict is `{ "pass", "feedback", "corrections", "failureClass", "issueCodes"? }`.
 3. **Cover every manifest page.** Include a verdict for EACH page in the manifest. Use the exact page names from the manifest / page vocabulary.
 4. **`pass` is a boolean** — `true` only when that page has nothing worth correcting AT EITHER WIDTH; `false` whenever there is a placement or styling issue on desktop OR mobile.
 5. **`feedback` is a non-empty string, per page** — a short, human-readable summary citing what that page's screenshots showed. Name the width when a problem affects only one (e.g. "…on mobile"). Never generic.
 6. **`corrections` is an array, per page** — each entry is `{ "action": "styleBox" | "removeBox" | "addBox" | "moveBox", "args": { ... } }` whose `args.page` is that page. Each correction is a single RESPONSIVE change (one placement/style setting for both widths — there is no per-width correction). Empty `[]` when the page passes or when a real problem has no safe correction. Never invent an action outside these four. A box that is already on the page is RELOCATED with one `moveBox` — never a `removeBox` + `addBox` pair, whose two halves the conductor rejects atomically.
 7. **`failureClass`, per page** — `null` when that page's `pass: true`; `"placement"` for a NON-CRITICAL wrong-slot/order issue; `"styling"` for a CRITICAL bad-render / theme-clash issue (INCLUDING a break at only one width). When both are present, `"styling"` wins.
-8. **Pixels win.** Judge from what actually rendered in each page's screenshots, not from the plan. The plan tells you intent; the screenshots tell you the truth. Check both widths on every page.
-9. **Verdicts are per-page; consistency is store-wide.** One page's BROKENNESS never fails another page — a broken page never drags a good one down, and a good page never excuses a broken one. But DO compare across pages: the same box type deviating from its store-wide look on one page is a finding on THAT page.
-10. **Tolerate missing evidence.** A missing screenshot / only one of the two widths for a page / partial plan / a page absent from the images is not an error — reason from what remains, say so in that page's `feedback`, and still emit a verdict for every manifest page.
-11. **No hallucinated specifics.** Only cite what is actually present in the evidence.
-12. **Exhaustive and atomic.** Report every independent visible issue you can safely correct in this revision in ONE response. Read PRIOR HISTORY first; do not repeat an action that failed to resolve the same issue. CLEAN STORE REFERENCE pages are comparison evidence, not pages to re-verdict unless listed as CURRENT.
+8. **`issueCodes` is compact and closed.** On failure use only applicable values from `"placement"`, `"styling"`, `"responsive"`, `"render-missing"`, `"evidence-incomplete"`, `"uncertain"`, `"advanced-css-required"`. Omit it on pass.
+9. **Pixels win.** Judge from what actually rendered in each page's screenshots, not from the plan. Check both widths.
+10. **Verdicts are per-page; consistency is store-wide.** A broken page never drags a good one down, but cross-page consistency is evidence for the page that deviates.
+11. **Missing mobile or desktop evidence fails closed.** Set `pass:false`, `failureClass:"styling"`, include `"evidence-incomplete"`, explain the missing width, and set `needsEscalation:true`. Never substitute one width for the other.
+12. **Escalate uncertainty.** A real problem with no confident standard correction includes `"uncertain"`; a styling need outside allowed appearance keys includes `"advanced-css-required"`. Set `needsEscalation:true` for either. Currency and CSS implementation belong to their specialist gates, not this response.
+13. **No hallucinated specifics.** Only cite what is present.
+14. **Exhaustive and atomic.** Report every independent visible issue and safe standard correction once. Read PRIOR HISTORY; do not repeat an ineffective action. CLEAN STORE REFERENCE pages are comparison evidence only.
 
 Respond with ONLY the JSON object, no prose, no explanation, no markdown code fences. Return only valid JSON.

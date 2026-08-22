@@ -1,5 +1,14 @@
 # Majid's prompt program on `aidin/website-analysis-probes` — eng review guide
 
+> **Current integration status (2026-08-25):** This document preserves the
+> original cross-fork handoff and validation record below. The prompt program
+> is no longer stranded on Majid's fork: it was integrated into
+> `limespot/app-ai` by `caef390` and is inherited by current `main` and
+> `aidin/new-studio`. The current registry owns each prompt's model and exact
+> token budget; the paired lib client omits those overrides. Deployment must
+> still be verified from the deployed worker rather than inferred from this
+> historical handoff note.
+
 **Branch:** `aidin/website-analysis-probes` (pushed to the fork
 `majid-ghaffari/app-ai`; Majid's account is pull-only on `limespot/app-ai`, so
 this lands via a cross-fork PR). **Read together with the lib companion doc**
@@ -96,14 +105,15 @@ block files (`composePrompt`, byte-pinned by `test/__snapshots__/*.baseline.md`
    edit — wrangler's watcher misses .md-only edits, and a failed restart can
    false-pass health checks (the old process keeps the port).
 2. **Every propose-prompt change needs a lib-side
-   `SCREEN_CACHE_PLAYBOOK_VERSION` bump** (`lib admin/ai/screen-cache.ts`, now 22) or warmed stores replay stale cached plans.
+   `SCREEN_CACHE_PLAYBOOK_VERSION` bump** (`lib admin/ai/screen-cache.ts`, now 24) or warmed stores replay stale cached plans.
 3. **Regenerate the baselines** after any block edit (the compose orders live
    in each prompt's `index.ts`) and keep `docs/prompts/<name>.md` in sync —
    both are review gates.
 
 ## Deploy note
 
-Prod serves prompts from the DEPLOYED worker. Until this branch is merged into
-`limespot/app-ai` and deployed, prod runs the older playbook — the lib
-references prompts by name, so the lib branch is safe to merge independently
-but only realizes the new behavior once this worker ships.
+Prod serves prompts from the DEPLOYED worker. The cross-fork prompt program is
+now merged into `limespot/app-ai` through `caef390`; repository ancestry alone
+does not prove which worker build is deployed. Verify the served worker before
+a production acceptance run. The lib references prompts by name, so its code
+only realizes a prompt change after the matching worker build ships.

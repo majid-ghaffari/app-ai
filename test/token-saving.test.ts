@@ -296,7 +296,7 @@ describe('LEVER 5 — model + effort routing', () => {
     expect(getSystemPrompt('proposals', ENV).model).toBe('claude-sonnet-5');
   });
 
-  it('uses low effort per page and medium effort for whole-store onboarding JSON', () => {
+  it('uses low effort per page and adaptive low-to-medium effort for holistic QC', () => {
     // Placement runs on Haiku 4.5, which 400s on output_config.effort, so the
     // entry must not set it. chat/onboarding/image-selection never set it.
     expect(getSystemPrompt('placement', ENV).effort).toBeUndefined();
@@ -306,7 +306,9 @@ describe('LEVER 5 — model + effort routing', () => {
     expect(getSystemPrompt('onboarding-batch', ENV).effort).toBe('low');
     expect(getSystemPrompt('onboarding-batch-all', ENV).effort).toBe('medium');
     expect(getSystemPrompt('onboarding-review', ENV).effort).toBe('low');
-    expect(getSystemPrompt('onboarding-review-all', ENV).effort).toBe('medium');
+    const holisticReview = getSystemPrompt('onboarding-review-all', ENV);
+    expect(holisticReview.effort).toBeUndefined();
+    expect(holisticReview.adaptiveEffort).toEqual({ default: 'low', escalated: 'medium' });
   });
 
   it('supportsEffort: true for the effort-capable models, false for placement/Haiku & Sonnet 4.5', () => {

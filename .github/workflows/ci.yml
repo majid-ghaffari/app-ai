@@ -32,6 +32,7 @@ jobs:
         run: npx vitest run
 
       # Builds the worker bundle without deploying — verifies imports and the
-      # wrangler [[rules]] Text rule resolve. Needs no Cloudflare credentials.
+      # wrangler [[rules]] Text rule resolve. The repository launcher stamps
+      # the exact checked-out SHA even for dry runs. Needs no Cloudflare credentials.
       - name: Bundle (dry run)
-        run: npx wrangler deploy --dry-run
+        run: npm run deploy:dry-run

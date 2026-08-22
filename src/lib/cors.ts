@@ -17,7 +17,7 @@ import type { CorsHeaders } from './responses';
 const BASE_HEADERS: CorsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'Content-Type, Authorization, Accept, X-Requested-With, X-Personalizer-Context-ID, X-Personalizer-System-Prompt, X-Personalizer-Ruleset-Version',
+    'Content-Type, Authorization, Accept, X-Requested-With, X-Personalizer-Context-ID, X-Personalizer-System-Prompt, X-Personalizer-Ruleset-Version, X-Personalizer-QC-Attempt, X-Personalizer-QC-Escalated, X-Personalizer-QC-Revision, X-Personalizer-QC-Pass, X-Personalizer-QC-Page-Count, X-Personalizer-QC-Image-Count, X-Personalizer-QC-Tile-Count, X-Personalizer-QC-Capture-Ms, X-Personalizer-QC-Upload-Ms',
   'Access-Control-Max-Age': '86400',
 };
 

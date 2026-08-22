@@ -51,8 +51,7 @@ less is not done, and must not be reported as done:
    test stays honest (never weakened, never skipped to green — see
    docs/CODE-PATTERNS.md → No Silent Skips).
 5. **All gates green, with zero errors:** `npx vitest run`, `npm run lint`,
-   `npm run format-check`, `npm run typecheck`, `npx wrangler deploy
---dry-run` — and the documentation tree updated with the change (this
+   `npm run format-check`, `npm run typecheck`, `npm run deploy:dry-run` — and the documentation tree updated with the change (this
    file's propagation rule).
 
 Verification is independent: gate results are re-run and confirmed, not taken
@@ -172,12 +171,12 @@ Cost-reduction is additive and never changes external request/response shapes.
 
 **The levers:**
 
-- **Extended 1h prompt cache (`EXTENDED_CACHE_CONTROL` in `cache-control.ts`).** The STABLE prefix uses `{ type: 'ephemeral', ttl: '1h' }` (GA — no beta header): `messages.ts` system block + reused file-attachment blocks; `chat.ts` `buildSystem` base prompt block (the volatile context block AND the Referenced-Entities block stay uncached — the system array is `[ registry (1h) , context? , referenced-entities? ]`, per-call blocks last so the cached prefix stays byte-stable); the placement file-prefix block (last `fileIds` block); and the user blocks `manageCacheControl` keeps. On `/messages`, a caller marks the terminal original-plus-round-0 stable reference block with `limespot_stable_cache_prefix: true`; cache management reserves its 1h breakpoint after counting the one/two system blocks and prompt attachments, strips the internal marker before both token counting and inference, preserves block/file-ID order, and ranks other user images/documents only for the remaining slots. Conversation turns use the 5-min default (short-lived).
+- **Extended 1h prompt cache (`EXTENDED_CACHE_CONTROL` in `cache-control.ts`).** The STABLE prefix uses `{ type: 'ephemeral', ttl: '1h' }` (GA — no beta header): `messages.ts` system block + reused file-attachment blocks; `chat.ts` `buildSystem` base prompt block (the volatile context block AND the Referenced-Entities block stay uncached — the system array is `[ registry (1h) , context? , referenced-entities? ]`, per-call blocks last so the cached prefix stays byte-stable); the placement file-prefix block (last `fileIds` block); and explicitly marked user blocks `manageCacheControl` keeps. The onboarding review-all caller sends round-0, clean-reference, and current screenshots as variable user evidence without an internal stable-prefix marker or pre-customization originals. Cache management strips any marker before token counting/inference, preserves block/file-ID order, and ranks other user images/documents only for the remaining slots. Conversation turns use the 5-min default (short-lived).
 - **Agent-loop breakpoints (`agent-cache.ts`).** `runAgentLoop` calls `applyConversationBreakpoints(conversation, { maxBreakpoints, reservedHeadBlocks })` each iteration: strips stale breakpoints (except the reserved file-prefix head blocks), then re-applies last-block + intermediates every ~15 blocks so the 20-block lookback never misses. Budget ≤4 total: 1 system + (1 file-prefix when `fileIds` present, so `maxBreakpoints` drops to 2) + conversation; otherwise system + 3 conversation.
 - **Files API checksum dedup (`file-dedup.ts`) — LIVE.** `dedupUpload({content,mimeType,filename}, env)` SHA-256s the bytes; on `env.FILES_KV` hit it VERIFIES the cached `file_id` still exists (Files API metadata, `getFileMetadata`) before reuse — a 404 drops the stale record and re-uploads, so a dead id is never vended. Misses upload and store `hash → { fileId, createdAt }` with a 30-day TTL (`KV_RECORD_TTL_SECONDS`). Both `handlers/files.ts::handleFileUpload` (the real screenshot/HTML path) and `messages.ts` attachment upload route through it. `FILES_KV` is bound in production, so dedup is active; it GRACEFULLY NO-OPS (plain upload) if the binding is ever absent.
 - **Image vs document block typing (`chat.ts::buildFileBlock`).** Each `fileId` is resolved to `image` (mime `image/*`) or `document` by its Files API metadata. Images MUST be `image` blocks — Anthropic 400s an image inside a `document` block ("Only PDF and plaintext documents are supported"), which is exactly the placement screenshot. Lookup failure falls back to `document`.
 - **count_tokens pre-flight.** `messages.ts` best-effort logs an estimate (warns past a soft threshold) for large payloads — wrapped in try/catch, NEVER gates/rejects the live request.
-- **Opt-in output effort (model-gated).** A registry entry MAY carry `effort: 'low'|'medium'|'high'|'xhigh'`. Handlers add `output_config: { effort }` only when the effort is set AND the resolved model supports it (`supportsEffort` in `lib/anthropic.ts`): Fable 5, Opus 4.8/4.7/4.6/4.5, Sonnet 5/4.6. On any other model the worker omits it — `output_config.effort` returns a 400 on e.g. Haiku 4.5 / Sonnet 4.5. `chat.ts` gates on the per-call model; `messages.ts` gates on `claudePayload.model || entry.model` and only applies when the client hasn't already set `output_config`. The per-page onboarding propose/review paths use `low`; the whole-store `onboarding-batch-all` / `onboarding-review-all` paths use `medium` for exhaustive multi-page reasoning and visual-action output. Placement and unrelated prompts keep their existing defaults.
+- **Opt-in and adaptive output effort (model-gated).** A registry entry MAY carry `effort: 'low'|'medium'|'high'|'xhigh'` or `adaptiveEffort: { default, escalated }`. Handlers add `output_config: { effort }` only when the resolved model supports it (`supportsEffort` in `lib/anthropic.ts`): Fable 5, Opus 4.8/4.7/4.6/4.5, Sonnet 5/4.6. On other models the worker omits it. `onboarding-review-all` uses low by default and medium when the content-free `X-Personalizer-QC-Escalated: 1` recovery header is present; app-ai still owns the model and effort mapping. The holistic proposal remains medium; per-page proposal/review remain low.
 
 ### The `/chat` agent loop (`handlers/chat.ts` + `src/toolsets/`)
 
@@ -229,11 +228,14 @@ It is the **single source of truth** for each prompt's model / token / tool choi
 
 `image-selection` is the multi-file prompt with an attachment (system text `prompt.md` + the `sample.md` attachment); the composed prompts are the onboarding + cart-drawer + optimize set. Design docs: [docs/prompts/image-selection.md](docs/prompts/image-selection.md), [docs/prompts/onboarding-batch.md](docs/prompts/onboarding-batch.md), [docs/prompts/onboarding-review.md](docs/prompts/onboarding-review.md).
 
-The whole-store proposal and review prompts own currency as part of their shared visual-action union.
-If the initial proposal omits a valid verdict, the registered `onboarding-currency-recovery` one-shot
+The whole-store proposal owns the initial currency decision. Deterministic currency validation and the
+registered `onboarding-currency-recovery` one-shot form a targeted hard gate before common QC.
+If the initial proposal omits a valid verdict, the recovery prompt
 reuses at most four already-uploaded price tiles and returns exactly one candidate selection or strictly
 validated six-argument format before the first QC render. It is a bounded omission recovery, not a
-post-QC currency island; its maintenance contract is
+post-QC currency island. Advanced CSS enters the registered `onboarding-css-review` specialist only
+when common QC emits `advanced-css-required`; ordinary review-all responses cannot return visual
+actions. The currency recovery maintenance contract is
 [docs/prompts/onboarding-currency-recovery.md](docs/prompts/onboarding-currency-recovery.md).
 
 An ILLUSTRATIVE subset of the registered prompts follows; the COMPLETE inventory — every registered prompt with its shape, endpoint, tools, and role — is the authoritative table in [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), which also owns the per-prompt doc-sync rule:
@@ -291,7 +293,9 @@ output to `app-ai-dev.log`; routing TRACE to `ignore` disables inference traces 
 - `npm run typecheck` — `tsc --noEmit` (strict; must be 0)
 - `npm run lint` / `npm run lint:fix` — ESLint over the whole repo (worker TS, tests, `scripts/`, tooling configs)
 - `npm run format-check` / `npm run format` — Prettier over the whole repo (exclusions + rationale in `.prettierignore`)
-- `npx wrangler deploy --dry-run` — build the bundle without deploying (verifies imports + the Text rule)
+- `npm run deploy:dry-run` — build the revision-stamped bundle without deploying (verifies imports + the Text rule)
+- `npm run deploy` — revision-stamped production deploy; this is also the required Cloudflare Workers Builds deploy command
+- `npm run deploy:preview` — revision-stamped non-production version upload, when preview builds are enabled
 - `npm run tail` — live production logs
 
 ## Local AI dev — the free Claude-Code channel (default)
@@ -313,13 +317,13 @@ npm run dev:shim     # terminal 1 — the free Claude-Code shim on :8788
 npm run dev          # terminal 2 — wrangler dev on :8787, ANTHROPIC_API_BASE → the shim
 ```
 
-**The FREE-stack worker MUST be started via `npm run dev` (the `scripts/dev.mjs` launcher).** It stamps the served worker with `--define __APP_AI_REV__:"<short HEAD>"`, so `/health` reports the exact rev as `buildRev`. The lib's FREE-stack preflight (`preflightMatrixStack` in `tests/e2e-playwright/studio-ai/fixtures/harness-boot.ts`) always rejects a `'dev'` / absent `buildRev`, AND — under `LS_EXACT_STACK` (the fork-matrix evidence run) — the exact-revision compare fires by default (GAP-A): it compares the served `buildRev` against an EXPECTED rev that **DEFAULTS to the sibling `../app-ai` checkout's frozen HEAD** (`git -C ../app-ai rev-parse --short HEAD`) when `LS_APP_AI_EXPECTED_REV` is unset, so a stale worker at a real short-sha FAILS CLOSED instead of passing green (the env pin overrides the default; `LS_APP_AI_REPO_PATH` points elsewhere; an unresolvable checkout is a hard stop in exact-stack mode). The auto-resolve default is GATED on `LS_EXACT_STACK` — symmetric with the lib asset-hash pin — so a NON-exact-stack caller that doesn't pin the rev stays lenient (a worker legitimately serving an earlier commit than a since-pulled `../app-ai` HEAD is not spuriously rejected). A stale worker would exercise code other than the reviewed checkpoint. See `preflight-fail-closed.spec.ts`. A bare `wrangler dev`, a non-shell supervisor, or `wrangler deploy` yields `buildRev:"dev"` and is NOT valid evidence. Before any evidence run, verify the served rev matches HEAD:
+**The FREE-stack worker MUST be started via `npm run dev` (the `scripts/dev.mjs` launcher).** It stamps the served worker with `--define __APP_AI_REV__:"<short HEAD>"`, so `/health` reports the exact rev as `buildRev`. The lib's FREE-stack preflight (`preflightMatrixStack` in `tests/e2e-playwright/studio-ai/fixtures/harness-boot.ts`) always rejects a `'dev'` / absent `buildRev`, AND — under `LS_EXACT_STACK` (the fork-matrix evidence run) — the exact-revision compare fires by default (GAP-A): it compares the served `buildRev` against an EXPECTED rev that **DEFAULTS to the sibling `../app-ai` checkout's frozen HEAD** (`git -C ../app-ai rev-parse --short HEAD`) when `LS_APP_AI_EXPECTED_REV` is unset, so a stale worker at a real short-sha FAILS CLOSED instead of passing green (the env pin overrides the default; `LS_APP_AI_REPO_PATH` points elsewhere; an unresolvable checkout is a hard stop in exact-stack mode). The auto-resolve default is GATED on `LS_EXACT_STACK` — symmetric with the lib asset-hash pin — so a NON-exact-stack caller that doesn't pin the rev stays lenient (a worker legitimately serving an earlier commit than a since-pulled `../app-ai` HEAD is not spuriously rejected). A stale worker would exercise code other than the reviewed checkpoint. See `preflight-fail-closed.spec.ts`. A bare Wrangler launch bypasses the repository stamp and is NOT valid evidence; a define-less production `/health` fails with 503. Before any evidence run, verify the served rev matches HEAD:
 
 ```
 test "$(curl -s 127.0.0.1:8787/health | jq -r .buildRev)" = "$(git rev-parse --short HEAD)"
 ```
 
-If it differs, the worker was launched without the define — restart it via `npm run dev`. The deploy path (`wrangler deploy`) stays define-less by design — production is not the exact-marker FREE stack (`src/build-rev.ts`).
+If it differs, the worker was launched without the define — restart it via `npm run dev`. Production and preview deploys use `npm run deploy` / `npm run deploy:preview`; both stamp the exact checked-out revision and refuse to run when Git cannot resolve it.
 
 **What the shim implements** (exactly the surface the worker calls):
 
@@ -354,9 +358,9 @@ An optional **live token-savings diagnostic** (`scripts/verify-caching.mjs`, `np
 
 ## CI + deploy
 
-- **CI** (`.github/workflows/ci.yml`) runs on every push + PR (Node 20): `npm run lint` → `npm run format-check` → `npm run typecheck` → `npx vitest run` → `npx wrangler deploy --dry-run`. All five must be green. `lint` and `format-check` run over the WHOLE repo (`eslint .` / `prettier --check .`) — worker TS, tests, `scripts/verify-caching.mjs` (Node globals), tooling configs, and every `.md`/`.yml`/`.json`. The only prettier exclusions are byte-frozen contract artifacts, each with its rationale in `.prettierignore`: the prompt text under `src/prompts/` (shipped byte-for-byte) and the tool-schema snapshot in `test/__snapshots__/`.
+- **CI** (`.github/workflows/ci.yml`) runs on every push + PR (Node 20): `npm run lint` → `npm run format-check` → `npm run typecheck` → `npx vitest run` → `npm run deploy:dry-run`. All five must be green. The dry run goes through the same revision-stamping launcher as production. `lint` and `format-check` run over the WHOLE repo (`eslint .` / `prettier --check .`) — worker TS, tests, `scripts/verify-caching.mjs` (Node globals), tooling configs, and every `.md`/`.yml`/`.json`. The only prettier exclusions are byte-frozen contract artifacts, each with its rationale in `.prettierignore`: the prompt text under `src/prompts/` (shipped byte-for-byte) and the tool-schema snapshot in `test/__snapshots__/`.
 - **Caching diagnostic workflow** (`.github/workflows/verify-caching.yml`) is an optional `workflow_dispatch` job guarded on the `APP_AI_CONTEXT_ID` + `APP_AI_TARGET` repo secrets. The guard step exits cleanly when either secret is absent, so it never fails a fork or unconfigured repo, and it is never wired into the required push/PR `build` job. It may also be run manually with `npm run verify:caching` and explicit `APP_AI_TARGET` + `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`; the script takes no defaults.
-- **Deploy** is automatic from `main` via Cloudflare's GitHub integration — **pushing `main` deploys to production.** No manual step. `npx wrangler deploy --dry-run` builds the bundle (verifies imports + the Text rule) without deploying.
+- **Deploy** is automatic from `main` via Cloudflare's GitHub integration — **pushing `main` deploys to production.** Workers Builds leaves Build command blank and sets Deploy command to `npm run deploy`; if non-production builds are enabled, their command is `npm run deploy:preview`. Cloudflare stores these commands in Dashboard → Worker `app-ai` → Settings → Build; Wrangler configuration cannot encode them. `npm run deploy:dry-run` builds the same stamped bundle without deploying. A production `/health` without a hexadecimal Git revision fails closed with 503.
 - **Tooling baseline:** strict TypeScript (`tsconfig.json`) + ESLint flat config with typescript-eslint (`eslint.config.js`) + Prettier (`prettier.config.cjs`) + `.editorconfig`. No production npm dependencies; dev-only `wrangler`, `vitest`, `typescript`, `typescript-eslint`, `eslint`, `prettier`.
 
 ## Automated PR review loop (Gemini) — run until clean

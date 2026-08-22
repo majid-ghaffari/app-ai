@@ -1,10 +1,10 @@
 # Onboarding Review (All Pages) — Maintenance Doc
 
-The design/maintenance record for the `onboarding-review-all` prompt — the WHOLE-STORE REVIEW twin of [`onboarding-batch-all`](onboarding-batch.md). It is a **COMPOSED prompt**: its system text is assembled by `composePrompt(...)` in the prompt's own barrel [`src/prompts/onboarding-review-all/index.ts`](../../src/prompts/onboarding-review-all/index.ts) from per-prompt fragments in [`src/prompts/onboarding-review-all/`](../../src/prompts/onboarding-review-all/) plus shared blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/), including `_block-visual-actions.md`, the enforced-rule block, JSON hardening, review classification, correction verbs, and the review box vocabulary. The effective text is pinned byte-for-byte by [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts). Registered as `onboarding-review-all` in `src/prompt-registry.ts`. The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
+The design/maintenance record for the `onboarding-review-all` prompt — the WHOLE-STORE REVIEW twin of [`onboarding-batch-all`](onboarding-batch.md). It is a **COMPOSED prompt** assembled by `composePrompt(...)` in [`src/prompts/onboarding-review-all/index.ts`](../../src/prompts/onboarding-review-all/index.ts). The common review does not compose the visual-actions block: currency is a deterministic/recovery hard gate, and advanced CSS uses the targeted `onboarding-css-review` specialist. The effective text is byte-pinned by [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts).
 
 ## Where it sits
 
-Whole-store onboarding starts with one **propose-all** ([`onboarding-batch-all`](onboarding-batch.md)) for every page's plan and initial visual actions. After the atomic application renders, **review-all** (`onboarding-review-all`, this doc) judges the current revision and returns all safe page corrections plus visual actions together. The conductor renders and calls review-all again until the current pages pass or the bounded QC loop terminates.
+Whole-store onboarding starts with one **propose-all** ([`onboarding-batch-all`](onboarding-batch.md)) for every page's plan. Currency validity is resolved through its deterministic/recovery gate. After rendering, **review-all** judges all current pages and returns standard page corrections. Pages explicitly requiring advanced CSS enter a separate specialist gate before release.
 
 It is registered like a probe (header-selected on `POST /messages`, JSON-only, no tools, Sonnet) but is NOT a `probe-<id>` name: it is an onboarding step, not a Website-Analysis capability.
 
@@ -16,22 +16,22 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `onboarding-review`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **maxTokens:** 8192 — the whole-store payload (a verdict per page) needs more output room than the single-page review's 2048 (mirrors how `onboarding-batch-all` bumped 4096→8192 over `onboarding-batch`).
-- **Effort:** `medium` — supports exhaustive multi-page comparison, prior-round reasoning, and a complete atomic correction set within the 8192-token output budget.
+- **Effort:** adaptive `low` fast path → `medium` recovery. Lib marks recovery after missing page coverage, parse/schema failure, `max_tokens`, explicit uncertainty/escalation, or failed quality invariants.
 - **Attachments:** none. The lib uploads every page's after-render screenshots per request.
 
 ### Input (what the lib provides)
 
-The lib transport is `brain/batch.ts::reviewAllPages` (→ `sanitizeMultiPageReviewAllRoundTrip`). It ships, in ONE `POST /messages`:
+The lib transport is `brain/batch.ts::reviewAllPages` (→ `sanitizeMultiPageReviewResult`). Its fast path ships one `POST /messages`:
 
 - **Current revision images** — desktop/mobile screenshots for every page changed in this round, uploaded through `/files`.
-- **Stable and contextual references** — the original pre-customization and round-0 baseline references stay before volatile current-round content; unchanged clean store pages provide store-wide comparison evidence.
-- **A revision manifest** — CURRENT page screenshots/plans, round-0 BASELINE references, PRIOR HISTORY of verdicts/actions, CLEAN STORE REFERENCE pages, and currency metadata/candidates when available.
+- **Contextual references** — round-0 baseline and unchanged clean store pages precede current-round content. Pre-customization originals are not sent.
+- **A revision manifest** — CURRENT page screenshots/plans, round-0 BASELINE references, PRIOR HISTORY of verdicts/actions, and CLEAN STORE REFERENCE pages.
 
 The judge evaluates each page at BOTH widths; mobile is FIRST-CLASS (majority of shoppers), so a page PASSES only if it looks right on both. Placement + styling are single RESPONSIVE settings (one plan drives both widths, so a fix changes both).
 
 ### Frozen output contract
 
-The assistant text is a single JSON object with a top-level `pages` object and optional `visualActions`. `pages` maps each current page name to the SAME per-page verdict shape `onboarding-review` emits:
+The assistant text is one compact JSON object with required `pages` and `needsEscalation`. Each verdict keeps human-readable feedback and may include closed `issueCodes` for deterministic recovery routing:
 
 ```json
 {
@@ -48,35 +48,37 @@ The assistant text is a single JSON object with a top-level `pages` object and o
       "corrections": [
         { "action": "styleBox" | "removeBox" | "addBox" | "moveBox", "args": { "page": "Product", ... } }
       ],
-      "failureClass": "placement" | "styling"
+      "failureClass": "placement" | "styling",
+      "issueCodes": ["styling" | "responsive" | "render-missing" | "evidence-incomplete" | "uncertain" | "advanced-css-required"]
     }
   },
-  "visualActions": []
+  "needsEscalation": false
 }
 ```
 
 - Top-level `pages` — an object keyed by page name (`Home`, `Product`, `Collection`, `Cart`, `SlidingCart`, `Search`, `Blog`), one entry per manifest page.
-- Optional top-level `visualActions` — sanitized currency-format and page/component-scoped advanced-CSS upsert/remove actions. Appearance properties are preferred; managed CSS selectors begin with `&` and never target merchant/theme elements globally.
+- Required `needsEscalation` — true for incomplete evidence, uncertainty, unresolved defects, or a CSS specialist requirement.
 - Each page's verdict is exactly `{ pass, feedback, corrections, failureClass }` — the identical per-page contract as [`onboarding-review`](onboarding-review.md):
   - `pass` — boolean; `true` only when nothing is worth correcting on that page AT EITHER WIDTH.
   - `feedback` — non-empty string; a short summary citing that page's screenshots. Names the width when a problem affects only one.
   - `corrections` — array of `{ action, args }`, **limited to the four existing write verbs** (`styleBox` / `removeBox` / `addBox` / `moveBox`), each `args.page` echoing that page so the conductor targets it. `styleBox` `args`: `{ page, boxType, appearancePatch?, appearancePatchMobile? }` (`appearancePatchMobile` = the two mobile knobs `ImageHeightMobile` / `MarginRightMobile`, to fix a MOBILE-ONLY break without touching desktop); `removeBox` `args`: `{ page, boxType }`; `addBox` `args`: `{ page, boxType, position: "before"|"after", anchorNumber, appearancePatch|null, appearancePatchMobile|null }` (additive-only — never `replace`; only for a box the page does NOT already have); `moveBox` `args`: `{ page, boxType, position: "before"|"after", anchorNumber }` (no appearance keys) RE-PLACES a box the page ALREADY has. A re-place is ONE `moveBox`, never a `removeBox` + `addBox` pair: lib rejects both halves of that ambiguous pair atomically. Empty `[]` on pass, or when a real problem has no safe correction.
   - `failureClass` — `null` on `pass: true`; `"placement"` (NON-CRITICAL wrong-slot/order); `"styling"` (CRITICAL bad-render / theme-clash, INCLUDING a one-width break). When both are present on a page, `"styling"` wins.
 
-Each page is judged on its OWN evidence — one page's verdict never affects another's. A page cannot pass in a revision that changes it through a page correction or visual action; the next render/review decides whether that revision passes.
+Each page is judged on its OWN evidence. Missing desktop or mobile screenshots fail closed and request recapture/escalation; desktop pixels are never substituted for mobile. A page cannot pass in a revision that changes it; the next render/review decides whether it passes.
 
 ### Lib parser (the shape MUST match)
 
 The lib parses this reply with `brain/batch-output.ts::sanitizeMultiPageReviewResult` → `MultiPageReviewResult = { pages: Array<{ page } & PageReviewResult> }`. That sanitizer accepts BOTH the page-keyed-object form this prompt emits (`{ "Home": { pass, … } }` — the key is the page label, injected onto each verdict) AND the array form (`[{ page, pass, … }]`). Each page's value runs through `sanitizePageReviewResult`, which enforces the `pass ⇄ failureClass` invariant and the three-verb / clamp discipline per page. So the output contract here is field-for-field what the lib parses; a malformed page degrades to a safe failing verdict rather than breaking the batch.
 
-### Fallback (why the lib works even before this deploys)
+### Adaptive recovery
 
-`reviewAllPages` calls `onboarding-review-all` first and, on a transport error OR any page the reply omits, falls back to looping the per-page [`onboarding-review`](onboarding-review.md) prompt and assembling the same `MultiPageReviewResult` (mirroring how `resolveAllPlans` degrades `onboarding-batch-all` → per-page `onboarding-batch`). So the QC works today via the per-page fallback and upgrades transparently once this prompt is deployed.
+`reviewAllPages` calls `onboarding-review-all` once at low effort. It retries the same schema at medium effort with a lean payload when coverage, parsing, truncation, uncertainty, or invariants require recovery, then uses bounded two-page chunks only for pages still missing. Verdicts replace by page key, so retries never append duplicate corrections. `advanced-css-required` pages enter `onboarding-css-review`; common-path visual actions are discarded.
 
 ### Request/response contract (frozen)
 
 - `POST {base}/messages`, header `X-Personalizer-System-Prompt: onboarding-review-all`.
-- Body: a standard Anthropic messages payload. User content orders the stable original/round-0 reference image prefix before volatile current-revision images, followed by the revision manifest (CURRENT pages/plans, BASELINE, PRIOR HISTORY, CLEAN STORE REFERENCES, and currency evidence). The terminal stable reference block carries the internal cache-prefix marker consumed by `lib/cache-control.ts`. Body omits `model` so the registry (the `balanced` tier = `claude-sonnet-5`) is authoritative.
+- Body: a standard Anthropic messages payload. User content orders round-0 and clean references before current-revision images, followed by the manifest. There is no pre-customization original set and no user-evidence stable-prefix marker. Body omits `model`, `max_tokens`, and effort; the registry owns model/budget and maps the content-free escalation header to effort.
+- Telemetry headers: attempt/escalation, revision/pass, page/image/tile counts, and capture/upload spans. The handler records model, max token budget, applied effort, total latency, stop reason, and token/cache usage without evidence content.
 - Response: the Anthropic messages envelope; the assistant text block is the JSON above.
-- **JSON reliability:** the prompt ends with the same explicit "respond with ONLY the JSON object, no prose, no markdown code fences" hardening line + a small flat schema + an inline whole-store example. The lib parses tolerantly (`extractJsonObject` keyed off `pages`: direct / fenced / embedded) with a bounded repair-retry — the same tolerant-parse baseline the other batch prompts run in production.
+- **JSON reliability:** the prompt ends with the explicit "respond with ONLY the JSON object" hardening line, a compact schema, and a one-page example. Lib parses tolerantly (`extractJsonObject` keyed off `pages`) and routes malformed/partial output through adaptive lean/chunk recovery.
 - **Cost:** dev/test route through the FREE Claude-Code channel (the shim); prod through app-ai; never the paid API except a prod smoke.

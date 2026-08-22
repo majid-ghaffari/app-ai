@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:shim": "node scripts/dev-claude-shim.mjs",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:dry-run": "node scripts/deploy.mjs --dry-run",
+    "deploy:preview": "node scripts/deploy.mjs --preview",
     "tail": "wrangler tail",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
@@ -30,7 +32,7 @@
   "license": "MIT",
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.205",
-    "@cloudflare/workers-types": "^4.20241127.0",
+    "@cloudflare/workers-types": "^5.20260823.1",
     "@eslint/js": "^9.39.4",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^9.1.2",
@@ -39,8 +41,8 @@
     "prettier": "^3.8.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.62.1",
-    "vitest": "^2.1.9",
-    "wrangler": "^3.114.15",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.125.0",
     "zod": "^4.4.3"
   }
 }

@@ -105,6 +105,7 @@ export interface Env {
 
 /** Required string variables; optional bindings and LOG_SEQ_API_KEY are intentionally excluded. */
 type RequiredVarName =
+  | 'ENVIRONMENT'
   | 'PERSONALIZER_API_URL'
   | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
@@ -129,6 +130,11 @@ const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 export type LogTarget = 'console' | 'seq';
+
+/** Deployment label used to distinguish production fail-closed runtime contracts. */
+export function deploymentEnvironment(env: Env): string {
+  return requireVar(env, 'ENVIRONMENT');
+}
 
 const LOG_TARGET_VAR: Record<LogLevel, RequiredVarName> = {
   trace: 'LOG_TARGETS_TRACE',

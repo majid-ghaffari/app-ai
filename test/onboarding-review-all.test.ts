@@ -12,7 +12,7 @@
  *     no attachments, and a big enough maxTokens for the whole-store payload;
  *   • the prompt text names its whole-store input (manifest + per-page desktop+mobile
  *     screenshots + applied plans), the per-page verdict contract, the placement /
- *     styling classification, the three allowed correction verbs, and the `pages` output;
+ *     styling classification, the four allowed correction verbs, and the `pages` output;
  *   • POST /messages routes the header to the prompt (injects the system block, no /files
  *     upload) and defaults the model to the `balanced` tier;
  *   • the WHOLE-STORE output contract is asserted via a parse/validate check across a
@@ -26,6 +26,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
+import type { Logger, LoggingRuntime } from '../src/lib/logger';
 import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
@@ -34,8 +35,8 @@ function jsonOk(data: unknown, status = 200): Response {
 
 afterEach(() => vi.restoreAllMocks());
 
-/** The three allowed correction actions — the existing write verbs, no new ones. */
-const CORRECTION_ACTIONS = ['styleBox', 'removeBox', 'addBox'];
+/** The four allowed correction actions — the existing write verbs, no new ones. */
+const CORRECTION_ACTIONS = ['styleBox', 'removeBox', 'addBox', 'moveBox'];
 /** The valid failureClass values (null is also allowed). */
 const FAILURE_CLASSES = ['placement', 'styling'];
 
@@ -53,7 +54,8 @@ describe('onboarding-review-all registry entry', () => {
     // Whole-store payload needs more output room than the single-page review (2048).
     const singlePage = getSystemPrompt('onboarding-review', ENV);
     expect(entry.maxTokens).toBeGreaterThan(singlePage.maxTokens);
-    expect(entry.effort).toBe('medium');
+    expect(entry.effort).toBeUndefined();
+    expect(entry.adaptiveEffort).toEqual({ default: 'low', escalated: 'medium' });
   });
 
   it('is NOT a `probe-<id>` name — an onboarding step, not a Website-Analysis probe', () => {
@@ -89,7 +91,7 @@ describe('onboarding-review-all registry entry', () => {
     expect(entry.prompt).toMatch(/styling/);
     expect(entry.prompt).toMatch(/non-critical/i);
     expect(entry.prompt).toMatch(/critical/i);
-    // The three allowed correction actions — no new mutation types.
+    // The four allowed correction actions — no new mutation types.
     for (const action of CORRECTION_ACTIONS) expect(entry.prompt).toContain(action);
     // addBox re-places by a numbered section: position (before/after/replace) + anchorNumber.
     expect(entry.prompt).toMatch(/anchorNumber/);
@@ -122,13 +124,18 @@ describe('onboarding-review-all registry entry', () => {
 });
 
 describe('POST /messages — onboarding-review-all routing', () => {
-  function messagesRequest(body: unknown, systemPrompt: string): Request {
+  function messagesRequest(
+    body: unknown,
+    systemPrompt: string,
+    extraHeaders: Record<string, string> = {},
+  ): Request {
     return new Request('https://app-ai.test/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Personalizer-Context-ID': 'ctx',
         'X-Personalizer-System-Prompt': systemPrompt,
+        ...extraHeaders,
       },
       body: JSON.stringify(body),
     });
@@ -180,8 +187,113 @@ describe('POST /messages — onboarding-review-all routing', () => {
     expect(sent.system?.[0]?.type).toBe('text');
     expect(sent.system?.[0]?.text).toMatch(/onboarding/i);
     expect(sent.model).toBe(ENV.MODEL_BALANCED);
-    expect(sent.output_config).toEqual({ effort: 'medium' });
+    expect(sent.output_config).toEqual({ effort: 'low' });
     expect(Array.isArray(sent.messages?.[0]?.content)).toBe(true);
+  });
+
+  it('escalates the same registry-owned model to medium effort when the lib marks recovery', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(jsonOk({ content: [], input_tokens: 0 }));
+
+    await handleMessages(
+      messagesRequest(
+        { max_tokens: 1, messages: [{ role: 'user', content: 'go' }] },
+        'onboarding-review-all',
+        {
+          'X-Personalizer-QC-Attempt': 'lean',
+          'X-Personalizer-QC-Escalated': '1',
+        },
+      ),
+      ENV,
+      CORS,
+    );
+
+    const idx = fetchMock.mock.calls.findIndex(([url]) => String(url).endsWith('/v1/messages'));
+    const sent = sentBody(fetchCall(fetchMock, idx).init);
+    expect(sent.model).toBe(ENV.MODEL_BALANCED);
+    expect(sent.output_config).toEqual({ effort: 'medium' });
+  });
+
+  it('logs truncation, usage, latency, and QC dimensions without retaining evidence content', async () => {
+    const warn = vi.fn();
+    const info = vi.fn();
+    const logger: Logger = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info,
+      warn,
+      error: vi.fn(),
+      fatal: vi.fn(),
+      child: () => logger,
+    };
+    const logging: LoggingRuntime = {
+      logger: () => logger,
+      child: () => logging,
+      runBackground: (_scope, _operation, task) => void task,
+    };
+    stubFetch().mockResolvedValue(
+      jsonOk({
+        model: 'registry-owned-model',
+        stop_reason: 'max_tokens',
+        usage: {
+          input_tokens: 120,
+          output_tokens: 64,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 90,
+        },
+        content: [{ type: 'text', text: 'SENSITIVE MODEL EVIDENCE' }],
+      }),
+    );
+
+    await handleMessages(
+      messagesRequest(
+        { messages: [{ role: 'user', content: 'SENSITIVE USER EVIDENCE' }] },
+        'onboarding-review-all',
+        {
+          'X-Personalizer-QC-Attempt': 'full',
+          'X-Personalizer-QC-Escalated': '0',
+          'X-Personalizer-QC-Revision': '2',
+          'X-Personalizer-QC-Pass': '3',
+          'X-Personalizer-QC-Page-Count': '4',
+          'X-Personalizer-QC-Image-Count': '8',
+          'X-Personalizer-QC-Tile-Count': '16',
+          'X-Personalizer-QC-Capture-Ms': '125',
+          'X-Personalizer-QC-Upload-Ms': '75',
+        },
+      ),
+      ENV,
+      CORS,
+      logging,
+    );
+
+    expect(warn).toHaveBeenCalledWith(
+      'QC inference reached max_tokens',
+      expect.objectContaining({
+        model: ENV.MODEL_BALANCED,
+        maxTokens: 8192,
+        effort: 'low',
+        stopReason: 'max_tokens',
+        usage: {
+          inputTokens: 120,
+          outputTokens: 64,
+          cacheCreationInputTokens: 10,
+          cacheReadInputTokens: 90,
+        },
+        qc: expect.objectContaining({
+          attempt: 'full',
+          revision: 2,
+          pass: 3,
+          pageCount: 4,
+          imageCount: 8,
+          tileCount: 16,
+          captureMs: 125,
+          uploadMs: 75,
+        }),
+      }),
+    );
+    expect(JSON.stringify([...warn.mock.calls, ...info.mock.calls])).not.toMatch(
+      /SENSITIVE (USER|MODEL) EVIDENCE/,
+    );
   });
 
   it('returns the Anthropic envelope with the assistant whole-store verdict JSON unchanged', async () => {
@@ -232,8 +344,13 @@ describe('onboarding-review-all output contract (whole-store)', () => {
     expect(typeof value).toBe('object');
     expect(value).not.toBeNull();
     const obj = value as Record<string, unknown>;
-    // Exactly the four contract keys — no extras, no missing.
-    expect(Object.keys(obj).sort()).toEqual(['corrections', 'failureClass', 'feedback', 'pass']);
+    // Four required keys plus the optional closed issue-code list.
+    expect(
+      Object.keys(obj)
+        .filter((key) => key !== 'issueCodes')
+        .sort(),
+    ).toEqual(['corrections', 'failureClass', 'feedback', 'pass']);
+    if (obj.issueCodes !== undefined) expect(Array.isArray(obj.issueCodes)).toBe(true);
     // pass is a boolean.
     expect(typeof obj.pass).toBe('boolean');
     // feedback is a non-empty string.
@@ -268,8 +385,8 @@ describe('onboarding-review-all output contract (whole-store)', () => {
     expect(typeof value).toBe('object');
     expect(value).not.toBeNull();
     const obj = value as Record<string, unknown>;
-    // Exactly the one top-level key.
-    expect(Object.keys(obj)).toEqual(['pages']);
+    expect(Object.keys(obj).sort()).toEqual(['needsEscalation', 'pages']);
+    expect(typeof obj.needsEscalation).toBe('boolean');
     const pages = obj.pages;
     expect(typeof pages).toBe('object');
     expect(pages).not.toBeNull();
@@ -330,6 +447,7 @@ describe('onboarding-review-all output contract (whole-store)', () => {
           failureClass: 'placement',
         },
       },
+      needsEscalation: false,
     });
     assertMultiPageShape(JSON.parse(verdict));
   });
@@ -353,6 +471,7 @@ describe('onboarding-review-all output contract (whole-store)', () => {
           failureClass: 'styling',
         },
       },
+      needsEscalation: false,
     });
     assertMultiPageShape(JSON.parse(verdict));
   });
@@ -373,6 +492,7 @@ describe('onboarding-review-all output contract (whole-store)', () => {
           failureClass: null,
         },
       },
+      needsEscalation: false,
     });
     assertMultiPageShape(JSON.parse(verdict));
   });
@@ -409,7 +529,7 @@ describe('onboarding-review-all output contract (whole-store)', () => {
     expect(() => assertMultiPageShape(bad)).toThrow();
   });
 
-  it('rejects a correction using an action outside the three write verbs', () => {
+  it('rejects a correction using an action outside the four write verbs', () => {
     const bad = JSON.parse(
       JSON.stringify({
         pages: {

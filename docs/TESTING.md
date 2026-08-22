@@ -69,7 +69,7 @@ npm test                # watch mode
 npm run typecheck       # tsc --noEmit (strict; must be 0)
 npm run lint            # ESLint over the whole repo (src, test, scripts/, configs)
 npm run format-check    # Prettier check (whole repo; exclusions + rationale in .prettierignore)
-npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
+npm run deploy:dry-run  # build the revision-stamped bundle (verifies imports + the .md Text rule)
 ```
 
 ## Local AI dev channel + cred-burn guard

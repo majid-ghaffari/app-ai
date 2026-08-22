@@ -47,6 +47,7 @@ const NON_BLOCKING_VISUAL_PROMPTS = new Set([
   'onboarding-batch-all',
   'onboarding-review',
   'onboarding-review-all',
+  'onboarding-css-review',
   'onboarding-currency-recovery',
   'cartdrawer-batch-all',
   'cartdrawer-review-all',
@@ -60,8 +61,13 @@ export async function handleMessages(
   corsHeaders: CorsHeaders,
   logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
+  const requestStartedAt = Date.now();
   const systemPromptName = request.headers.get('X-Personalizer-System-Prompt');
-  const log = logging.logger('Messages', { prompt: systemPromptName });
+  const qcTelemetry = readQcTelemetry(request);
+  const log = logging.logger('Messages', {
+    prompt: systemPromptName,
+    ...(qcTelemetry ? { qcAttempt: qcTelemetry.attempt, qcEscalated: qcTelemetry.escalated } : {}),
+  });
   const trace = createDevelopmentInferenceTrace(
     logging.logger('InferenceTrace', { prompt: systemPromptName }),
     'messages',
@@ -119,7 +125,7 @@ export async function handleMessages(
 
     // Apply opt-in output effort from the registry entry, if the client didn't
     // already set output_config (additive + safe — see prompt-registry.ts entry shape).
-    applyRegistryEffort(claudePayload, systemPromptName, env, log);
+    applyRegistryEffort(claudePayload, systemPromptName, qcTelemetry?.escalated === true, env, log);
 
     // Best-effort pre-flight token estimate for large payloads — log/warn only,
     // never gate the live path.
@@ -153,18 +159,42 @@ export async function handleMessages(
     if (!response.ok) {
       log.error('Anthropic request failed', data.error, {
         status: response.status,
-        response: data,
+        totalMs: Date.now() - requestStartedAt,
+        model: claudePayload.model,
+        maxTokens: claudePayload.max_tokens,
+        effort: readAppliedEffort(claudePayload),
+        stopReason: data.stop_reason,
+        usage: usageFields(data.usage),
+        qc: qcTelemetry,
       });
       return anthropicErrorResponse(data, response.status, 'Anthropic request failed', corsHeaders);
     }
 
     logUsageStats(data.usage, log);
+    const completion = {
+      totalMs: Date.now() - requestStartedAt,
+      model: claudePayload.model,
+      maxTokens: claudePayload.max_tokens,
+      effort: readAppliedEffort(claudePayload),
+      stopReason: data.stop_reason,
+      usage: usageFields(data.usage),
+      qc: qcTelemetry,
+    };
+    if (data.stop_reason === 'max_tokens') {
+      log.warn('QC inference reached max_tokens', completion);
+    } else {
+      log.info('Inference completed', completion);
+    }
     return jsonResponse(data, corsHeaders);
   } catch (error) {
     trace.record('request.failed', {
       error: error instanceof Error ? error.message : String(error),
     });
-    log.error('Messages request failed', error, { systemPromptName });
+    log.error('Messages request failed', error, {
+      systemPromptName,
+      totalMs: Date.now() - requestStartedAt,
+      qc: qcTelemetry,
+    });
     return errorResponseFrom(error, corsHeaders, 'Internal proxy server error');
   }
 }
@@ -435,6 +465,7 @@ function applyRegistryMaxTokens(
 function applyRegistryEffort(
   claudePayload: ClientMessagesPayload,
   systemPromptName: string | null,
+  escalated: boolean,
   env: Env,
   log: Logger,
 ): void {
@@ -448,10 +479,71 @@ function applyRegistryEffort(
     return;
   }
   const model = claudePayload.model || entry.model;
-  if (entry.effort && anthropic.supportsEffort(model)) {
-    claudePayload.output_config = { effort: entry.effort };
-    log.info(`Applied output effort '${entry.effort}' from registry`);
+  const effort = entry.adaptiveEffort
+    ? escalated
+      ? entry.adaptiveEffort.escalated
+      : entry.adaptiveEffort.default
+    : entry.effort;
+  if (effort && anthropic.supportsEffort(model)) {
+    claudePayload.output_config = { effort };
+    log.info(`Applied output effort '${effort}' from registry`);
   }
+}
+
+type QcAttempt = 'full' | 'lean' | 'chunk' | 'specialist';
+
+interface QcTelemetry {
+  attempt: QcAttempt;
+  escalated: boolean;
+  revision: number | null;
+  pass: number | null;
+  pageCount: number | null;
+  imageCount: number | null;
+  tileCount: number | null;
+  captureMs: number | null;
+  uploadMs: number | null;
+}
+
+/** Read the bounded, content-free QC metadata supplied by lib for durable inference telemetry. */
+function readQcTelemetry(request: Request): QcTelemetry | null {
+  const rawAttempt = request.headers.get('X-Personalizer-QC-Attempt');
+  if (!rawAttempt) return null;
+  const attempts: readonly QcAttempt[] = ['full', 'lean', 'chunk', 'specialist'];
+  if (!attempts.includes(rawAttempt as QcAttempt)) return null;
+  const readCount = (name: string): number | null => {
+    const raw = request.headers.get(name);
+    if (raw == null || !/^\d{1,9}$/.test(raw)) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? value : null;
+  };
+  return {
+    attempt: rawAttempt as QcAttempt,
+    escalated: request.headers.get('X-Personalizer-QC-Escalated') === '1',
+    revision: readCount('X-Personalizer-QC-Revision'),
+    pass: readCount('X-Personalizer-QC-Pass'),
+    pageCount: readCount('X-Personalizer-QC-Page-Count'),
+    imageCount: readCount('X-Personalizer-QC-Image-Count'),
+    tileCount: readCount('X-Personalizer-QC-Tile-Count'),
+    captureMs: readCount('X-Personalizer-QC-Capture-Ms'),
+    uploadMs: readCount('X-Personalizer-QC-Upload-Ms'),
+  };
+}
+
+/** Return the registry-selected effort without retaining arbitrary client output configuration. */
+function readAppliedEffort(payload: ClientMessagesPayload): unknown {
+  const config = payload.output_config;
+  if (!config || typeof config !== 'object') return null;
+  return (config as Record<string, unknown>).effort ?? null;
+}
+
+/** Normalize Anthropic usage into stable numeric telemetry keys. */
+function usageFields(usage: Usage | undefined): Record<string, number> {
+  return {
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+    cacheCreationInputTokens: usage?.cache_creation_input_tokens ?? 0,
+    cacheReadInputTokens: usage?.cache_read_input_tokens ?? 0,
+  };
 }
 
 /**

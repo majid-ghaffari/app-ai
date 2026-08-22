@@ -284,7 +284,7 @@ npx vitest run
 npm run lint
 npm run format-check
 npm run typecheck
-npx wrangler deploy --dry-run
+npm run deploy:dry-run
 ```
 
 ### Commit messages

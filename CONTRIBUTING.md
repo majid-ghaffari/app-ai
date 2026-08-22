@@ -33,14 +33,14 @@ rules.)
 
 Run the full offline gate locally — it mirrors CI
 (`.github/workflows/ci.yml`), which runs lint → format-check → typecheck →
-`vitest run` → `wrangler deploy --dry-run` on every push and PR:
+`vitest run` → the revision-stamped deploy dry run on every push and PR:
 
 ```bash
 npm run lint            # ESLint over the whole repo (must be 0)
 npm run format-check    # Prettier check (whole repo; exclusions in .prettierignore)
 npm run typecheck       # tsc --noEmit (strict; must be 0)
 npx vitest run          # unit + integration + contract + fitness (must be green)
-npx wrangler deploy --dry-run   # build the bundle (verifies imports + the .md Text rule)
+npm run deploy:dry-run  # build the stamped bundle (verifies imports + the .md Text rule)
 ```
 
 For changes touching prompt text, tool definitions, or cache-control code, the

@@ -32,6 +32,7 @@ export { default as probeStyle } from './probe-style/prompt.md';
 export { default as probeTemplate } from './probe-template/prompt.md';
 export { default as probeCurrency } from './probe-currency/prompt.md';
 export { default as onboardingCurrencyRecovery } from './onboarding-currency-recovery/prompt.md';
+export { default as onboardingCssReview } from './onboarding-css-review/prompt.md';
 
 // Composed prompts (each folder's index.ts assembles fragments + shared blocks).
 export { default as onboardingBatch } from './onboarding-batch';

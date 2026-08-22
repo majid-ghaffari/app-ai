@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   personalizerApiUrl,
+  deploymentEnvironment,
   personalizerIntegrationBridgeToken,
   anthropicApiBase,
   logSeqApiKey,
@@ -29,6 +30,7 @@ const EMPTY_ENV: Env = {};
 
 describe('config accessors — present values', () => {
   it('returns the configured values verbatim', () => {
+    expect(deploymentEnvironment(ENV)).toBe('test');
     expect(personalizerApiUrl(ENV)).toBe('https://brain.test');
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
     expect(logSeqIngestUrl(ENV)).toBe('https://seq.test/ingest/clef');
@@ -57,6 +59,11 @@ describe('config accessors — present values', () => {
 });
 
 describe('config accessors — missing config = error (no fallback defaults)', () => {
+  it('deploymentEnvironment names ENVIRONMENT and where to set it', () => {
+    expect(() => deploymentEnvironment(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable ENVIRONMENT.*wrangler\.toml/,
+    );
+  });
   it('personalizerApiUrl names PERSONALIZER_API_URL and where to set it', () => {
     expect(() => personalizerApiUrl(EMPTY_ENV)).toThrow(
       /Missing required configuration variable PERSONALIZER_API_URL.*wrangler\.toml/,
@@ -160,11 +167,13 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('MODEL_FRONTIER = "claude-opus-4-8"');
   });
 
-  it('routes only production error/fatal to Seq and disables Cloudflare observability', () => {
+  it('routes durable production QC telemetry and failures to Seq', () => {
     const vars = productionVars();
-    for (const level of ['TRACE', 'DEBUG', 'INFO', 'WARN']) {
+    for (const level of ['TRACE', 'DEBUG']) {
       expect(vars).toContain(`LOG_TARGETS_${level} = "ignore"`);
     }
+    expect(vars).toContain('LOG_TARGETS_INFO = "seq"');
+    expect(vars).toContain('LOG_TARGETS_WARN = "seq"');
     expect(vars).toContain('LOG_TARGETS_ERROR = "seq"');
     expect(vars).toContain('LOG_TARGETS_FATAL = "seq"');
     expect(vars).toContain('LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"');
@@ -180,6 +189,7 @@ describe('production [vars] — the deployed configuration values', () => {
   it('declares every required variable except the secrets (encrypted, dashboard-managed)', () => {
     const vars = productionVars();
     for (const name of [
+      'ENVIRONMENT',
       'PERSONALIZER_API_URL',
       'ANTHROPIC_API_BASE',
       'CREDENTIALED_ORIGINS',
