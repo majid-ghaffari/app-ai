@@ -240,7 +240,8 @@ describe('production [vars] — the deployed configuration values', () => {
     const manifest = Object.values(wranglerFiles)[0] ?? '';
     expect(manifest).toContain('name = "DEMO_SESSIONS"');
     expect(manifest).toContain('class_name = "DemoSessionAuthority"');
-    expect(manifest).toContain('new_classes = ["DemoSessionAuthority"]');
+    expect(manifest).toContain('new_sqlite_classes = ["DemoSessionAuthority"]');
+    expect(manifest).not.toMatch(/^new_classes\s*=/m);
     expect(manifest).not.toContain('DEMO_SESSIONS_KV');
   });
 

@@ -212,7 +212,9 @@ completions; app-ai still enforces the cap if the mirror is delayed.
 ## Durable Object deployment
 
 `wrangler.toml` binds `DEMO_SESSIONS` to the exported
-`DemoSessionAuthority` class and declares migration `demo-sessions-v1`. The
+`DemoSessionAuthority` class and declares SQLite-backed migration `demo-sessions-v1`. New Durable
+Object namespaces must use Wrangler's `new_sqlite_classes`; the retired `new_classes` form asks
+Cloudflare to create a key-value-backed namespace and production rejects it. The
 binding is required for exchange or demo-token requests; missing configuration
 fails closed. One object is addressed deterministically per `auditIdentifier`, which makes
 cross-link completion counting, activation consumption, quota reservations, and concurrent file-ID
@@ -229,5 +231,6 @@ policy must describe this distinction. Provider-side deletion/retention is an op
 policy, not a capability claimed by the demo session TTL.
 
 Production provisioning requires all three encrypted secrets plus the exact HTTPS
-`DEMO_AUDIT_STATUS_URL` before the route is usable. `npx wrangler deploy --dry-run` validates the
-class export, binding, and migration without deploying or invoking Anthropic.
+`DEMO_AUDIT_STATUS_URL` before the route is usable. `npm run deploy:dry-run` validates the class
+export, binding, migration, and revision-stamped production launcher without deploying or invoking
+Anthropic.

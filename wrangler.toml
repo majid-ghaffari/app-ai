@@ -118,4 +118,4 @@ class_name = "DemoSessionAuthority"
 
 [[migrations]]
 tag = "demo-sessions-v1"
-new_classes = ["DemoSessionAuthority"]
+new_sqlite_classes = ["DemoSessionAuthority"]
