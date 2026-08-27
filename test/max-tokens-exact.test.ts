@@ -62,6 +62,7 @@ const EXACT_ROUTES: Array<{ name: string; maxTokens: number; kind: 'propose' | '
   { name: 'onboarding-batch-all', maxTokens: 8192, kind: 'propose' },
   { name: 'onboarding-review', maxTokens: 2048, kind: 'review' },
   { name: 'onboarding-review-all', maxTokens: 8192, kind: 'review' },
+  { name: 'onboarding-review-gate-all', maxTokens: 1536, kind: 'review' },
   { name: 'onboarding-currency-recovery', maxTokens: 512, kind: 'review' },
 ];
 

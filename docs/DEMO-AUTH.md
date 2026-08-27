@@ -135,7 +135,7 @@ conflict and can be retried after expiry.
 A demo session can call only:
 
 - `POST /files` for its own evidence uploads, with a destination prompt of
-  `onboarding-batch-all`, `onboarding-batch`, `onboarding-review-all`, or
+  `onboarding-batch-all`, `onboarding-batch`, `onboarding-review-gate-all`, `onboarding-review-all`, or
   `onboarding-currency-recovery`. Destinations are repeated multipart `prompt`
   fields (the extension uploads one file for multiple consumers), not the
   `X-Personalizer-System-Prompt` inference header. At least one destination is

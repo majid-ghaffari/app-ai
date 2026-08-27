@@ -382,6 +382,17 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
+  'onboarding-review-gate-all': {
+    prompt: prompts.onboardingReviewGateAll,
+    rulesetVersion: ONBOARDING_RULESET_VERSION,
+    tier: 'fast',
+    maxTokens: 1536,
+    usesTools: false,
+    description:
+      'Fast holistic onboarding QC gate over bounded desktop/mobile evidence. Returns one compact pass/issue-code verdict per page and never emits corrections; only failed, uncertain, or uncovered pages enter the balanced detailed reviewer.',
+    attachments: [],
+  },
+
   // Exceptional bounded recovery when the holistic proposal omitted the required currency verdict.
   // It reuses a compact subset of already-uploaded store tiles and returns one currency action. It
   // is not a Website-Analysis probe and does not fetch/capture anything.

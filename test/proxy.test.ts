@@ -767,6 +767,30 @@ describe('handleMessages', () => {
     });
     expect(body.error).toBeUndefined();
   });
+
+  it('preserves an exhausted-credit failure as a non-success AnthropicApiException', async () => {
+    const upstream = {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'Your credit balance is too low to access the Anthropic API.',
+      },
+      request_id: 'req_quota',
+    };
+    stubFetch().mockResolvedValue(jsonOk(upstream, 400));
+
+    const res = await handleMessages(
+      messagesRequest({ model: 'm', max_tokens: 1, messages: [] }),
+      ENV,
+      CORS,
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.Message).toBe(upstream.error.message);
+    expect(body.ExceptionType).toBe('AnthropicApiException');
+    expect(JSON.parse(String(body.MessageDetail))).toEqual(upstream);
+  });
 });
 
 describe('handleMessages — registry max_tokens EXACT', () => {

@@ -39,6 +39,7 @@ export { default as onboardingBatch } from './onboarding-batch';
 export { default as onboardingBatchAll } from './onboarding-batch-all';
 export { default as onboardingReview } from './onboarding-review';
 export { default as onboardingReviewAll } from './onboarding-review-all';
+export { default as onboardingReviewGateAll } from './onboarding-review-gate-all.md';
 export { default as cartdrawerBatchAll } from './cartdrawer-batch-all';
 export { default as cartdrawerReviewAll } from './cartdrawer-review-all';
 export { default as optimizeDemand } from './optimize-demand';

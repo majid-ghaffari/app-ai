@@ -47,6 +47,7 @@ const NON_BLOCKING_VISUAL_PROMPTS = new Set([
   'onboarding-batch-all',
   'onboarding-review',
   'onboarding-review-all',
+  'onboarding-review-gate-all',
   'onboarding-css-review',
   'onboarding-currency-recovery',
   'cartdrawer-batch-all',

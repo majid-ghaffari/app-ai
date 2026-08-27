@@ -39,6 +39,7 @@ const ALLOWED_DEMO_UPLOAD_PROMPTS = new Set([
   'onboarding-batch-all',
   'onboarding-batch',
   'onboarding-review-all',
+  'onboarding-review-gate-all',
   'onboarding-currency-recovery',
 ]);
 const ALLOWED_DEMO_INFERENCE_PROMPTS = new Set(['onboarding-batch-all', 'onboarding-batch']);

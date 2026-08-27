@@ -187,6 +187,7 @@ function uploadRequest(
     'onboarding-batch-all',
     'onboarding-batch',
     'onboarding-review-all',
+    'onboarding-review-gate-all',
     'onboarding-currency-recovery',
   ],
 ): Request {

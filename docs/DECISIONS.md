@@ -507,3 +507,12 @@ with a third, purpose-specific secret and retries them from an ordered Durable O
 D1 is an idempotent operational mirror, while app-ai remains the attempt enforcement authority. The
 Durable Object binding and first migration are part of `wrangler.toml`, while all signing keys remain
 encrypted secrets.
+
+### 23. Onboarding QC uses a fast gate and failed-page detailed escalation
+
+The common QC path sends bounded first/middle/last evidence for every dirty page to the fast-tier
+`onboarding-review-gate-all` prompt. Pages that pass cleanly complete without balanced-model work.
+Failed, uncertain, malformed, and uncovered pages enter the correction-capable
+`onboarding-review-all` prompt in independent chunks of two with full evidence and history. A
+complete, invariant-valid detailed JSON response remains usable when its provider stop reason is
+`max_tokens`; response completeness, rather than the stop label alone, determines recovery.

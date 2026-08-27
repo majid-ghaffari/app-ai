@@ -36,6 +36,7 @@ const ONBOARDING_PROMPTS = [
 // ALSO participate in the handshake (they carry `rulesetVersion` too, but do NOT
 // compose `_block-fixed-rules.md` — the version is their playbook contract id).
 const SIBLING_HANDSHAKE_PROMPTS = [
+  'onboarding-review-gate-all',
   'cartdrawer-batch-all',
   'cartdrawer-review-all',
   'optimize-demand',

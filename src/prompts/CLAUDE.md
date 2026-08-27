@@ -84,6 +84,7 @@ loose `.md` files. The full set:
 | `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: every page + visual actions + off-page segments/discounts. |
 | `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
 | `onboarding-review-all`| composed        | `/messages` · none      | Adaptive whole-store QC: low-effort current/references/history review; compact page verdicts escalate to medium when incomplete or uncertain. |
+| `onboarding-review-gate-all` | single-file | `/messages` · none | Fast bounded-evidence whole-store gate; only failed/uncertain pages enter detailed QC. |
 | `onboarding-css-review`| single-file     | `/messages` · none      | Targeted medium-effort hard gate for pages explicitly marked `advanced-css-required`; emits only scoped managed CSS actions. |
 | `onboarding-currency-recovery` | single-file | `/messages` · none | Exceptional bounded pre-QC recovery when the holistic proposal omits its required currency verdict; reuses already-uploaded price tiles. |
 | `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface) + the OPTIONAL `progressBar` slot (the bar's second host, top of the drawer). |
