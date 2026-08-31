@@ -556,7 +556,7 @@ describe('handleChat — streaming', () => {
     expect(sentBody(fetchCall(fetchMock, 0).init).tools).toBeUndefined();
   });
 
-  // CLIENT-tool mode (#111): a `clientTools` prompt (`onboarding-chat`, carrying the
+  // CLIENT-tool mode: a `clientTools` prompt (`onboarding-chat`, carrying the
   // `look_at_page` client tool) runs the loop in CLIENT-tool mode — on a tool_use the
   // loop returns the calls in `done.toolCalls` and STOPS (the browser runs them, not
   // the worker), rather than executing a tool + looping like the server-tool path.

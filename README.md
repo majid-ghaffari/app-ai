@@ -97,8 +97,8 @@ The Studio AI runtime for LimeSpot Studio. Runs the Anthropic
 tool-use **agent loop** (model ↔ tool iterations, capped at `MAX_ITERATIONS`=8)
 and streams the result as **Server-Sent Events**. The endpoint's tool surface
 is composed per request by the toolset registry (`src/toolsets/registry.ts`)
-from its explicit allowlist (`['personalizer']` — see
-[docs/TOOLSETS.md](docs/TOOLSETS.md)). The personalizer toolset dispatches
+off the subscriber's available integration parties — there is no endpoint
+allowlist (see [docs/TOOLSETS.md](docs/TOOLSETS.md)). The personalizer toolset dispatches
 tool calls server→server to Personalizer — the read-only AI tool proxy
 (`/v2/ai-tools/*`) for the data-query tools, the per-record admin endpoints
 (`src/toolsets/personalizer/entity-context.ts`) for `get_entity_context`
@@ -112,10 +112,9 @@ discriminates platform responses (surfaced verbatim to the model, any status)
 from LimeSpot-layer failures (degraded). No endpoint allowlist names the
 platform toolsets. The Anthropic key never leaves the worker.
 
-- **`X-Personalizer-System-Prompt`** selects the server-side prompt: `chat`
-  (default), `onboarding`, `placement`, `proposals` (per-store onboarding setup
-  proposer, tool-use), or `analytics-insights` (one-shot JSON insights over
-  grounding data, no tools).
+- **`X-Personalizer-System-Prompt`** selects the server-side prompt by NAME; `chat`
+  is the default. Which names are valid is the registry in `src/prompt-registry.ts`,
+  read there rather than listed here.
 - **`Accept: text/event-stream`** → SSE (events: `text`, `tool_call`,
   `tool_result`, `done`, `error`). Otherwise → a single JSON object (same shape
   as the `done` payload).
@@ -124,10 +123,9 @@ platform toolsets. The Anthropic key never leaves the worker.
   owns history; persistence lives in Personalizer). `context` carries grounding
   (`hostPage`, validated placement `candidates`, best-practice `grounding`,
   entity `refs`).
-- **Referencing (`context.refs`)** — up to 5 entity references
-  (`{ type, id?, label?, metadata? }`; types `campaign` / `segment` /
-  `progress-bar` / `bundle` / `analytics-metric` / `analytics-tab`) anchoring
-  the chat to specific entities. Record refs are eagerly resolved worker-side
+- **Referencing (`context.refs`)** — a capped list of entity references anchoring
+  the chat to specific entities. The wire shape, the cap, and the valid type
+  literals are declared in `src/lib/references.ts`. Record refs are eagerly resolved worker-side
   by `src/toolsets/personalizer/entity-context.ts`: per-refType fetchers over Personalizer's per-record
   admin endpoints (discount/html/image campaigns, subscriber segments,
   progress-bar campaigns, plus `v2/accounts/subscriber` for the tenant
@@ -184,66 +182,11 @@ curl http://localhost:8787/health
 
 ### File Structure
 
-```
-app-ai/
-├── src/
-│   ├── index.ts              # Entry + router only (CORS, OPTIONS, auth, dispatch)
-│   ├── config.ts             # Typed Env + fail-fast config accessors (the ONE binding reader)
-│   ├── types/markdown.d.ts   # Ambient type: .md imports resolve to raw text
-│   ├── handlers/
-│   │   ├── health.ts         # GET  /health
-│   │   ├── files.ts          # POST/GET /files, DELETE /files/{id}
-│   │   ├── messages.ts       # POST /messages (single-shot proxy)
-│   │   └── chat.ts           # POST /chat (Studio AI agent loop + SSE)
-│   ├── lib/
-│   │   ├── anthropic.ts      # The Anthropic client (files + messages + streaming + count_tokens)
-│   │   ├── auth.ts           # Context-ID validation against Personalizer
-│   │   ├── cors.ts           # CORS headers
-│   │   ├── responses.ts      # JSON helpers + the Brain-shaped error format ({ Message, ExceptionType, MessageDetail? })
-│   │   ├── cache-control.ts  # 4-block prompt-cache management + 1h extended-TTL const
-│   │   ├── agent-cache.ts    # /chat conversation-turn cache breakpoints (≤3, ~15-block intervals)
-│   │   ├── file-dedup.ts     # Files API SHA-256 → file_id dedup (KV-backed, graceful no-op)
-│   │   ├── references.ts     # /chat context.refs intake + Referenced-Entities system block
-│   │   ├── dev-inference-trace.ts # Local-only correlated model input/output trace
-│   │   └── logger.ts         # Scoped console logger
-│   ├── toolsets/             # AI-tool layer: named toolsets + registry (docs/TOOLSETS.md)
-│   │   ├── registry.ts       # composeToolsets(allowlist, authContext) — per-request tool surface
-│   │   ├── types.ts          # Toolset seam types (ToolsetDescriptor / ToolsetComposition)
-│   │   ├── integration-bridge.ts # Platform-toolset call channel + X-Ls-Integration-Bridge-Error discrimination
-│   │   ├── personalizer/     # Personalizer-backed toolset: tool defs + /v2/ai-tools/* dispatch (index.ts)
-│   │   │   └── entity-context.ts # Record-ref resolution via Personalizer's per-record admin endpoints
-│   │   ├── shopify/          # shopify_rest_request + shopify_graphql (Personalizer's integration bridge)
-│   │   ├── bigcommerce/      # bigcommerce_rest_request (version-prefixed paths)
-│   │   ├── klaviyo/          # klaviyo_rest_request (api/… paths, JSON:API paging)
-│   │   └── google-ads/       # google_ads_gaql_query (GAQL SELECT — read-only)
-│   ├── prompt-registry.ts            # System-prompt registry (name → text + metadata)
-│   ├── prompts/*.md          # Simple prompt text (one .md per prompt, bundled at build time)
-│   └── prompts/<name>/       # Multi-file prompt: prompt.md + sample.md (attachment); maintenance doc in docs/prompts/<name>.md
-├── test/
-│   ├── chat.test.ts          # /chat agent loop + SSE + refs/get_entity_context dispatch
-│   ├── toolsets.test.ts      # registry composition + allowlist + credential seam + tool-contract snapshot
-│   ├── platform-toolsets.test.ts # integration-bridge wire shapes + X-Ls-Integration-Bridge-Error discrimination + call channel
-│   ├── references.test.ts    # context.refs intake + Referenced-Entities block (frozen snapshot)
-│   ├── entity-context.test.ts # per-refType fetchers + AiToolEntityContext shape parity
-│   ├── proxy.test.ts         # files/messages/health + anthropic client + cors/auth/cache
-│   ├── token-saving.test.ts  # caching/dedup/count_tokens/effort levers
-│   ├── config.test.ts        # config no-fallback contract + production [vars] pins
-│   ├── architecture.test.ts  # fitness scans (allowlists, credentials, error shape, config rule)
-│   ├── dev-inference-trace.test.ts # configured TRACE routing / correlation / file-id omission
-│   └── helpers.ts            # shared typed fixtures (Env, fetch mock, SSE parser, KV mock)
-├── scripts/
-│   └── verify-caching.mjs    # optional live token-savings diagnostic — see docs/TESTING.md
-├── docs/                     # Standalone-project docs (CODE-PATTERNS / TESTING / TOOLSETS / DECISIONS / KNOWN-ISSUES / PROMPT-AUTHORING / prompts/<name>.md)
-├── CONTRIBUTING.md           # Commit convention + push-to-main deploy rule + validate loop
-├── wrangler.toml             # Configuration ([vars] + KV binding) + the `[[rules]] type = "Text"` prompt-bundling rule
-├── tsconfig.json             # Strict TypeScript (full strict family; tsc --noEmit gate)
-├── vitest.config.ts          # Inline Vite plugin loading .md prompts as raw text in tests
-├── .dev.vars.example         # Documents every local config knob (copy to .dev.vars)
-├── .dev.vars                 # Local config + secrets (gitignored)
-└── package.json
-```
-
-Architecture detail lives in [CLAUDE.md](CLAUDE.md).
+The folder-by-folder map of `src/` — which module owns what — is
+[docs/ARCHITECTURE-MAP.md](docs/ARCHITECTURE-MAP.md), and what each spec covers is
+[docs/TESTING.md](docs/TESTING.md). Both are kept beside the code they describe rather than
+copied here, because a second copy of a tree drifts silently. Architecture detail and the
+invariants that hold the layout together live in [CLAUDE.md](CLAUDE.md).
 
 ### Environment Variables
 
@@ -277,7 +220,7 @@ variable, no fallback defaults.
 
 Each system prompt is a **registry entry** in [src/prompt-registry.ts](src/prompt-registry.ts) whose
 TEXT lives under [src/prompts/](src/prompts/) — the ONE and only prompt location. The registry
-maps `name → { prompt, tier, maxTokens, usesTools, clientTools?, description, attachments, effort? }` and is
+maps each name to its text and metadata (`SystemPromptEntry` in that file is the source of truth for the fields) and is
 the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
@@ -390,7 +333,8 @@ credentialed requests — add a credentialed dev origin there, not in code.
 
 This project uses Cloudflare's GitHub integration for automatic deployment:
 
-- **Commits to `main` branch** → Auto-deploy to production environment
+- **A push to `main`** → auto-deploy to production. `main` is read-only to every agent; an operator
+  performs that push, and it carries its own deploy approval.
 
 **Setup:**
 
@@ -410,23 +354,21 @@ Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it
 returns 503 from `/health` instead of claiming to be healthy as `buildRev: "dev"`.
 
-### Manual Deployment (Testing Only)
+### Manual deployment — operator only
 
-For testing changes before committing to GitHub:
+There is one deployed worker and no staging environment, so `npm run deploy` publishes to
+**production**. It is an operator action needing its own explicit deploy approval in the turn it is
+taken, and it is never an agent's: agent access to the running worker is read-only
+([CLAUDE.md](CLAUDE.md) → Hard rules, `../_standards/git-and-approval.md`). The same holds for a
+secret or binding change in the Cloudflare dashboard.
 
 ```bash
-# Test manual deploy to development environment
-npm run deploy
-
-# View logs
-npm run tail
+npm run deploy:dry-run   # builds the same revision-stamped bundle without publishing — safe
+npm run tail             # read the live worker's logs — read-only
 ```
 
-**Note:** Manual deployment should only be used for:
-
-- Testing deployment process
-- Emergency hotfixes
-- Validating changes before pushing to GitHub
+An operator reaches for the manual publish only when the normal `main` auto-deploy path is
+unavailable — an emergency hotfix, or validating the deploy mechanism itself.
 
 ### Environments
 
@@ -576,11 +518,11 @@ npm run lint             # ESLint over the whole repo
 npm run format-check     # Prettier check (exclusions documented in .prettierignore)
 npm run deploy:dry-run   # Build the revision-stamped bundle without deploying
 
-# Deployment (Manual - for testing only)
-npm run deploy           # Deploy to default environment
+# Deployment (operator only — see "Manual deployment")
+npm run deploy           # PUBLISHES TO PRODUCTION
 npm run deploy:preview   # Upload a revision-stamped non-production version
 
-# Monitoring
+# Monitoring (read-only)
 npm run tail             # View production logs
 
 # Maintenance
@@ -588,7 +530,7 @@ npm run update-deps      # Update dependencies and run audit fix
 npm audit                # Check security
 wrangler whoami          # Check authentication
 
-# Note: Staging and production deploy automatically via GitHub integration
+# Note: production deploys automatically when an operator pushes `main`
 ```
 
 ## Platform Details
@@ -626,6 +568,10 @@ wrangler whoami          # Check authentication
   authoring/iteration workflow
 - [docs/TOOLSETS.md](docs/TOOLSETS.md) — toolset standards: the registry, the
   credential seam + security standards, the platform toolsets
+- [docs/ARCHITECTURE-MAP.md](docs/ARCHITECTURE-MAP.md) — the folder-by-folder map of `src/` and
+  the registered-prompt table
+- [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md) — extension demo claims, entitlement, scope, quotas,
+  and the signed website status callback
 - [docs/prompts/](docs/prompts/) — per-prompt design/maintenance docs
   (e.g. [image-selection.md](docs/prompts/image-selection.md))
 
@@ -634,4 +580,5 @@ wrangler whoami          # Check authentication
 **Platform:** Cloudflare Workers (V8 Isolates)
 **Live surface:** `/files` + `/messages` serve the production smart-image
 feature; `/chat` serves LimeSpot Studio AI.
-**Deploy:** pushing `main` deploys to production.
+**Deploy:** pushing `main` deploys to production — an operator action carrying its own deploy
+approval; `main` is read-only to every agent.

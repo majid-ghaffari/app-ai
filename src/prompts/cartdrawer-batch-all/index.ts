@@ -1,5 +1,5 @@
 /**
- * Cart-drawer conductor (#96) — PROPOSE. The SINGLE-SURFACE (open cart drawer)
+ * Cart-drawer conductor — PROPOSE. The SINGLE-SURFACE (open cart drawer)
  * twin of `onboarding-batch-all`: reuses the shared onboarding PROPOSE blocks and
  * only authors the drawer-specific fragments (this folder). STABLE order = the
  * cacheable prefix (frozen). Design: docs/prompts/cartdrawer-batch-all.md.

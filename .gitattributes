@@ -1,0 +1,8 @@
+# Shell scripts and git hooks must check out with LF on every platform, including Git for
+# Windows with core.autocrlf=true. A CRLF byte in a shebang is the difference between a hook
+# that runs and one that reports "bad interpreter".
+#
+# Deliberately not `* text=auto eol=lf`: that renormalizes the entire tree on next checkout,
+# which is a far larger change than the one being made here.
+*.sh text eol=lf
+.githooks/* text eol=lf

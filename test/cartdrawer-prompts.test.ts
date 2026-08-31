@@ -1,5 +1,5 @@
 /**
- * Coverage for the cart-drawer conductor's two SINGLE-SURFACE prompts (#96):
+ * Coverage for the cart-drawer conductor's two SINGLE-SURFACE prompts:
  * `cartdrawer-batch-all` (PROPOSE) + `cartdrawer-review-all` (REVIEW).
  *
  * The cart-drawer conductor is 100% AI, like onboarding: it opens the merchant's

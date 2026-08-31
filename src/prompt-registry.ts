@@ -73,7 +73,7 @@ export interface PromptAttachment {
  *                  CLIENT, not in the worker (the handler sends THESE definitions in
  *                  place of the server toolset and returns the calls in
  *                  `done.toolCalls`). Mutually exclusive with `usesTools`. Its live
- *                  consumer is `onboarding-chat` (#111), which carries the CLIENT
+ *                  consumer is `onboarding-chat`, which carries the CLIENT
  *                  `look_at_page` tool so the chat model can ask the browser to LOOK
  *                  at a page (the store iframe is the AI's hands). This is the
  *                  generic client-tool capability seam.
@@ -103,7 +103,7 @@ export interface SystemPromptEntry {
    */
   adaptiveEffort?: { default: Effort; escalated: Effort };
   /** CLIENT-executed tool schema (mutually exclusive with `usesTools`). See the
-   *  field docs above. Its live consumer is `onboarding-chat` (#111), which carries
+   *  field docs above. Its live consumer is `onboarding-chat`, which carries
    *  the `look_at_page` client tool; the generic client-tool capability seam. */
   clientTools?: readonly ToolDefinition[];
   /**
@@ -193,7 +193,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
-  // Onboarding / visual chat (#111) — the CLIENT-tool twin of `chat`. Same SYSTEM
+  // Onboarding / visual chat — the CLIENT-tool twin of `chat`. Same SYSTEM
   // prompt + tier (DEFAULT `frontier`) as `chat`, but instead of the SERVER data toolset it carries the
   // CLIENT `look_at_page` tool, which executes in the merchant's BROWSER (the store
   // iframe is the AI's hands): on a `look_at_page` tool_use the /chat loop returns
@@ -204,7 +204,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
   // SEPARATE entry, not a flag on `chat` — a turn is EITHER server-data-tools OR the
   // visual client tool, never both. This is the FIRST live consumer of the dormant
   // client-tool mode; the onboarding refine loop / interactive review / cart-drawer
-  // chat / #98 optimize all select it to gain visual self-inspection.
+  // chat / on-demand optimize all select it to gain visual self-inspection.
   'onboarding-chat': {
     prompt: prompts.onboardingChat,
     maxTokens: 4096,
@@ -419,7 +419,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
-  // Cart-drawer conductor (#96) — PROPOSE. The SINGLE-SURFACE twin of
+  // Cart-drawer conductor — PROPOSE. The SINGLE-SURFACE twin of
   // `onboarding-batch-all`: given the OPEN cart DRAWER (a rendered overlay) at
   // desktop + mobile widths + the numbered candidate manifest (INSERT anchors + any
   // REPLACE grids INSIDE the drawer), returns ONE JSON plan of the box(es) to place
@@ -444,7 +444,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
-  // Cart-drawer conductor (#96) — REVIEW. The SINGLE-SURFACE twin of
+  // Cart-drawer conductor — REVIEW. The SINGLE-SURFACE twin of
   // `onboarding-review-all`: given the AFTER-APPLY OPEN cart drawer at desktop +
   // mobile widths + the applied box plan, returns ONE flat verdict
   // { pass, feedback, corrections, failureClass } for the drawer — no `pages` wrapper.
@@ -466,7 +466,7 @@ const systemPrompts: Record<string, SystemPromptDefinition> = {
     attachments: [],
   },
 
-  // On-demand OPTIMIZE (#98) — PROPOSE. The SINGLE-PAGE, DEMAND-FIRST twin of
+  // On-demand OPTIMIZE — PROPOSE. The SINGLE-PAGE, DEMAND-FIRST twin of
   // `onboarding-batch`: given ONE page (name + a full-page desktop + mobile screenshot
   // + the numbered candidate manifest) AND the merchant's typed DEMAND, returns ONE JSON
   // plan for that page — the box(es) to place, honoring the demand FIRST and then filling

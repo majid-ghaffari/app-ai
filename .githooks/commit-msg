@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# GENERATED-SHIM: limespot/root _enforcement/git-hooks
+#
+# The body of this gate lives once, in the workspace meta-repo, and is resolved at run time. Do not
+# copy it here: a copy drifts, and the workspace has already paid for that lesson.
+#
+# Anything specific to THIS repository goes below the marker at the bottom and survives a re-run of
+# _enforcement/install-git-hooks.sh.
+#
+set -e
+
+repo_root="$(git rev-parse --show-toplevel)"
+shared_gate="$repo_root/../_enforcement/git-hooks/commit-msg"
+
+if [ ! -x "$shared_gate" ]; then
+  echo "commit-msg: BLOCKED — the shared gate is missing at $shared_gate" >&2
+  echo "  This repository expects the limespot/root workspace repo as its PARENT folder:" >&2
+  echo "      $(dirname "$repo_root")" >&2
+  echo "  Clone it there, then re-run: ../_enforcement/install-git-hooks.sh $(basename "$repo_root")" >&2
+  exit 1
+fi
+
+# ---- this repository's settings for the shared gate ------------------------
+# Read BEFORE the gate runs, because the gate reads them as it decides. Anything
+# placed after the gate call below has already missed its chance.
+#
+# Conventional Commits is off by default. Uncomment to enforce the
+# 'type(scope): subject' form on every commit message in THIS repository:
+export LIMESPOT_ENFORCE_COMMIT_FORMAT=1
+
+"$shared_gate" "$@"
+
+# ---- repo-specific checks below this line ----------------------------------

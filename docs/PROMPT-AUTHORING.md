@@ -8,6 +8,23 @@ The process for iterating on and maintaining app-ai system prompts with Claude. 
 - **Maintenance docs** live at `docs/prompts/<name>.md` — one per prompt that has design decisions worth recording. A maintenance doc is an evergreen, present-state record of the prompt's goals, constraints (character/token budgets), selector or output rules, and the rationale behind them. It describes what the prompt IS and why, never a change log. It is documentation, never bundled, never sent to the API.
 - Underscore-prefixed files inside a prompt folder follow the LimeSpot `_` convention. In a COMPOSED prompt they are BLOCK PARTS — explicitly imported by that prompt folder's `index.ts` and composed into the prompt (they just aren't a standalone `<name>` you select via the header). Elsewhere `_*.md` remains a supported exclusion mechanism (never imported) for a co-located non-runtime file. Editing a COMPOSED prompt means editing its block/fragment `.md` files — and, if the effective text changes on purpose, the matching baseline in `test/__snapshots__/` (the byte-equivalence gate `test/onboarding-prompt-blocks.test.ts` fails otherwise).
 
+## Editing a prompt: the three things that bite
+
+1. **Restart the local worker after ANY prompt edit, and verify the restart took.** Wrangler's
+   watcher misses `.md`-only edits, and a failed restart false-passes a health check because the old
+   process keeps the port. Grep the served module files under `.wrangler/tmp/dev-*/` for a phrase
+   from the edit before trusting a local run.
+2. **A change to a PROPOSE prompt needs the lib's `SCREEN_CACHE_PLAYBOOK_VERSION` bumped in the same
+   change** (`lib/packages/storefront/src/admin/ai/screen-cache.ts`), or warmed stores replay plans
+   cached under the old playbook. That constant is the only place the version is written down.
+3. **Regenerate the byte-equivalence baselines after any block edit**, and keep the prompt's
+   `docs/prompts/<name>.md` in sync in the same change — both are review gates, and a composed
+   prompt's block order lives in its own folder's `index.ts`.
+
+Prompt text ships to production from the DEPLOYED worker, so repository ancestry never proves which
+prompt a live store is served. Verify the served worker's `buildRev` against the checkout before
+treating a live run as evidence.
+
 ## Iteration sessions with Claude
 
 Prompt distillation happens in a Claude chat session. Seed the session with the prompt's runtime files (`prompt.md`, `sample.md`) plus its maintenance doc (`docs/prompts/<name>.md`) so Claude has full context; when hitting chat limits, start a new chat seeded the same way. The resulting file contents are then committed back to the repo (runtime files under `src/prompts/`, the maintenance doc under `docs/prompts/`).
@@ -56,8 +73,7 @@ Prompts on the hot path carry a character budget (recorded in their maintenance 
 
 1. **Update after every significant change** to the prompt's runtime files (prompt.md, sample.md)
 2. **Document the key decisions** as present-state rationale — why the prompt is shaped the way it is
-3. **Keep "Next Steps" current** — remove completed items, add new ones
-4. **Preserve all constraints and rules** that inform the current design
+3. **Preserve all constraints and rules** that inform the current design
 
 ### What to include
 
@@ -67,10 +83,11 @@ Prompts on the hot path carry a character budget (recorded in their maintenance 
 - Lists of classes/patterns to avoid (with examples)
 - Character limits and other constraints
 - Working examples and edge cases covered
-- Next steps or open questions
 
 ### What NOT to include
 
 - Long code snippets (those go in prompt.md/sample.md)
+- Plans, task lists, next steps, or an iteration record — those belong in the pull request that
+  carries the work, never in the tree
 - Repetitive information already in the runtime files
 - Temporary debugging discussions

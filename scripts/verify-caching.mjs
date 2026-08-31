@@ -27,8 +27,8 @@
  *     (the production worker URL is documented in README → Environments).
  *   - `APP_AI_CONTEXT_ID`, or `APP_AI_CONTEXT_FILE` pointing at a
  *     `shop-context` fixture JSON (`{ "contextID": ... }`, as minted by the
- *     lib E2E suite's aidin@limespot.com master login) — context-IDs are
- *     subscriber-scoped, so use a dev store (lsdev1).
+ *     lib E2E suite from a master login) — context-IDs are subscriber-scoped,
+ *     so use a dev store.
  */
 
 import { readFileSync } from 'node:fs';
@@ -68,8 +68,8 @@ function resolveContextId() {
     'APP_AI_CONTEXT_FILE',
     'The caching diagnostic needs a valid X-Personalizer-Context-ID for a dev store: ' +
       'set APP_AI_CONTEXT_ID=<id>, or point APP_AI_CONTEXT_FILE at a shop-context ' +
-      'fixture JSON ({ "contextID": ... }) minted by the lib E2E suite via the ' +
-      'aidin@limespot.com master login.',
+      'fixture JSON ({ "contextID": ... }) minted by the lib E2E suite from a ' +
+      'master login.',
   );
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));

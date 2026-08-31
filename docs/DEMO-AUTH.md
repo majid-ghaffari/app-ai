@@ -58,7 +58,7 @@ Payload for LimeSpot's sales/demo staff:
   "tokenIdentifier": "<unique opaque identifier, 1..256 characters>",
   "auditIdentifier": "<fresh UUID for this staff run>",
   "attemptLimit": null,
-  "email": "sales@limespot.com",
+  "email": "<staff mailbox on the entitling domain>",
   "emailVerified": true,
   "entitlement": { "type": "limespot-staff-multi-store" },
   "issuedAt": 1787270400,

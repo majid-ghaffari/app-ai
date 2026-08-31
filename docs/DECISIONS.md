@@ -3,11 +3,11 @@
 **Parent:** [../CLAUDE.md](../CLAUDE.md)
 
 Architectural decisions for the worker, with rationale. Present-tense — each
-entry describes the choice that stands and why, not a change history.
-
-### 1. Strict TypeScript — see #11.
-
-The strict-TypeScript decision is recorded at [#11](#11-strict-typescript-no-build-step-supersedes-1).
+entry describes the choice that stands and why, not a change history. An entry's
+NUMBER is its stable identifier, cited from other documents as `DECISIONS.md #N`;
+numbers are never reused and never renumbered. A decision that changes is rewritten
+in its own entry rather than tombstoned beside a replacement — git history holds the
+supersession, this log holds what stands.
 
 ### 2. GA 1-hour prompt cache on stable prefixes
 
@@ -30,9 +30,9 @@ block, conversation turns) is left uncached or on the 5-minute default.
 ### 3. Effort lever is model-gated
 
 `output_config.effort` is a real output-token control, but it is valid only on a
-specific model set (`supportsEffort` in `lib/anthropic.ts`: Fable 5, Opus
-4.8/4.7/4.6/4.5, Sonnet 4.6). Sending it to a model that doesn't support it
-(e.g. Haiku 4.5, Sonnet 4.5) returns a 400. The handlers gate on the resolved
+specific model set. `EFFORT_SUPPORTED_MODELS` in `lib/anthropic.ts` is that set —
+the only place it is written down — and `supportsEffort(model)` is the gate over it.
+Sending the parameter to a model outside the set returns a 400. The handlers gate on the resolved
 model's capability and omit `output_config` otherwise, so a registry entry can
 carry `effort` without risking a 400 on a model swap. Placement runs on Haiku
 4.5, so it carries no `effort` — the guard would drop it regardless, and setting
@@ -181,7 +181,7 @@ schemas, output shapes) is frozen regardless of module layout — pinned by the
 lib repo's `admin/ai/CONTRACTS.md` §2 and the contract snapshot in
 `test/toolsets.test.ts`. Full standards: [TOOLSETS.md](TOOLSETS.md).
 
-### 11. Strict TypeScript, no build step (supersedes #1)
+### 11. Strict TypeScript, no build step
 
 The whole repo — `src/`, `test/`, `vitest.config.ts` — is strict TypeScript:
 `tsconfig.json` declares the full strict family plus the beyond-strict
@@ -270,7 +270,7 @@ the wire form is the enum NAME, never its guid). Each descriptor declares an
 `integrationParties: IntegrationParty[]` gate; a toolset is offered iff the
 array is empty (always-active, e.g. personalizer) OR intersects the
 subscriber's available parties — no mapping, no switch, no static endpoint
-allowlist (supersedes the allowlist half of #10). The available-party set rides
+allowlist. The available-party set rides
 the router's per-request `validate-context-id` call, which returns
 `AvailableIntegrationParties: string[]` (liveness-filtered by Personalizer); the
 router threads that result into `handleChat`
@@ -285,16 +285,15 @@ subscriber's set (`v2/integration-bridge/{IntegrationPartyName}/…`, matching
 Personalizer's dispatch key). A subscriber has at most ONE commerce party
 (Shopify/BigCommerce/Woo mutually exclusive) and each non-commerce party owns
 its own toolset, so the intersection is always exactly one — a defensive assert
-guards it; no tiebreak logic exists. v1 gates: `shopify` →
-`ShopifyPersonalizer`, `bigcommerce` → `BigCommercePersonalizer`, `klaviyo` →
-`Klaviyo`, `google-ads` → `Google`.
+guards it; no tiebreak logic exists. Which party gates which toolset is each
+toolset descriptor's own `integrationParties` declaration, and nowhere else.
 
 The `google-ads` GAQL tool also gained an optional `pageToken` input, threaded
 to the wire body as `PageToken` (`{ Query, PageSize?, PageToken? }`); the
 response `NextPageToken` surfaces verbatim in the platform body, so the model
 pages by echoing it back. Additive and backward-compatible.
 
-### 15. `/messages` sets `max_tokens` from the registry EXACTLY (D6)
+### 15. `/messages` sets `max_tokens` from the registry EXACTLY
 
 `POST /messages` sets `max_tokens` to the resolved system-prompt entry's value
 EXACTLY, mirroring how it derives `model` (#11 / the registry as source of truth).
@@ -362,7 +361,7 @@ The onboarding PLAYBOOK is split across two repos: app-ai encodes the advisory
 framing in the prompts, the lib enforces the one deterministic mechanic. Today
 the ONLY enforced-deterministically-after-proposal rule is the Cart-page progress
 bar forced to the top (the lib's `rules.json` ships that ONE signed invariant).
-The box fallbacks (Upsell → Related Items; FBT → Cross-Sell) are NO LONGER
+The box fallbacks (Upsell → Related Items; FBT → Cross-Sell) are not
 lib-enforced rules — they are BRAIN SOFT DEFAULTS (seeded from the tenant's Brain
 default box settings and overridable by a valid AI value); the prompts frame them
 as advisory guidance only. If the two repos drift (a lib built against an older

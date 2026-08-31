@@ -136,11 +136,11 @@ eager Referenced-Entities block (same resolution, same frozen output shape).
 
 One toolset per platform, each a transparent passthrough to the merchant's
 platform API through Personalizer's integration bridge (`v2/integration-bridge/*` on
-the main API). Each is party-gated (composed only when the subscriber has its
-`IntegrationParty` available): `shopify` → `ShopifyPersonalizer`,
-`bigcommerce` → `BigCommercePersonalizer`, `klaviyo` → `Klaviyo`,
-`google-ads` → `Google`. The proxy URL `{party}` segment is that matched
-party name — Personalizer's dispatch key. Personalizer is the credential
+the main API). Each is party-gated — composed only when the subscriber has its
+`IntegrationParty` available, and each toolset descriptor's own `integrationParties`
+declaration is the source of truth for which party that is; the table below is a
+reading aid over those declarations, never a second definition. The proxy URL
+`{party}` segment is that matched party name — Personalizer's dispatch key. Personalizer is the credential
 custodian — app-ai never holds a platform token. Each toolset's
 `resolveCredentials` resolves a **call channel** only, through the shared seam
 `resolveBridgeChannel` in `src/toolsets/integration-bridge.ts`:

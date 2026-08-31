@@ -8,9 +8,13 @@ the way it is.
 ## ⚠️ Pushing `main` is a production deploy
 
 Cloudflare's GitHub integration auto-deploys `main` to production. There is one
-branch and no staging. **A push to `main` is live.** Commit locally; push only
-with intent. Docs/test-only changes are deploy-safe (no runtime behavior
-change), but they still deploy — there is no "safe" branch to stage on.
+branch and no staging. **A push to `main` is live**, so that one action carries
+both the push approval and the deploy approval and is an operator step: `main` is
+read-only to every agent, which prepares work on a feature branch and lets a human
+merge and push it ([CLAUDE.md](CLAUDE.md) → Hard rules,
+`../_standards/git-and-approval.md`). Docs/test-only changes are deploy-safe (no
+runtime behavior change), but they still deploy — there is no "safe" branch to
+stage on.
 
 ## Commit message convention
 
@@ -23,10 +27,12 @@ test(app-ai): add live token-savings diagnostic (verify:caching)
 fix(app-ai): only send output_config.effort on models that support it
 ```
 
-Commit messages carry **no AI-attribution or tool-credit trailers** — no
-`Co-Authored-By: Claude …`, no `Claude-Session:`, no "Generated with …", and no
-mention of Claude / Anthropic / any AI assistant as an author or contributor.
-The subject + body describe the change only. (See [CLAUDE.md](CLAUDE.md) → Hard
+Commit messages carry **no AI-attribution or tool-credit trailers**: never a
+`Co-Authored-By:` naming a model or a tool, never a session or generation link,
+never a "generated with" tagline, and never a mention of any AI assistant as an
+author or contributor. This repository names no human co-author trailer either,
+so its commits carry none at all. The subject + body describe the change only.
+(See [AGENTS.md](AGENTS.md) → hard rule 4, and [CLAUDE.md](CLAUDE.md) → Hard
 rules.)
 
 ## Validate before you push

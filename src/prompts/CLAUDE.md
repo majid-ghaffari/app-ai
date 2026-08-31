@@ -1,13 +1,13 @@
 # src/prompts/ — the prompt registry's TEXT + its doc-sync contract
 
 **Parent:** [../../CLAUDE.md](../../CLAUDE.md) (root) — see its **Prompt registry** section for the
-build-time bundling, caching, and dispatch mechanics. This folder doc owns two things the root
-delegates here: the **doc-sync rule** and the **authoritative prompt inventory** (which folders are
-prompts, which are shared blocks, and why the `-all` twins are not duplicates).
+build-time bundling, caching, and dispatch mechanics. This folder doc owns what the root delegates
+here: the **doc-sync rule**, which folders are prompts and which are shared blocks, and why the
+`-all` twins are not duplicates.
 
 Every model-facing system prompt lives here as pure `.md` text. The registry that maps a prompt
-NAME → `{ prompt, tier, maxTokens, usesTools, description, attachments, effort?, clientTools? }`
-is [`../prompt-registry.ts`](../prompt-registry.ts). The lib references a prompt only BY NAME (the
+NAME to its text and metadata is [`../prompt-registry.ts`](../prompt-registry.ts), whose
+`SystemPromptEntry` interface is the source of truth for what an entry carries. The lib references a prompt only BY NAME (the
 `X-Personalizer-System-Prompt` header) and never hardcodes prompt content — the lib-side contract is
 `packages/storefront/src/admin/ai/CONTRACTS.md` + `docs/AI-LAYER.md` in the lib repo.
 
@@ -22,7 +22,7 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
    The doc's Input/Output-contract sections must always describe the current prompt.
 2. **Add a prompt →** create its `.md` (single file) or `<name>/` folder (multi-file / composed) here,
    add its registry entry in `../prompt-registry.ts` (+ its `PROBE_SCHEMAS` entry if it's a `probe-<id>`), write
-   `docs/prompts/<name>.md`, and add a row to the root CLAUDE.md's registry table.
+   `docs/prompts/<name>.md`, and add a row to the prompt table in `docs/ARCHITECTURE-MAP.md`.
 3. **Rename a prompt →** rename the text file(s), the registry key, and `docs/prompts/<name>.md` together.
 4. **Retire a prompt →** delete the text, the registry entry, and the doc together (No Dead Code). A doc
    with no registered prompt, or a registered prompt with no doc, is a broken tree.
@@ -64,42 +64,9 @@ they are used in multiple places: a block used by one prompt only stays a fragme
 folder; a block shared across prompts is hoisted to `onboarding-shared/` so a single edit updates every
 composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
-## Registered-prompt inventory (the authoritative list)
+## Registered-prompt inventory
 
-Every folder here EXCEPT `onboarding-shared/` is exactly one registered prompt. Single-file prompts are the
-loose `.md` files. The full set:
-
-| Prompt                 | Shape           | Endpoint · tools        | Role                                                                                      |
-| ---------------------- | --------------- | ----------------------- | ----------------------------------------------------------------------------------------- |
-| `image-selection`      | multi-file¹     | `/messages` · none      | Page HTML + screenshot → CSS selectors for image/text/CTA personalization. LIVE.          |
-| `visual-verify`        | single-file     | `/messages` · none      | Multi-modal render → `{ pass, reason, fix }` quality verdict. The shared visual gate.      |
-| `chat`                 | single-file     | `/chat` · server tools  | General Studio chat; runs the server-data tool-use agent loop.                            |
-| `billing-assistant`    | single-file     | `/chat` · none          | Grounded, explanatory subscription chat for billing experiences.                         |
-| `onboarding-chat`      | single-file     | `/chat` · client tool   | Visual chat twin of `chat`: drops server tools, carries the browser `look_at_page` tool.  |
-| `onboarding`           | single-file     | `/chat` · server tools  | New-merchant onboarding assistant; best-practice defaults over the agent loop.            |
-| `placement`            | single-file     | `/chat` · none          | One-shot JSON placement proposer on the `fast` tier (currently Haiku).                    |
-| `proposals`            | single-file     | `/chat` · server tools  | Per-store SETUP proposer over real page evidence + real store data (`balanced` tier).     |
-| `analytics-insights`   | single-file     | `/chat` · none          | One-shot per-tab `{ kind, text }[]` insights over a tab's real analytics data.            |
-| `onboarding-batch`     | composed        | `/messages` · none      | Propose one page's boxes (INSERT-only by number + explicit playbook styling). Single-page (`balanced`).  |
-| `onboarding-batch-all` | composed        | `/messages` · none      | Whole-store twin of `onboarding-batch`: every page + visual actions + off-page segments/discounts. |
-| `onboarding-review`    | composed        | `/messages` · none      | QC verdict on one rendered page's boxes.                                                   |
-| `onboarding-review-all`| composed        | `/messages` · none      | Adaptive whole-store QC: low-effort current/references/history review; compact page verdicts escalate to medium when incomplete or uncertain. |
-| `onboarding-review-gate-all` | single-file | `/messages` · none | Fast bounded-evidence whole-store gate; only failed/uncertain pages enter detailed QC. |
-| `onboarding-css-review`| single-file     | `/messages` · none      | Targeted medium-effort hard gate for pages explicitly marked `advanced-css-required`; emits only scoped managed CSS actions. |
-| `onboarding-currency-recovery` | single-file | `/messages` · none | Exceptional bounded pre-QC recovery when the holistic proposal omits its required currency verdict; reuses already-uploaded price tiles. |
-| `cartdrawer-batch-all` | composed        | `/messages` · none      | Propose cart-context boxes inside the open cart drawer (single surface) + the OPTIONAL `progressBar` slot (the bar's second host, top of the drawer). |
-| `cartdrawer-review-all`| composed        | `/messages` · none      | QC verdict on the cart-drawer boxes (single surface).                                      |
-| `optimize-demand`      | composed        | `/messages` · none      | On-demand optimize: propose boxes for the current page, led by the merchant's demand.      |
-| `probe-industry`       | probe folder²   | `/messages` · none      | Website-Analysis probe: homepage → `{ industry, confidence, findings }`.                   |
-| `probe-cart-wiring`    | probe folder²   | `/messages` · none      | Website-Analysis probe: behavioral cart classification → selectors + `surfaceType`.        |
-| `probe-style`          | probe folder²   | `/messages` · none      | Website-Analysis probe: existing product-card styling → style descriptor.                  |
-| `probe-template`       | probe folder²   | `/messages` · none      | Website-Analysis probe: template detection → structured descriptor.                        |
-| `probe-currency`       | probe folder²   | `/messages` · none      | Website-Analysis probe: SELECT the currency KIND (money vs money_with_currency, two candidates each carrying its sample list) matching the store → `{ candidateId, confidence, reasoning }`. Select-only; never emits format metadata. |
-
-¹ `image-selection/` is the one multi-file prompt that carries an attachment — `prompt.md` (system text)
-+ `sample.md` (training examples, wired through the registry's `attachments`, uploaded as a document block).
-² A probe is a `<name>/` folder holding just `prompt.md` (no attachment, no composed blocks); it follows the
-`probe-<id>` sub-convention below.
+`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Two structural rules hold here regardless: every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt, and every loose `.md` at this level is a single-file prompt.
 
 ### The `-all` twins are NOT duplicates
 

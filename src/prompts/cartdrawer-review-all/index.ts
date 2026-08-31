@@ -1,5 +1,5 @@
 /**
- * Cart-drawer conductor (#96) — REVIEW. The SINGLE-SURFACE twin of
+ * Cart-drawer conductor — REVIEW. The SINGLE-SURFACE twin of
  * `onboarding-review-all`: reuses the shared review blocks (classify, correction
  * verbs, box vocab, JSON hardening/tail) and only authors the drawer-specific
  * fragments (this folder). STABLE order = the cacheable prefix (frozen). Design:

@@ -8,7 +8,7 @@
  * them (handlers/chat.ts). `clientTools` is mutually exclusive with `usesTools`
  * (a prompt is EITHER server-tool OR client-tool, never both).
  *
- * ── `look_at_page` — the visual-inspection client tool (#111) ─────────────────
+ * ── `look_at_page` — the visual-inspection client tool ────────────────────────
  * The FIRST live consumer of the dormant client-tool mode. It lets the chat model
  * ASK the browser to LOOK at a page: the lib executor captures (or serves a cached)
  * full-page screenshot of the named page, uploads it via /files, and re-calls /chat

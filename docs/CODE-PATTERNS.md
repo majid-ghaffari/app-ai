@@ -270,8 +270,9 @@ green CI that lies. Throw with an actionable error instead:
   a caching strategy) gets a numbered entry in
   [DECISIONS.md](DECISIONS.md) — what was decided, the rationale, and the
   alternatives rejected — in the same commit as the change. Entries are
-  written present-tense and are append-only: a superseded decision gets a
-  new entry that names the entry it supersedes.
+  written present-tense and describe only the choice that stands; a decision
+  that changes is rewritten in its own entry, keeping that entry's number,
+  which is the stable identifier other documents cite.
 - **Single source of truth.** Each fact lives in ONE canonical doc; other
   docs link to it.
 

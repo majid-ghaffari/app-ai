@@ -1,0 +1,5 @@
+# Prompt fragments composed into model calls by src/prompts/_compose.ts. Their text is a
+# shipped artifact compared byte-for-byte by the baselines in test/__snapshots__/, so a lead-in
+# whose list arrives from the next composed part is correct, not a defect.
+src/prompts/*.md
+src/prompts/**/*.md

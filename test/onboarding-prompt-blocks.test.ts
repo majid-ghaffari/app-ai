@@ -143,7 +143,7 @@ describe('onboarding prompt blocks — byte-equivalence gate', () => {
       expect(baseline).not.toContain('Audience segments are an OFF-PAGE item');
       expect(baseline).not.toContain('Bundle / discount campaigns are an OFF-PAGE item');
       expect(baseline).not.toContain('Store-wide OFF-PAGE output');
-      // The holistic output names the two store-wide keys the lib #92 parser consumes.
+      // The holistic output names the two store-wide keys the lib parser consumes.
       expect(text).toContain('`segments`');
       expect(text).toContain('`discounts`');
     });
@@ -220,7 +220,7 @@ describe('off-page holistic blocks — composed into onboarding-batch-all ONLY',
  * boxes, they only correct via the review verbs). This suite proves (a) the block
  * carries its intended INSERT+REPLACE instruction — the two candidate types, the
  * reference-style slot, and the per-number `type` / `outerHTML` MANIFEST contract
- * lib #99 must send — and (b) it composes into both propose prompts and NOT the
+ * the lib must send — and (b) it composes into both propose prompts and NOT the
  * review prompts. Editing this one block updates both propose prompts at once.
  */
 describe('box-placement block — INSERT-only placement + reference-candidate manifest, composed into both propose prompts', () => {
@@ -232,7 +232,7 @@ describe('box-placement block — INSERT-only placement + reference-candidate ma
       /styleReferenceSelector/,
       /outerHTML/,
       /cache breakpoint/i,
-      // The per-number manifest input contract lib #99 must match EXACTLY.
+      // The per-number manifest input contract the lib must match EXACTLY.
       /`type: "insert"` \| `"replace"`/,
       /ONE continuous sequence/i,
     ]) {

@@ -1,5 +1,5 @@
 /**
- * On-demand OPTIMIZE (#98) — PROPOSE. The SINGLE-PAGE, DEMAND-FIRST twin of
+ * On-demand OPTIMIZE — PROPOSE. The SINGLE-PAGE, DEMAND-FIRST twin of
  * `onboarding-batch`: composes exactly like it but slots the NEW shared
  * `_block-user-demand` block right after the intro so the merchant's typed request
  * frames the whole plan. Only the optimize-specific fragments (this folder) are

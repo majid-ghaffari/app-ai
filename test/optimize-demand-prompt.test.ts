@@ -1,5 +1,5 @@
 /**
- * Coverage for the on-demand OPTIMIZE prompt (#98): `optimize-demand` (PROPOSE).
+ * Coverage for the on-demand OPTIMIZE prompt `optimize-demand` (PROPOSE).
  *
  * On-demand optimize is 100% AI, like onboarding, but scoped to ONE page the merchant
  * is looking at and driven by a request they TYPED. It captures that page at desktop +

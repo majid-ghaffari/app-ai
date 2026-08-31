@@ -4,7 +4,7 @@ The design/maintenance record for the exceptional `onboarding-currency-recovery`
 
 ## Where it sits
 
-Currency is a first-class action in the holistic `onboarding-batch-all` proposal and every `onboarding-review-all` QC response. The proposal must return an explicit `setCurrencyFormat` verdict. This prompt runs only when that required initial action is missing or invalid. It is a bounded recovery inside the same visual-action pipeline, not the normal currency workflow and not the legacy `probe-currency` flow.
+Currency is a first-class action in the holistic `onboarding-batch-all` proposal and every `onboarding-review-all` QC response. The proposal must return an explicit `setCurrencyFormat` verdict. This prompt runs only when that required initial action is missing or invalid. It is a bounded recovery inside the same visual-action pipeline — neither the normal currency workflow nor the `probe-currency` Website-Analysis probe, which classifies a store's currency KIND from storefront evidence and answers a different question.
 
 The lib reuses at most four already-uploaded price-bearing tiles, prioritized from Product, Collection, Cart, Home, then Search. It does not capture or upload again. A valid result is materialized before the first QC render; omission or an invalid result remains unresolved and prevents a silent pass.
 

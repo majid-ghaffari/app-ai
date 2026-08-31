@@ -49,6 +49,27 @@ Pick the lowest layer that captures the bug:
    caching behavior, use the live diagnostic below. This is useful operational
    evidence, not part of the release gate set.
 
+## What each spec covers
+
+One entry per spec file — the map, read on demand. It names what a spec asserts, never the assertions themselves; the spec is the source of truth for those.
+
+- `test/chat.test.ts` — the `/chat` agent loop, SSE protocol, tool-use loop, MAX_ITERATIONS, placement no-tools path, non-streaming JSON, prompt selection, `get_entity_context` dispatch through the registry composition (record → per-record Personalizer routes/header + normalized result, analytics → refs, error degrade), and the `context.refs` handler flow (prefetch-per-ref, uncached final block, no-refs byte-identical system, 5-ref cap + one shared subscriber lookup, failure degrade, refs threaded into the loop).
+- `test/toolsets.test.ts` — `src/toolsets/registry.ts`: composition (stable definition order, no-parties case, a party no toolset declares, per-request independence), party gating (a tool outside the composition degrades with zero backend calls), the credential seam (contextId resolved per composition and forwarded as the Personalizer header, never in the model-visible definitions, per-call `refs` extras), and the FROZEN model-visible tool contract (byte-for-byte file snapshot of the composed definitions, `test/__snapshots__/tool-definitions.contract.json`).
+- `test/platform-toolsets.test.ts` — the platform toolsets (`toolsets/{shopify,bigcommerce,klaviyo,google-ads}/` + `toolsets/integration-bridge.ts`): the REST/GraphQL/GAQL wire shapes toward Personalizer's `v2/integration-bridge/*` (URLs, mirrored verbs, PascalCase `Query`/`Variables`/`PageSize` bodies, JSON POST/PUT bodies, body-less DELETE), the `X-Ls-Integration-Bridge-Error` discrimination (platform 4xx/5xx surface verbatim as `ok: true` data; whitelisted `Link`/`Retry-After`/rate-limit headers surface as `result.headers`, omitted when absent; LimeSpot envelopes degrade with `<Message> (<ExceptionType>)`; network failures degrade), and the call-channel credential seam (no proxy call without a service token/context; the token never model-visible).
+- `test/references.test.ts` — `lib/references.ts`: intake sanitization + cap, `refCategoryPath`, per-type `resolveRef` (record → normalized entity-context payload vs analytics → metadata, throw on subscriber failure, Found:false pass-through), the FROZEN Referenced-Entities block string (contract snapshot), label fallbacks, allSettled degradation, analytics-only → zero Personalizer calls, one-subscriber-lookup-per-block.
+- `test/entity-context.test.ts` — `toolsets/personalizer/entity-context.ts`: the frozen AiToolEntityContext shape per record type (member order, Summary grammar incl. `0.##` amounts + schedule, Fields minimums, null-member omission), the campaign discount→html→image probe, tenant re-checks (cross-subscriber/deleted → Found:false), one-hop Related filtering, failure semantics (miss vs throw: 404/204/5xx → Found:false; malformed guid / unknown type / subscriber failure / 401/403 → throw), the shared subscriber lookup, and no validate-context-id roundtrip.
+- `test/proxy.test.ts` — the proxy surface: CORS, response/error shape, context validation, the Anthropic client (headers/beta/URLs, config-error rejection), `manageCacheControl` (size-based ranking of user blocks plus explicit stable-prefix priority across one/two system blocks and attachments, the four-slot cap, marker stripping/order preservation), and the `/files` + `/messages` + `/health` handlers.
+- `test/demo-auth.test.ts` — activation/session claims, public-origin and verified-staff entitlement, one-use exchange, stable cross-link public cap, bearer/route/prompt scope, parallel upload ownership, failed-attempt reuse, server-owned inference settings, quotas, and durable ordered callback retry.
+- `test/demo-audit-status.test.ts` — exact callback JSON, timestamp and HMAC header contract plus retryable delivery failure.
+- `test/probes.test.ts` — the Website-Analysis probe mechanism: the registry resolves `probe-industry` (text/metadata/model), resolves the Sonnet probes `probe-cart-wiring` + `probe-style` on the `balanced` tier (≠ the default `frontier` tier, `usesTools: false`, no attachments) with their selector/style-descriptor prompt contracts, the `probe-<id>` convention (`PROBE_PREFIX` / `isProbeName`) + the `PROBE_SCHEMAS` index ↔ registry coherence, `/messages` routing the `probe-industry` / `probe-cart-wiring` / `probe-style` headers (system block injected, no attachments, model defaulted to the registry entry, caller blocks pass through), and the frozen `{ industry, confidence, findings }` output contract (schema/parse checks: well-formed, `Unknown`/empty-findings sink, rejects missing keys / out-of-range confidence / non-string findings).
+- `test/proposals.test.ts` — the TOOL-CAPABLE per-store SETUP PROPOSALS prompt: the registry resolves `proposals` on the `balanced` tier (Sonnet, ≠ the default `frontier` tier) + `usesTools: true`, the prompt reasons over page evidence (screenshots + cleaned HTML) AND instructs the model to pull real store data via the personalizer tools (AOV-derived progress-bar threshold), and `POST /chat` with the `proposals` header sends the personalizer tool surface + the page-evidence file blocks and drives the tool loop (tool_call → Brain `v2/ai-tools` → tool_result → final JSON proposal).
+- `test/config.test.ts` — `src/config.ts`: the no-fallback contract (every accessor throws on a missing/empty variable, naming it and where to set it), the `resolveModel(env, tier)` tier→model mapping (each tier → its bound var, throws named when absent), and the PRODUCTION `[vars]` pins, which the spec reads out of `wrangler.toml` itself rather than restating: the Personalizer and Anthropic origins, the three tier→model bindings, the credentialed-origin allowlist, and the absence of any secret in that file.
+- `test/architecture.test.ts` — fitness scans over `src/` + `scripts/` enforcing the standing invariants: party-driven toolset composition; credentials never in logs or the model-visible system builder; one error shape (no bespoke `{ error: { message } }` envelopes); No Hardcoded Config Values (no absolute URL literals in src or scripts, no inline `||`/`??` fallbacks on `env`/`process.env` reads, required worker vars read only through `src/config.ts`). The dev Claude-Code shim (`scripts/dev-claude-shim.mjs`) is carved out of the no-URL-literal scan only — it is standalone local tooling with overridable dev-default endpoints, outside the worker's fail-fast config contract (never bundled); it still passes the env-fallback scan (it reads config via `envOr(name, fallback)` bracket access, not inline `||`/`??`).
+- `test/dev-shim.test.ts` — the free dev Claude-Code channel (`scripts/dev-claude-shim.mjs`): the pure Anthropic⇄Claude-Code translation layer (`systemToString`, `rehydrateBlock` file→inline base64 image/document + tool_result flatten + unknown-file degrade, `normalizeContent`, `buildPromptMessages` user turn + assistant-history preamble, `estimateTokens` char/4, `bareToolName` mcp-prefix strip, `stripCodeFence`, `usageFrom`, `extractFilePart` multipart), plus the **cred-burn GUARD** (`assertDevAiChannel`: throws when a dev/test run points `ANTHROPIC_API_BASE` at `api.anthropic.com` without `AI_CHANNEL=prod`; allows the local shim; opt-in with `AI_CHANNEL=prod`) and a check that `.dev.vars.example` ships the free-shim default.
+- `test/dev-inference-trace.test.ts` + `test/logger.test.ts` — correlated inference events, complete diagnostic text/tool/file decisions, per-level multi-sink routing, context/error detail, secret-field redaction, optional Seq authentication, fail-open delivery, and background rejection capture.
+- `test/helpers.ts` — shared typed fixtures: the complete `Env` fixture, fetch-mock accessors, the worker-SSE parser, and the KV mock.
+- `test/token-saving.test.ts` — the cost-reduction levers: 1h-TTL placement (system/context/kept user blocks), `applyConversationBreakpoints` (last-block, ~15-block intervals, cap + `reservedHeadBlocks`, stale-strip), `file-dedup` (sha256Hex vector, KV hit + stale-id verify/re-upload + miss + no-op, 30d TTL), `fileIds` document/image block typing + 1h file-prefix breakpoint + ≤4-breakpoint-with-file-prefix invariant, `countTokens` body/header, model+effort routing, and an end-to-end agent-loop breakpoint-count ≤4 assertion.
+
 ## No silent skips
 
 A test never `it.skip()`s because an env var or fixture is missing. If a
@@ -119,7 +140,7 @@ APP_AI_CONTEXT_ID=<master-context-id> \
 
 # Or point at a shop-context fixture JSON instead of a raw id:
 APP_AI_TARGET=https://app-ai.personalizer.io \
-APP_AI_CONTEXT_FILE=/tmp/storefront-test/shop-context.lsdev1.myshopify.com.json \
+APP_AI_CONTEXT_FILE=/tmp/storefront-test/shop-context.<dev-store>.myshopify.com.json \
   npm run verify:caching
 ```
 
@@ -127,9 +148,9 @@ APP_AI_CONTEXT_FILE=/tmp/storefront-test/shop-context.lsdev1.myshopify.com.json 
 
 - `APP_AI_TARGET` (required) — the deployed worker base URL to gate.
 - `APP_AI_CONTEXT_ID`, or `APP_AI_CONTEXT_FILE` pointing at a shop-context
-  fixture JSON (`{ "contextID": ... }`). The lib E2E suite mints these via the
-  `aidin@limespot.com` master login; context-IDs are subscriber-scoped, so the
-  gate targets the `lsdev1` dev store.
+  fixture JSON (`{ "contextID": ... }`). The lib E2E suite mints these from a
+  master login; context-IDs are subscriber-scoped, so the gate runs against the
+  dev store that login owns.
 
 **Sample passing output:**
 

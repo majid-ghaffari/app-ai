@@ -48,7 +48,7 @@ import {
   // @ts-ignore — .mjs sibling, no .d.ts; the shapes are exercised structurally.
 } from '../scripts/dev-claude-shim.mjs';
 
-// The `look_at_page` client tool's wire schema (#111), as the worker sends it in
+// The `look_at_page` client tool's wire schema, as the worker sends it in
 // `body.tools`. The shim must treat it as a CLIENT tool: register it so Claude Code
 // can call it, but surface-and-stop (never execute it — it runs in a browser).
 const LOOK_AT_PAGE_TOOL_DEF = {
@@ -182,7 +182,7 @@ describe('shim translation: bareToolName', () => {
   });
 });
 
-describe('shim client-tool bridge: look_at_page (#111)', () => {
+describe('shim client-tool bridge: look_at_page', () => {
   it('treats look_at_page as a CLIENT tool (surfaced-and-stopped, not a personalizer tool)', () => {
     // `clientToolNamesFrom` returns the bare names of the tools in `body.tools` that
     // are NOT the four personalizer server tools — i.e. the ones the shim surfaces to

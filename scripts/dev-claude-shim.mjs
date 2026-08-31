@@ -81,7 +81,7 @@ const PERSONALIZER_API_URL = envOr('PERSONALIZER_API_URL', 'http://127.0.0.1:500
 /**
  * Dev context-ID for the tool bridge. The worker's Anthropic seam does not
  * forward X-Personalizer-Context-ID to Anthropic, so the shim needs it out of
- * band to make the same v2/ai-tools/* call. Single dev store (e.g. majiddev-4).
+ * band to make the same v2/ai-tools/* call. A single dev store's context-ID.
  */
 const DEV_CONTEXT_ID = envRaw('LS_DEV_CONTEXT_ID');
 /** Default fulfiller model when a request omits `model`. */
