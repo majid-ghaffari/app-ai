@@ -40,6 +40,14 @@ export const ENV: Env = {
 
 export const CORS = { 'Access-Control-Allow-Origin': '*' };
 
+/** Brain AI-tool capabilities used by tests that intentionally exercise the full data-tool set. */
+export const AVAILABLE_AI_TOOLS = [
+  'get_store_analytics',
+  'list_segments',
+  'list_campaigns',
+  'get_store_config',
+] as const;
+
 export type FetchMock = Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
 
 /** Create a typed fetch mock and install it as the global `fetch`. */

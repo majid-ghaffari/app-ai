@@ -31,18 +31,20 @@ Each toolset exports exactly one thing — its **descriptor** (typed as
 `ToolsetDescriptor` in [`src/toolsets/types.ts`](../src/toolsets/types.ts),
 alongside the composition and execution-result types):
 
-| Member               | Contract                                                                                                                                                                                                          |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`               | The registry key (e.g. `'personalizer'`).                                                                                                                                                                         |
-| `integrationParties` | The `IntegrationParty[]` that gates this toolset (metadata, NOT model-visible). Empty = always-active (no gate, e.g. personalizer); otherwise composed iff the subscriber has one of these parties available.     |
-| `definitions`        | The Anthropic tool schemas, stable order. Model-visible contract — tool names and input schemas are frozen (lib repo `admin/ai/CONTRACTS.md` §2).                                                                 |
-| `resolveCredentials` | `(authContext) → credentials` (may be async) — the per-request credential seam (below).                                                                                                                           |
-| `execute`            | `(name, input, { credentials, env, matchedParty?, ...extras }) → Promise<{ ok, name, result, summary }>` — dispatch one owned tool. `matchedParty` is the gated toolset's matched party; `extras` carries `refs`. |
+| Member               | Contract                                                                                                                                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`               | The registry key (e.g. `'personalizer'`).                                                                                                                                                                                                   |
+| `integrationParties` | The `IntegrationParty[]` that gates this toolset (metadata, NOT model-visible). Empty = always-active (no gate, e.g. personalizer); otherwise composed iff the subscriber has one of these parties available.                               |
+| `definitions`        | The Anthropic tool schemas, stable order. Model-visible contract — tool names and input schemas are frozen (lib repo `admin/ai/CONTRACTS.md` §2).                                                                                           |
+| `selectDefinitions`  | Optional per-request filter over `definitions`, receiving Brain's supported-contract `AvailableAiTools` names. The personalizer data tools use it to fail closed.                                                                           |
+| `resolveCredentials` | `(authContext) → credentials` (may be async) — the per-request credential seam (below).                                                                                                                                                     |
+| `execute`            | `(name, input, { credentials, env, availableAiTools, logger, matchedParty?, ...extras }) → Promise<{ ok, name, result, summary }>` — dispatch one owned tool. `matchedParty` is the gated toolset's matched party; `extras` carries `refs`. |
 
 ## The registry (`src/toolsets/registry.ts`)
 
-`composeToolsets(subscriberParties, { contextId, env })` composes the active
-toolsets for ONE request and returns the endpoint's whole tool surface:
+`composeToolsets(subscriberParties, { contextId, env }, availableAiTools,
+logger)` composes the active toolsets and capability-filtered definitions for
+one request and returns the endpoint's whole tool surface:
 
 ```
 { names, definitions, execute(name, input, extras) }
@@ -64,7 +66,7 @@ toolset). The registry threads it to `execute` as `matchedParty`; the platform
 toolsets use it as the integration-bridge URL party segment.
 
 - `definitions` — the concatenated model-visible `tools` array, in registered
-  order (each toolset's own stable order preserved).
+  order after each descriptor's capability filter (stable within each request).
 - `execute` — routes a `tool_use` by tool name to the owning toolset. A tool
   name outside the composition (a gated-off toolset's tool, or a name no
   toolset owns) degrades to the frozen
@@ -75,9 +77,9 @@ toolsets use it as the integration-bridge URL party segment.
   is simply ignored.
 
 **Handlers consume tools ONLY through the registry.** Each endpoint passes the
-subscriber's available parties (threaded from the router's validate-context-id
-call — `handlers/chat.ts` takes `availableParties`) and treats the composition
-as opaque: the agent loop sends `composition.definitions` and calls
+subscriber's available parties and version-gated AI-tool names from the
+router's validate-context-id call and treats the composition as opaque: the
+agent loop sends `composition.definitions` and calls
 `composition.execute(...)`. Adding a toolset therefore never touches handler
 logic — it is a new module + a registry entry declaring its
 `integrationParties`; every party-driven endpoint picks it up automatically.
@@ -118,6 +120,16 @@ Every tool whose backend is the Personalizer API. Credentials =
 `{ contextId }`, the forwarded context-ID used solely as the Personalizer auth
 header (Personalizer re-validates it on every proxied call — see the auth notes in
 the root CLAUDE.md).
+
+The four `/v2/ai-tools/*` data tools are included only when their exact names
+are present in the supported contract's `AvailableAiTools`; an absent,
+unsupported, or unknown capability never opens a tool. `get_entity_context` is
+independent of that Brain capability catalog and remains available. Execution
+re-checks the same gate, so an unadvertised model call degrades to `Unknown
+tool` without a Personalizer request. Successful responses must carry the
+required members of Brain's PascalCase models. Invalid successes and non-2xx
+bodies are retained only in operational logs; the model receives a generic
+failure without the raw envelope or `MessageDetail`.
 
 | Tool                  | Backend call                                                                                                                                  |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |

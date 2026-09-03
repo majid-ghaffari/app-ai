@@ -13,13 +13,13 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { composeToolsets } from '../src/toolsets/registry';
 import type { EntityReference } from '../src/lib/references';
-import { ENV, stubFetch, fetchCall, headerOf } from './helpers';
+import { AVAILABLE_AI_TOOLS, ENV, stubFetch, fetchCall, headerOf } from './helpers';
 
 const AUTH = { contextId: 'ctx-1', env: ENV };
 
 describe('composeToolsets — composition', () => {
   it('no parties → only the always-active personalizer toolset, definitions in stable order', () => {
-    const toolsets = composeToolsets([], AUTH);
+    const toolsets = composeToolsets([], AUTH, AVAILABLE_AI_TOOLS);
     expect(toolsets.names).toEqual(['personalizer']);
     expect(toolsets.definitions.map((definition) => definition.name)).toEqual([
       'get_store_analytics',
@@ -44,6 +44,7 @@ describe('composeToolsets — composition', () => {
     const toolsets = composeToolsets(
       ['ShopifyPersonalizer', 'BigCommercePersonalizer', 'Klaviyo', 'Google'],
       AUTH,
+      AVAILABLE_AI_TOOLS,
     );
     expect(toolsets.names).toEqual([
       'personalizer',
@@ -113,9 +114,19 @@ describe('composeToolsets — credential seam', () => {
 
   it('personalizer resolves the composition contextId and forwards it as the Brain auth header', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          SubscriberTitle: 'Demo store',
+          Platform: 'Shopify',
+          Currency: 'USD',
+          Pages: [],
+        }),
+        { status: 200 },
+      ),
+    );
 
-    const toolsets = composeToolsets([], { contextId: 'ctx-42', env: ENV });
+    const toolsets = composeToolsets([], { contextId: 'ctx-42', env: ENV }, AVAILABLE_AI_TOOLS);
     const out = await toolsets.execute('get_store_config', {});
 
     expect(out.ok).toBe(true);
@@ -126,10 +137,20 @@ describe('composeToolsets — credential seam', () => {
 
   it('credentials are scoped to their composition — two requests never share them', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          SubscriberTitle: 'Demo store',
+          Platform: 'Shopify',
+          Currency: 'USD',
+          Pages: [],
+        }),
+        { status: 200 },
+      ),
+    );
 
-    const a = composeToolsets([], { contextId: 'ctx-A', env: ENV });
-    const b = composeToolsets([], { contextId: 'ctx-B', env: ENV });
+    const a = composeToolsets([], { contextId: 'ctx-A', env: ENV }, AVAILABLE_AI_TOOLS);
+    const b = composeToolsets([], { contextId: 'ctx-B', env: ENV }, AVAILABLE_AI_TOOLS);
     await a.execute('get_store_config', {});
     await b.execute('get_store_config', {});
 
@@ -167,6 +188,7 @@ describe('frozen model-visible tool contract', () => {
     const { definitions } = composeToolsets(
       ['ShopifyPersonalizer', 'BigCommercePersonalizer', 'Klaviyo', 'Google'],
       AUTH,
+      AVAILABLE_AI_TOOLS,
     );
     await expect(JSON.stringify(definitions, null, 2)).toMatchFileSnapshot(
       './__snapshots__/tool-definitions.contract.json',

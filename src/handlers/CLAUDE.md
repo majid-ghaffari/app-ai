@@ -22,18 +22,17 @@ or changes the inference response.
 ## Conventions
 
 - Handlers receive `corsHeaders` from the router and spread them onto every `Response`.
-- The context-ID is already validated by the router before any handler runs;
-  the router also threads the subscriber's available integration parties
-  (`AvailableIntegrationParties`, from that same validate-context-id call) into
-  `handleChat` as `availableParties`.
+- The context-ID is already validated by the router before any handler runs.
+  The same validation response supplies `AvailableIntegrationParties` and the
+  version-gated `AvailableAiTools`; the router threads both into `handleChat`.
+  An absent or unsupported `AiToolsContractVersion` supplies no Brain data tools.
 - The demo exchange and `ls_demo_…` bearer branch are the deliberate alternate
   auth path. They never call Brain and can dispatch only `POST /files` and
   `POST /messages` for its explicit onboarding proposal and QC prompt allowlist.
 - AI tools are consumed ONLY through the toolset registry
-  (`../toolsets/registry.ts`): each endpoint passes the subscriber's
-  `availableParties` and treats the composition as opaque — composition is
-  party-driven off each toolset's `integrationParties`, so adding a toolset
-  never edits handler logic. Standards: [docs/TOOLSETS.md](../../docs/TOOLSETS.md).
+  (`../toolsets/registry.ts`): each endpoint passes the subscriber's available
+  integration parties and AI-tool capabilities and treats the composition as
+  opaque. Standards: [docs/TOOLSETS.md](../../docs/TOOLSETS.md).
 - **CLIENT-tool mode** is the one designed exception to server-side execution.
   Its first consumer is the **`onboarding-chat`** prompt, whose
   registry entry carries `clientTools: [LOOK_AT_PAGE_TOOL]`. A prompt whose registry

@@ -4,9 +4,9 @@
  * docs/TOOLSETS.md). Each scan names the rule it enforces; weakening one is a
  * deliberate contract change, not a cleanup.
  *
- *   1. Party-driven composition — every composeToolsets call site in a handler
- *      passes the subscriber's available parties, never a static toolset-name
- *      allowlist literal; only handlers + the toolset layer touch the registry.
+ *   1. Capability-driven composition — every composeToolsets call site in a
+ *      handler passes subscriber parties and AI-tool capabilities; only
+ *      handlers + the toolset layer touch the registry.
  *   2. Secrets never logged — API keys/tokens stay out of log calls and the
  *      model-visible system builder never sees the request context-ID.
  *   3. One error shape — the retired `{ error: { message } }` envelope pattern
@@ -86,9 +86,21 @@ describe('fitness: party-driven composition', () => {
       expect(source, `${path}: pass the subscriber's availableParties to composeToolsets`).toMatch(
         /composeToolsets\(\s*availableParties/,
       );
+      expect(source, `${path}: pass availableAiTools to composeToolsets`).toMatch(
+        /composeToolsets\([\s\S]*availableAiTools/,
+      );
     }
     // /chat is the one composing endpoint — a new one must land party-driven too.
     expect(composingHandlers).toBeGreaterThanOrEqual(1);
+  });
+
+  it('the router grants Brain data tools only for capability contract version 1', () => {
+    const routerSource = Object.entries(sourceModules).find(([path]) =>
+      path.endsWith('/index.ts'),
+    )?.[1];
+    if (!routerSource) throw new Error('src/index.ts not found in the scan');
+    expect(routerSource).toContain('validation.AiToolsContractVersion === 1');
+    expect(routerSource).toContain('validation.AvailableAiTools ?? []');
   });
 
   it('only handlers and the toolset layer touch the registry', () => {
@@ -143,6 +155,18 @@ describe('fitness: secrets never enter logs or model context', () => {
     );
     expect(buildSystemSource).not.toContain('contextId');
     expect(buildSystemSource).not.toContain('credentials');
+  });
+
+  it('a degraded tool result cannot carry a raw upstream body', () => {
+    const typesSource = Object.entries(sourceModules).find(([path]) =>
+      path.endsWith('toolsets/types.ts'),
+    )?.[1];
+    if (!typesSource) throw new Error('src/toolsets/types.ts not found in the scan');
+    const failureStart = typesSource.indexOf('export interface ToolExecutionFailure');
+    const failureEnd = typesSource.indexOf('\n}', failureStart);
+    const failureSource = typesSource.slice(failureStart, failureEnd);
+    expect(failureSource).toContain('result: { error: string }');
+    expect(failureSource).not.toContain('body');
   });
 });
 

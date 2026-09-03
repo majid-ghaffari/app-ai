@@ -120,15 +120,16 @@ interface DonePayload {
 
 /**
  * Handle POST /chat. The context-ID is already validated by the router, which
- * also threads the subscriber's available IntegrationParty set
- * (`availableParties`, from the same validate-context-id call) for dynamic
- * toolset composition. Returns a streaming `Response` (SSE) or a JSON `Response`.
+ * also threads the subscriber's available IntegrationParty and version-gated
+ * AI-tool sets from the same validate-context-id call for dynamic toolset
+ * composition. Returns a streaming `Response` (SSE) or a JSON `Response`.
  */
 export async function handleChat(
   request: Request,
   env: Env,
   corsHeaders: CorsHeaders,
   availableParties: readonly IntegrationParty[] = [],
+  availableAiTools: readonly string[] = [],
   logging: LoggingRuntime = createLoggingRuntime(env),
 ): Promise<Response> {
   const systemPromptName = request.headers.get('X-Personalizer-System-Prompt') || 'chat';
@@ -181,11 +182,10 @@ export async function handleChat(
   // always a registered entry. Use its `maxTokens` EXACTLY (no client override):
   // changing the registry literal changes the outgoing request one-for-one.
   const maxTokens = entry.maxTokens;
-  // The endpoint's whole tool surface, composed per request from the
-  // subscriber's available integration parties (always-active toolsets like
-  // personalizer join regardless). Per-toolset credentials (personalizer → the
-  // forwarded context-ID) resolve inside the composition — never in the loop.
-  const toolsets = composeToolsets(availableParties, { contextId, env });
+  // The endpoint's whole tool surface is composed from the subscriber's
+  // integration parties and supported-contract AI-tool names. Per-toolset
+  // credentials resolve inside the composition — never in the loop.
+  const toolsets = composeToolsets(availableParties, { contextId, env }, availableAiTools, log);
   // A `clientTools` prompt (onboarding-chat) drives tools that run in the
   // browser, not the worker. Send ITS definitions to the model (in place of the
   // server toolset) and run the loop in CLIENT-tool mode: on a tool_use the loop

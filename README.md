@@ -97,8 +97,11 @@ The Studio AI runtime for LimeSpot Studio. Runs the Anthropic
 tool-use **agent loop** (model ↔ tool iterations, capped at `MAX_ITERATIONS`=8)
 and streams the result as **Server-Sent Events**. The endpoint's tool surface
 is composed per request by the toolset registry (`src/toolsets/registry.ts`)
-off the subscriber's available integration parties — there is no endpoint
-allowlist (see [docs/TOOLSETS.md](docs/TOOLSETS.md)). The personalizer toolset dispatches
+from the validate-context-id response. Platform toolsets are selected from
+available integration parties. The four Personalizer data tools are selected
+only from exact `AvailableAiTools` names when `AiToolsContractVersion` is `1`;
+missing and unknown versions fail closed. See [docs/TOOLSETS.md](docs/TOOLSETS.md).
+The personalizer toolset dispatches
 tool calls server→server to Personalizer — the read-only AI tool proxy
 (`/v2/ai-tools/*`) for the data-query tools, the per-record admin endpoints
 (`src/toolsets/personalizer/entity-context.ts`) for `get_entity_context`
@@ -143,7 +146,7 @@ The frozen cross-repo contract is in the lib repo at
 `src/toolsets/` (toolset registry + the personalizer toolset's tool defs,
 Personalizer dispatch, and entity-context normalizer), `src/lib/references.ts` (refs
 intake + Referenced-Entities block), `src/prompt-registry.ts` (system prompts).
-Tests: `test/chat.test.ts`, `test/toolsets.test.ts`,
+Tests: `test/chat.test.ts`, `test/ai-tool-capabilities.test.ts`, `test/toolsets.test.ts`,
 `test/platform-toolsets.test.ts`, `test/references.test.ts` (`npm test`).
 
 ### Headers

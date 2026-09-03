@@ -9,9 +9,9 @@
  * docs/TOOLSETS.md.
  *
  * Handlers consume tools ONLY through
- * `composeToolsets(subscriberParties, authContext)`. Composition is DATA-DRIVEN
- * off the subscriber's available `IntegrationParty` set (from
- * validate-context-id — no mapping/switch): a toolset is offered iff
+ * `composeToolsets(subscriberParties, authContext, availableAiTools, logger)`.
+ * Composition is data-driven off the subscriber's IntegrationParty set and
+ * AI-tool capability names from validate-context-id: a toolset is offered iff
  *
  *   descriptor.integrationParties.length === 0                    (always-active)
  *   OR descriptor.integrationParties.some(p => subscriberParties.includes(p))
@@ -20,8 +20,9 @@
  *
  *   { names, definitions, execute(name, input, extras) }
  *
- * `definitions` is the model-visible `tools` array (registered order, each
- * toolset's own stable order — deterministic, so the prompt prefix caches).
+ * `definitions` is the capability-filtered model-visible `tools` array
+ * (registered order, each toolset's own stable order — deterministic for a
+ * capability set, so the prompt prefix caches).
  * `execute` routes a tool_use by tool name to the owning toolset and returns
  * the degrade-safe `{ ok, name, result, summary }` shape — it never throws,
  * so the agent loop can always feed the outcome back to the model. A tool
@@ -49,6 +50,8 @@ import { shopifyToolset } from './shopify/index';
 import { bigcommerceToolset } from './bigcommerce/index';
 import { klaviyoToolset } from './klaviyo/index';
 import { googleAdsToolset } from './google-ads/index';
+import { silentLogger, type Logger } from '../lib/logger';
+import type { ToolDefinition } from '../lib/anthropic';
 import type { IntegrationParty } from './integration-party';
 import type {
   ToolAuthContext,
@@ -69,6 +72,7 @@ const TOOLSETS: readonly ToolsetDescriptor[] = [
 /** One active toolset in a composition + the subscriber party its executor targets. */
 interface ActiveToolset {
   descriptor: ToolsetDescriptor;
+  definitions: readonly ToolDefinition[];
   /** The single matched party, or null for an always-active (ungated) toolset. */
   matchedParty: IntegrationParty | null;
 }
@@ -82,14 +86,21 @@ interface ActiveToolset {
 export function composeToolsets(
   subscriberParties: readonly IntegrationParty[],
   authContext: ToolAuthContext,
+  availableAiTools: readonly string[] = [],
+  logger: Logger = silentLogger,
 ): ToolsetComposition {
   const parties = Array.isArray(subscriberParties) ? subscriberParties : [];
+  const aiTools = Array.isArray(availableAiTools) ? availableAiTools : [];
 
   const active: ActiveToolset[] = [];
   for (const descriptor of TOOLSETS) {
     if (descriptor.integrationParties.length === 0) {
       // Always-active toolset (no party gate) — e.g. personalizer.
-      active.push({ descriptor, matchedParty: null });
+      active.push({
+        descriptor,
+        definitions: descriptor.selectDefinitions?.(aiTools) ?? descriptor.definitions,
+        matchedParty: null,
+      });
       continue;
     }
     const matched = descriptor.integrationParties.filter((party) => parties.includes(party));
@@ -103,13 +114,17 @@ export function composeToolsets(
         `Toolset ${descriptor.name} matched ${matched.length} parties (${matched.join(', ')}); expected exactly one.`,
       );
     }
-    active.push({ descriptor, matchedParty: only });
+    active.push({
+      descriptor,
+      definitions: descriptor.selectDefinitions?.(aiTools) ?? descriptor.definitions,
+      matchedParty: only,
+    });
   }
 
   // Tool-name ownership: a tool name belongs to exactly ONE active toolset.
   const owners = new Map<string, ActiveToolset>();
   for (const entry of active) {
-    for (const definition of entry.descriptor.definitions) {
+    for (const definition of entry.definitions) {
       if (owners.has(definition.name)) {
         throw new Error(`Duplicate tool name across toolsets: ${definition.name}`);
       }
@@ -131,7 +146,7 @@ export function composeToolsets(
   return {
     names: active.map((entry) => entry.descriptor.name),
 
-    definitions: active.flatMap((entry) => [...entry.descriptor.definitions]),
+    definitions: active.flatMap((entry) => [...entry.definitions]),
 
     /**
      * Execute one tool_use. `extras` carries per-call context the owning
@@ -165,6 +180,8 @@ export function composeToolsets(
       return entry.descriptor.execute(name, input, {
         credentials,
         env: authContext.env,
+        availableAiTools: aiTools,
+        logger,
         ...(entry.matchedParty ? { matchedParty: entry.matchedParty } : {}),
         ...extras,
       });

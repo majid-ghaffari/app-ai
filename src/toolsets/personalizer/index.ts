@@ -1,11 +1,10 @@
 /**
  * Personalizer toolset — every AI tool whose backend is the Personalizer API.
  *
- * These tools are exposed to the Anthropic model during the chat/onboarding
- * agent loop. When the model emits a `tool_use` for one of them, app-ai
- * executes it by calling Personalizer's read-only AI tool proxy
- * (`/v2/ai-tools/*`) server→server, forwarding the merchant's
- * X-Personalizer-Context-ID for tenant scoping.
+ * The four data-query tools are exposed only when Brain advertises their exact
+ * names under the supported capability contract. `get_entity_context` remains
+ * independent. Available tool calls execute against Personalizer server→server
+ * with the merchant's context-ID.
  *
  * The model NEVER reaches Personalizer directly. See lib CONTRACTS.md §2 for
  * the frozen tool definitions + the Personalizer endpoint each one calls.
@@ -31,6 +30,7 @@ import { fetchEntityContext } from './entity-context';
 import { refCategoryPath, type EntityReference } from '../../lib/references';
 import { personalizerApiUrl, type Env } from '../../config';
 import type { ToolDefinition } from '../../lib/anthropic';
+import type { Logger } from '../../lib/logger';
 import type { ToolExecutionResult, ToolsetDescriptor } from '../types';
 
 /**
@@ -174,6 +174,13 @@ const TOOL_ROUTES: Record<string, (input: DataQueryInput) => string> = {
   get_store_config: () => 'v2/ai-tools/store-config',
 };
 
+const ALWAYS_AVAILABLE_TOOL_NAMES = new Set(['get_entity_context']);
+
+/** Whether a Personalizer tool is available under this request's capability contract. */
+function isToolAvailable(name: string, availableAiTools: readonly string[]): boolean {
+  return ALWAYS_AVAILABLE_TOOL_NAMES.has(name) || availableAiTools.includes(name);
+}
+
 /** This toolset's credentials: the merchant's forwarded context-ID. */
 interface PersonalizerCredentials {
   contextId: string;
@@ -192,20 +199,35 @@ interface PersonalizerCredentials {
 export const personalizerToolset: ToolsetDescriptor = {
   name: 'personalizer',
 
-  // Empty = always-active: the Personalizer-backed tools are offered to every
-  // subscriber regardless of third-party integrations (registry composition).
+  // Empty = no integration-party gate. `selectDefinitions` independently gates
+  // the four data tools against Brain's per-request AI-tool capabilities.
   integrationParties: [],
 
   definitions: TOOL_DEFINITIONS,
+
+  selectDefinitions(availableAiTools) {
+    return TOOL_DEFINITIONS.filter((definition) =>
+      isToolAvailable(definition.name, availableAiTools),
+    );
+  },
 
   resolveCredentials({ contextId }): PersonalizerCredentials {
     return { contextId };
   },
 
-  async execute(name, input, { credentials, env, refs = [] }) {
+  async execute(name, input, { credentials, env, availableAiTools, logger, refs = [] }) {
     // The registry hands back what resolveCredentials returned — this module
     // owns both sides of that seam, so the cast is the module boundary.
     const { contextId } = credentials as PersonalizerCredentials;
+
+    if (!isToolAvailable(name, availableAiTools)) {
+      return {
+        ok: false,
+        name,
+        result: { error: `Unknown tool: ${name}` },
+        summary: `Unknown tool: ${name}`,
+      };
+    }
 
     if (name === 'get_entity_context') {
       return executeGetEntityContext((input ?? {}) as EntityContextInput, contextId, env, refs);
@@ -221,7 +243,7 @@ export const personalizerToolset: ToolsetDescriptor = {
       };
     }
 
-    return fetchBrainTool(name, buildPath((input ?? {}) as DataQueryInput), contextId, env);
+    return fetchBrainTool(name, buildPath((input ?? {}) as DataQueryInput), contextId, env, logger);
   },
 };
 
@@ -286,6 +308,7 @@ async function fetchBrainTool(
   path: string,
   contextId: string,
   env: Env,
+  logger: Logger,
 ): Promise<ToolExecutionResult> {
   const url = `${personalizerApiUrl(env)}/${path}`;
 
@@ -300,25 +323,123 @@ async function fetchBrainTool(
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
+      logger.error(`Brain AI tool ${name} failed`, undefined, {
+        status: response.status,
+        responseBody: body,
+      });
       return {
         ok: false,
         name,
-        result: { error: `Brain AI tool ${name} failed: ${response.status}`, body },
+        result: { error: `Brain AI tool ${name} failed: ${response.status}` },
         summary: `${name} failed (${response.status})`,
       };
     }
 
-    const data: unknown = await response.json();
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch (error) {
+      logger.error(`Brain AI tool ${name} returned invalid JSON`, error);
+      return invalidBrainToolResponse(name);
+    }
+    if (!isValidBrainToolResponse(name, data)) {
+      logger.error(`Brain AI tool ${name} returned an invalid response`, undefined, {
+        responseBody: data,
+      });
+      return invalidBrainToolResponse(name);
+    }
     return { ok: true, name, result: data, summary: summarize(name, data) };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    logger.error(`Brain AI tool ${name} request failed`, error);
     return {
       ok: false,
       name,
-      result: { error: `Brain AI tool ${name} error: ${reason}` },
+      result: { error: `Brain AI tool ${name} request failed` },
       summary: `${name} error`,
     };
   }
+}
+
+function invalidBrainToolResponse(name: string): ToolExecutionResult {
+  return {
+    ok: false,
+    name,
+    result: { error: `Brain AI tool ${name} returned an invalid response` },
+    summary: `${name} invalid response`,
+  };
+}
+
+function isValidBrainToolResponse(name: string, data: unknown): boolean {
+  if (name === 'get_store_analytics') {
+    return (
+      isRecord(data) &&
+      isDate(data.FromDate) &&
+      isDate(data.ToDate) &&
+      isFiniteNumber(data.OrderCount) &&
+      isFiniteNumber(data.TotalRevenue) &&
+      isFiniteNumber(data.AverageOrderValue) &&
+      isFiniteNumber(data.ConversionRate) &&
+      isNonEmptyString(data.Currency)
+    );
+  }
+  if (name === 'list_segments') {
+    return (
+      Array.isArray(data) &&
+      data.every(
+        (segment) =>
+          isRecord(segment) &&
+          isNonEmptyString(segment.Guid) &&
+          isNonEmptyString(segment.Title) &&
+          isNonEmptyString(segment.Status),
+      )
+    );
+  }
+  if (name === 'list_campaigns') {
+    return (
+      Array.isArray(data) &&
+      data.every(
+        (campaign) =>
+          isRecord(campaign) &&
+          isNonEmptyString(campaign.Guid) &&
+          isNonEmptyString(campaign.Title) &&
+          isNonEmptyString(campaign.Kind) &&
+          isNonEmptyString(campaign.Status),
+      )
+    );
+  }
+  if (name === 'get_store_config') {
+    return (
+      isRecord(data) &&
+      isNonEmptyString(data.SubscriberTitle) &&
+      isNonEmptyString(data.Platform) &&
+      isNonEmptyString(data.Currency) &&
+      Array.isArray(data.Pages) &&
+      data.Pages.every(
+        (page) =>
+          isRecord(page) &&
+          isNonEmptyString(page.HostPage) &&
+          Array.isArray(page.BoxTypes) &&
+          page.BoxTypes.every(isNonEmptyString),
+      )
+    );
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isDate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 /** The result members `summarize` peeks at (all optional — degrade to placeholders). */

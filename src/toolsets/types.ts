@@ -7,6 +7,7 @@
 
 import type { Env } from '../config';
 import type { ToolDefinition } from '../lib/anthropic';
+import type { Logger } from '../lib/logger';
 import type { EntityReference } from '../lib/references';
 import type { IntegrationParty } from './integration-party';
 
@@ -28,7 +29,7 @@ export interface ToolExecutionSuccess {
 export interface ToolExecutionFailure {
   ok: false;
   name: string;
-  result: { error: string; body?: string };
+  result: { error: string };
   summary: string;
 }
 
@@ -45,6 +46,10 @@ export interface ToolExecutionContext extends ToolCallExtras {
   /** Whatever this toolset's own `resolveCredentials` returned (opaque to the registry). */
   credentials: unknown;
   env: Env;
+  /** AI-tool names advertised by the supported Brain capability contract. */
+  availableAiTools: readonly string[];
+  /** Request-scoped operational logger. */
+  logger: Logger;
   /**
    * The subscriber party this toolset's executor targets — the intersection of
    * `descriptor.integrationParties` with the subscriber's available parties,
@@ -67,6 +72,8 @@ export interface ToolExecutionContext extends ToolCallExtras {
  *                        has one of these parties available (registry.ts).
  *   definitions        — Anthropic custom-tool schemas, stable order, frozen
  *                        model-visible contract (lib CONTRACTS.md §2).
+ *   selectDefinitions  — optional per-request capability filter over the
+ *                        descriptor's definitions.
  *   resolveCredentials — per-request credential seam; receives the auth
  *                        context, returns this toolset's opaque credentials.
  *   execute            — dispatch one owned tool; returns the degrade-safe
@@ -76,6 +83,7 @@ export interface ToolsetDescriptor {
   readonly name: string;
   readonly integrationParties: readonly IntegrationParty[];
   readonly definitions: readonly ToolDefinition[];
+  selectDefinitions?(availableAiTools: readonly string[]): readonly ToolDefinition[];
   resolveCredentials(authContext: ToolAuthContext): unknown;
   execute(
     name: string,

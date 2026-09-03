@@ -6,10 +6,10 @@ The worker's AI-tool layer: named TOOLSETS (one directory per backend) plus
 the registry that composes them per request. Handlers consume tools ONLY
 through the registry — each endpoint passes the subscriber's available
 integration parties (`handlers/chat.ts` takes `availableParties`, threaded from
-the router's validate-context-id call) and treats the composition
-(`{ names, definitions, execute }`) as its whole tool surface. Composition is
-data-driven off each descriptor's `integrationParties` gate (empty =
-always-active); adding a toolset never edits handler logic.
+the router's validate-context-id call) plus its version-gated available AI-tool
+names and treats the composition (`{ names, definitions, execute }`) as its
+whole tool surface. Composition is data-driven off each descriptor's
+`integrationParties` gate and optional `selectDefinitions` capability filter.
 
 This registry is SERVER-executed tools only (the worker dispatches each
 `tool_use` against a backend). The handler also has a CLIENT-tool mode
@@ -47,6 +47,13 @@ The per-module map — what each toolset file owns — is [docs/ARCHITECTURE-MAP
   shapes are pinned by the lib repo's `admin/ai/CONTRACTS.md` §2 and the
   contract snapshot in `test/toolsets.test.ts` — schema changes are contract
   changes.
+- **Personalizer data tools fail closed:** the four `/v2/ai-tools/*` definitions
+  are composed only when Brain advertises their exact names under the supported
+  capability contract. `get_entity_context` remains available independently.
+  An unadvertised or unknown name degrades to `Unknown tool` with no backend
+  call. Successful Brain payloads are checked for their required wire members;
+  malformed payloads and non-success bodies are logged operationally and
+  reduced to generic model-visible failures.
 - **Credentials:** resolved per request via `resolveCredentials` and never model-visible. The
   context-ID is retained only as private request-log correlation; service tokens are redacted and
   never logged. Endpoints expose a

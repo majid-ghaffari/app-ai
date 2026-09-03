@@ -24,6 +24,7 @@ import { handleChat } from '../src/handlers/chat';
 import {
   ENV,
   CORS,
+  AVAILABLE_AI_TOOLS,
   stubFetch,
   fetchCall,
   fetchedUrls,
@@ -167,6 +168,8 @@ describe('POST /chat — proposals is tool-capable', () => {
       ),
       ENV,
       CORS,
+      [],
+      AVAILABLE_AI_TOOLS,
     );
     await readWorkerSse(res);
 
@@ -210,9 +213,18 @@ describe('POST /chat — proposals is tool-capable', () => {
       .mockResolvedValueOnce(sseResponse(toolTurn))
       // Brain v2/ai-tools/store-analytics answers with the real AOV
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ AverageOrderValue: 46, Currency: 'USD', OrderCount: 120 }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            FromDate: '2026-01-01',
+            ToDate: '2026-01-31',
+            OrderCount: 120,
+            TotalRevenue: 5520,
+            AverageOrderValue: 46,
+            ConversionRate: 0.04,
+            Currency: 'USD',
+          }),
+          { status: 200 },
+        ),
       )
       // turn 2: Anthropic emits the final JSON proposal
       .mockResolvedValueOnce(sseResponse(finalTurn));
@@ -224,6 +236,8 @@ describe('POST /chat — proposals is tool-capable', () => {
       ),
       ENV,
       CORS,
+      [],
+      AVAILABLE_AI_TOOLS,
     );
     const events = await readWorkerSse(res);
 

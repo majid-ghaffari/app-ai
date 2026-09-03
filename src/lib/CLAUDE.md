@@ -9,6 +9,12 @@ worker. `anthropic.ts` also owns the shared Anthropic Messages wire types
 (content blocks, payloads, `CacheControl`) consumed across handlers and the
 cache modules.
 
+`auth.ts` mirrors the consumed members of Brain's validate-context-id response,
+including `AiToolsContractVersion`, `AvailableAiTools`, and
+`AvailableIntegrationParties`. The router accepts AI-tool capabilities only for
+contract version `1`; missing and unsupported versions fail closed to no Brain
+data tools.
+
 The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md), read on demand. What binds every module is below.
 
 ## Conventions

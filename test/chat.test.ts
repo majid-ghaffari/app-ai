@@ -17,6 +17,7 @@ import { createLoggingRuntime } from '../src/lib/logger';
 import {
   ENV,
   CORS,
+  AVAILABLE_AI_TOOLS,
   stubFetch,
   fetchCall,
   fetchedUrls,
@@ -30,10 +31,14 @@ import {
 // The /chat tool surface, composed through the registry exactly as the handler
 // does for a subscriber with no third-party integration parties — just the
 // always-active personalizer toolset.
-const TOOL_DEFINITIONS = composeToolsets([], {
-  contextId: 'ctx',
-  env: ENV,
-}).definitions;
+const TOOL_DEFINITIONS = composeToolsets(
+  [],
+  {
+    contextId: 'ctx',
+    env: ENV,
+  },
+  AVAILABLE_AI_TOOLS,
+).definitions;
 
 /** Execute one tool through a fresh per-request composition (the registry path). */
 const executeTool = (
@@ -42,7 +47,7 @@ const executeTool = (
   contextId: string,
   env: Env,
   refs: EntityReference[] = [],
-) => composeToolsets([], { contextId, env }).execute(name, input, { refs });
+) => composeToolsets([], { contextId, env }, AVAILABLE_AI_TOOLS).execute(name, input, { refs });
 
 interface SseBlockSpec {
   type: 'text' | 'tool_use';
@@ -219,9 +224,18 @@ describe('executeTool', () => {
   it('calls the matching Brain AI-tool endpoint with the context-ID', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ AverageOrderValue: 46.0, Currency: 'USD', OrderCount: 12 }), {
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({
+          FromDate: '2026-01-01',
+          ToDate: '2026-01-31',
+          OrderCount: 12,
+          TotalRevenue: 552,
+          AverageOrderValue: 46,
+          ConversionRate: 0.04,
+          Currency: 'USD',
+        }),
+        { status: 200 },
+      ),
     );
 
     const out = await executeTool('get_store_analytics', { fromDate: '2026-01-01' }, 'ctx-9', ENV);
@@ -407,6 +421,7 @@ describe('handleChat — streaming', () => {
       ENV,
       CORS,
       [],
+      [],
       createLoggingRuntime({ ...ENV, LOG_TARGETS_TRACE: 'console' }),
     );
     await readWorkerSse(res);
@@ -441,6 +456,7 @@ describe('handleChat — streaming', () => {
       ENV,
       CORS,
       [],
+      [],
       createLoggingRuntime({ ...ENV, LOG_TARGETS_INFO: 'console' }),
     );
     await readWorkerSse(res);
@@ -466,7 +482,18 @@ describe('handleChat — streaming', () => {
       .mockResolvedValueOnce(sseResponse(anthropicTurn1))
       // Brain AI-tool proxy
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ AverageOrderValue: 46 }), { status: 200 }),
+        new Response(
+          JSON.stringify({
+            FromDate: '2026-01-01',
+            ToDate: '2026-01-31',
+            OrderCount: 12,
+            TotalRevenue: 552,
+            AverageOrderValue: 46,
+            ConversionRate: 0.04,
+            Currency: 'USD',
+          }),
+          { status: 200 },
+        ),
       )
       // turn 2: Anthropic final text
       .mockResolvedValueOnce(sseResponse(anthropicTurn2));
@@ -475,6 +502,8 @@ describe('handleChat — streaming', () => {
       chatRequest({ messages: [{ role: 'user', content: 'what is my AOV?' }] }),
       ENV,
       CORS,
+      [],
+      AVAILABLE_AI_TOOLS,
     );
     const events = await readWorkerSse(res);
 

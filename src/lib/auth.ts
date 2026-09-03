@@ -26,6 +26,10 @@ import type { IntegrationParty } from '../toolsets/integration-party';
 export interface ContextValidation {
   SubscriberID?: number;
   SubscriberTitle?: string;
+  /** Version of Brain's AI-tool capability contract. Only version 1 is supported. */
+  AiToolsContractVersion?: number;
+  /** Permission-derived Brain AI-tool names available to this identity. */
+  AvailableAiTools?: string[];
   /**
    * The subscriber's available `IntegrationParty` names (liveness-filtered by
    * Personalizer). Drives dynamic toolset composition (toolsets/registry.ts):

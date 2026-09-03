@@ -100,10 +100,8 @@ async function handleRequest(
     }
 
     // Every endpoint except /health requires a valid context-ID. The same
-    // per-request validation call carries the subscriber's available
-    // IntegrationParty set (AvailableIntegrationParties) — captured here, not
-    // discarded, and threaded into /chat for dynamic toolset composition
-    // (no extra call, no cache — the parties are exactly as fresh as this gate).
+    // validation response carries the subscriber's integration-party and
+    // AI-tool capabilities for /chat composition (no extra call or cache).
     const validation = await validateContextId(contextId, env, logging.logger('Auth'));
     logging = logging.child({
       ...(validation.SubscriberID === undefined ? {} : { subscriberId: validation.SubscriberID }),
@@ -126,11 +124,14 @@ async function handleRequest(
       return await handleMessages(request, env, corsHeaders, logging);
     }
     if (pathname === '/chat' && method === 'POST') {
+      const availableAiTools =
+        validation.AiToolsContractVersion === 1 ? (validation.AvailableAiTools ?? []) : [];
       return await handleChat(
         request,
         env,
         corsHeaders,
         validation.AvailableIntegrationParties ?? [],
+        availableAiTools,
         logging,
       );
     }
