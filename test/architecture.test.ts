@@ -98,8 +98,15 @@ describe('fitness: party-driven composition', () => {
     const routerSource = Object.entries(sourceModules).find(([path]) =>
       path.endsWith('/index.ts'),
     )?.[1];
+    const authSource = Object.entries(sourceModules).find(([path]) =>
+      path.endsWith('/lib/auth.ts'),
+    )?.[1];
     if (!routerSource) throw new Error('src/index.ts not found in the scan');
-    expect(routerSource).toContain('validation.AiToolsContractVersion === 1');
+    if (!authSource) throw new Error('src/lib/auth.ts not found in the scan');
+    expect(authSource).toContain('export const SUPPORTED_AI_TOOLS_CONTRACT_VERSION');
+    expect(routerSource).toContain(
+      'validation.AiToolsContractVersion === SUPPORTED_AI_TOOLS_CONTRACT_VERSION',
+    );
     expect(routerSource).toContain('validation.AvailableAiTools ?? []');
   });
 

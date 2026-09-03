@@ -18,6 +18,9 @@ import { personalizerApiUrl, type Env } from '../config';
 import { silentLogger, type Logger } from './logger';
 import type { IntegrationParty } from '../toolsets/integration-party';
 
+/** The Brain AI-tool capability contract version this worker understands. */
+export const SUPPORTED_AI_TOOLS_CONTRACT_VERSION = 1;
+
 /**
  * Personalizer's validate-context-id payload — the members this worker consumes of
  * `AdministratorAuthenticationController.ValidateContextID`'s response (Brain

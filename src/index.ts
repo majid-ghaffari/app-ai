@@ -25,7 +25,7 @@ import {
   type BackgroundTaskScheduler,
   type LoggingRuntime,
 } from './lib/logger';
-import { validateContextId } from './lib/auth';
+import { SUPPORTED_AI_TOOLS_CONTRACT_VERSION, validateContextId } from './lib/auth';
 import { errorResponse, errorResponseFrom, type CorsHeaders } from './lib/responses';
 import { handleHealth } from './handlers/health';
 import { handleFileUpload, handleListFiles, handleDeleteFile } from './handlers/files';
@@ -125,7 +125,9 @@ async function handleRequest(
     }
     if (pathname === '/chat' && method === 'POST') {
       const availableAiTools =
-        validation.AiToolsContractVersion === 1 ? (validation.AvailableAiTools ?? []) : [];
+        validation.AiToolsContractVersion === SUPPORTED_AI_TOOLS_CONTRACT_VERSION
+          ? (validation.AvailableAiTools ?? [])
+          : [];
       return await handleChat(
         request,
         env,

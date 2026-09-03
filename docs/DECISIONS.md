@@ -515,3 +515,27 @@ Failed, uncertain, malformed, and uncovered pages enter the correction-capable
 `onboarding-review-all` prompt in independent chunks of two with full evidence and history. A
 complete, invariant-valid detailed JSON response remains usable when its provider stop reason is
 `max_tokens`; response completeness, rather than the stop label alone, determines recovery.
+
+### 24. Brain data tools require a versioned identity capability
+
+The context-validation response is the per-request authority for the four Brain-backed data tools.
+app-ai accepts `AvailableAiTools` only when `AiToolsContractVersion` equals the
+`SUPPORTED_AI_TOOLS_CONTRACT_VERSION` owned by `src/lib/auth.ts`, and composes only exact known tool
+names from that array. Missing, malformed, and unsupported versions grant no data tools. Brain still
+re-authorizes every proxied call; the advertised set narrows the model-visible surface to what that
+identity can use.
+
+`get_entity_context` remains independent because it is not part of Brain's versioned AI-tool route
+catalog: record references use existing administrator endpoints, and analytics references resolve
+from request grounding. An unadvertised data-tool call degrades to `Unknown tool` before credential
+resolution or network dispatch.
+
+Successful data-tool responses must carry the required PascalCase members of Brain's wire models.
+Malformed successes, non-success envelopes, and transport exceptions retain diagnostic detail only
+in operational logs and become generic model-visible failures. Raw upstream bodies never enter a
+tool result.
+
+The rejected alternatives are treating tool-name presence as sufficient without a version,
+composing all known tools and relying on downstream authorization failures, coupling
+`get_entity_context` to a catalog that does not own it, and returning upstream diagnostic bodies to
+the model.
