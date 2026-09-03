@@ -38,11 +38,13 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
    Prepare work on a feature branch; a human performs the merge. No task wording, autonomy grant, or
    ordinary approval overrides this — only the operator saying so for one named action, once.
    (`_standards/git-and-approval.md`)
-6. **One working copy per repository.** Work in the operator's existing checkout. Never `git clone`,
-   never `git worktree add`, never create a second working copy of a repository anywhere — not for
-   isolation, not for a background agent, not for convenience. Two writers in one tree corrupt each
-   other's work, and a second tree silently diverges from the one the operator is looking at. If an
-   isolated copy seems genuinely necessary, stop and get authorization for that specific case.
+6. **Isolate parallel work; one writer per working copy.** Several agent sessions run against these
+   repositories at once, so an agent that may run alongside another creates its own worktree —
+   `git worktree add ../<repo>-<task> <branch>` — and works there. Sharing the operator's checkout is
+   for an agent working alone. Never `git clone` a second copy of a repository already checked out
+   here: a worktree shares one object store and one set of refs, a clone silently diverges. Never put
+   a worktree on `master`/`main` or on a branch checked out elsewhere, and `git worktree remove` it
+   when the task ends — the branch and its commits survive in the main repository.
    (`_standards/git-and-approval.md`)
 7. **Agent access to running infrastructure is read-only.** `kubectl` and equivalent tooling are for
    inspection and diagnostics only — `get`, `describe`, `logs`. Never create, apply, patch, edit,
