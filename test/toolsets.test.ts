@@ -6,12 +6,19 @@
  * `integrationParties`, e.g. personalizer) join every request; party-gated
  * toolsets join only when their party is present.
  *
+ * The personalizer descriptor's own capability guard is exercised directly here
+ * too: the registry routes only names it composed, so its owners map is the
+ * first gate, and the toolset's guard — the one that keeps an unvetted name
+ * from reaching Brain — is reachable only at the executor seam.
+ *
  * fetch is mocked — no real network.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { composeToolsets } from '../src/toolsets/registry';
+import { personalizerToolset } from '../src/toolsets/personalizer/index';
+import { silentLogger } from '../src/lib/logger';
 import type { EntityReference } from '../src/lib/references';
 import { AVAILABLE_AI_TOOLS, ENV, stubFetch, fetchCall, headerOf } from './helpers';
 
@@ -179,6 +186,91 @@ describe('composeToolsets — credential seam', () => {
 
     expect(out.ok).toBe(true);
     expect(out.result).toEqual({ tab: 'overview', period: '30' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('personalizer executor — capability guard', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * The registry only routes names it composed, so its owners map already stops
+   * an unadvertised tool. This drives the toolset's OWN guard directly — the
+   * second layer that keeps a name the registry never vetted from reaching
+   * Brain — which no route-level case can reach.
+   */
+  it('degrades an unadvertised tool name at the executor seam, with zero Brain calls', async () => {
+    const fetchMock = stubFetch();
+
+    const result = await personalizerToolset.execute(
+      'list_segments',
+      {},
+      {
+        credentials: personalizerToolset.resolveCredentials(AUTH),
+        env: ENV,
+        availableAiTools: ['get_store_analytics'],
+        logger: silentLogger,
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      name: 'list_segments',
+      result: { error: 'Unknown tool: list_segments' },
+      summary: 'Unknown tool: list_segments',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('an advertised tool name passes the guard and reaches its Brain route', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          { Guid: '11111111-2222-3333-4444-555555555555', Title: 'Customers', Status: 'Active' },
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const result = await personalizerToolset.execute(
+      'list_segments',
+      {},
+      {
+        credentials: personalizerToolset.resolveCredentials(AUTH),
+        env: ENV,
+        availableAiTools: ['list_segments'],
+        logger: silentLogger,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(fetchCall(fetchMock, 0).url).toBe('https://brain.test/v2/ai-tools/segments');
+  });
+
+  it('get_entity_context stays available under an empty capability set', async () => {
+    const fetchMock = stubFetch();
+
+    const result = await personalizerToolset.execute(
+      'get_entity_context',
+      { type: 'analytics-tab', id: 'analytics/overview' },
+      {
+        credentials: personalizerToolset.resolveCredentials(AUTH),
+        env: ENV,
+        availableAiTools: [],
+        logger: silentLogger,
+        refs: [
+          { type: 'analytics-tab', label: 'Overview', metadata: { tab: 'overview' } },
+        ] as EntityReference[],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      name: 'get_entity_context',
+      result: { tab: 'overview' },
+      summary: 'analytics-tab analytics/overview',
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
