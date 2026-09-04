@@ -35,3 +35,8 @@ yarn-error.log*
 # Cloudflare
 .wrangler/
 wrangler.toml.bak
+
+# Dev Claude-Code shim record/replay cache (scripts/dev-shim-cache.mjs).
+# Recorded model responses can carry store data — never committed. Delete the
+# directory to invalidate every entry.
+.dev-cache/

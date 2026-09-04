@@ -39,9 +39,21 @@ npm run dev:shim   # free Claude-Code channel on :8788 (uses your Claude Code au
 npm run dev        # wrangler dev on :8787 → routes Anthropic traffic to the shim
 ```
 
+Claude Code fulfilment is free but slow, so the shim records each response to
+disk and replays a repeated identical call instead of re-running the model. It is
+ON by default — `SHIM_CACHE=0` opts out and fulfils everything fresh. Because a
+replayed answer is byte-for-byte the fresh one, the shim always says which it
+gave you: every response carries `x-dev-shim-cache: hit | miss | off`, and
+`GET /health` reports the cache's state plus running hit/miss/record counts (per
+process, never reset — read it either side of a run and subtract). The shim log
+also prints `cache HIT` / `cache MISS` / `cache RECORD` per call. Entries live in
+the gitignored `.dev-cache/claude-shim/` (`SHIM_CACHE_DIR` overrides it); delete
+the directory or use `SHIM_CACHE_RESET=1` to invalidate.
+
 Server runs at `http://localhost:8787`. See [CLAUDE.md](CLAUDE.md) →
 "Local AI dev — the free Claude-Code channel" for how it works, the tool bridge
-(`LS_DEV_CONTEXT_ID`), and the cred-burn guard. Using the real, paid API from
+(`LS_DEV_CONTEXT_ID`), the response cache's key derivation and its one
+limitation, and the cred-burn guard. Using the real, paid API from
 local requires `ANTHROPIC_API_BASE=https://api.anthropic.com` **and**
 `AI_CHANNEL=prod` (the guard blocks it otherwise) — prod-only by policy.
 

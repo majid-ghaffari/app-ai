@@ -40,6 +40,21 @@
  *     done.toolCalls, the browser runs the tool, and /chat is called again with
  *     the tool_result appended. See CLIENT-TOOL BRIDGE below.
  *
+ * Record/replay cache (ON by default — `SHIM_CACHE=0` turns it off):
+ *   Claude Code fulfilment is free but slow, so a repeated identical call
+ *   replays from disk instead of re-running the model. Both transports are
+ *   cached: a non-stream response replays as the same JSON body, and a stream
+ *   replays as the same SSE frame SEQUENCE (recorded frame by frame, re-emitted
+ *   through the same serializer — never a single concatenated blob). Key
+ *   derivation, the volatile-identity normalization it needs to hit at all, its
+ *   one limitation, and the on-disk layout live in ./dev-shim-cache.mjs.
+ *
+ *   Because it is on by default it is also LOUD, which is the whole price of
+ *   that default: EVERY served response carries `x-dev-shim-cache: hit|miss|off`,
+ *   `GET /health` reports the cache's state and its running hit/miss/record
+ *   counts, and each call logs its outcome. A caller cannot be handed a recorded
+ *   answer it has no way to recognize as one.
+ *
  * This file is dev-only tooling. It is NOT bundled into the worker and never
  * runs in production.
  */
@@ -48,6 +63,18 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import {
+  CACHE_FORMAT_VERSION,
+  attachmentIdentityMode,
+  cacheDirectory,
+  cacheEnabled,
+  cacheLabel,
+  cacheResetRequested,
+  clearCacheDirectory,
+  deriveCacheKey,
+  readCacheEntry,
+  writeCacheEntry,
+} from './dev-shim-cache.mjs';
 
 // ── Config (env, with dev-sane defaults) ─────────────────────────────────────
 //
@@ -628,9 +655,145 @@ function usageFrom(result) {
   };
 }
 
+// ── Response cache (record / replay) ─────────────────────────────────────────
+//
+// OFF by default; `SHIM_CACHE=1` turns it on. The key derivation, the
+// volatile-identity normalization it needs in order to hit at all, its one
+// limitation, and the on-disk layout all live in ./dev-shim-cache.mjs. What
+// lives HERE is only the request-lifecycle wiring and the HIT / MISS / RECORD
+// logging — so a run's log says plainly whether it cost model time.
+
+/** The first 12 hex of a key — enough to correlate a HIT with its RECORD in a log. */
+function shortKey(key) {
+  return key.slice(0, 12);
+}
+
+/**
+ * The response header every /v1/messages response carries, so a caller can tell
+ * a replayed answer from a fresh one WITHOUT reading the shim's log — which
+ * matters because the shim is a separate background process, and whoever
+ * commanded the run is usually looking at a different terminal.
+ */
+const CACHE_HEADER = 'x-dev-shim-cache';
+
+/**
+ * Running totals since this process started, reported by `GET /health`. They
+ * only ever grow and there is no reset: a caller that wants a per-run figure
+ * reads /health before and after and subtracts, which is race-free against a
+ * shim serving somebody else at the same time.
+ */
+const cacheCounters = { hits: 0, misses: 0, recorded: 0, recordFailures: 0 };
+
+/** Mark one response with its cache outcome. Safe once headers are already sent. */
+function markCacheOutcome(res, outcome) {
+  if (!res.headersSent) res.setHeader(CACHE_HEADER, outcome);
+}
+
+/** The cache half of the `GET /health` payload. */
+function cacheHealth() {
+  const enabled = cacheEnabled();
+  return {
+    enabled,
+    directory: enabled ? cacheDirectory() : null,
+    attachmentIdentity: enabled ? attachmentIdentityMode() : null,
+    ...cacheCounters,
+  };
+}
+
+/**
+ * The cache context for one /v1/messages request — the derived key plus where
+ * it lives — or null when the cache is off. The env is read PER REQUEST rather
+ * than at import, so the switch takes effect in the process that reads it and
+ * the tests can drive both states.
+ */
+function cacheContextFor(body, contextId, transport) {
+  if (!cacheEnabled()) return null;
+  const attachmentIdentity = attachmentIdentityMode();
+  const key = deriveCacheKey({
+    body,
+    model: body.model || DEFAULT_MODEL,
+    contextId,
+    transport,
+    attachmentIdentity,
+    // Only consulted in 'digest' mode: the bytes behind an uploaded file_id.
+    attachmentBytes: (fileId) => files.get(fileId)?.data ?? null,
+  });
+  return { key, transport, contextId, attachmentIdentity, directory: cacheDirectory() };
+}
+
+/**
+ * Look one request up. Returns the entry to replay, or null after logging the
+ * miss. Every outcome is logged at `log` level (never `debug`): a run must not
+ * be ambiguous about whether it was served from disk or cost model time.
+ */
+function lookupCachedEntry(cache, res) {
+  const entry = readCacheEntry(cache.directory, cache.key, cache.transport, (reason) =>
+    log(`cache entry unusable for ${shortKey(cache.key)} — ${reason}`),
+  );
+  if (entry) {
+    cacheCounters.hits += 1;
+    markCacheOutcome(res, 'hit');
+    log(
+      `cache HIT ${cache.transport} ${shortKey(cache.key)} — replaying recorded response (no model time)`,
+    );
+    return entry;
+  }
+  cacheCounters.misses += 1;
+  markCacheOutcome(res, 'miss');
+  log(
+    `cache MISS ${cache.transport} ${shortKey(cache.key)} — fulfilling via Claude Code (costs model time)`,
+  );
+  return null;
+}
+
+/**
+ * Persist one fulfilment. Only SUCCESSFUL fulfilments are ever recorded — an
+ * error body or an error stream frame is never written, so a transient failure
+ * cannot become the permanent answer. Recording also never fails a request: a
+ * write error is logged and the fresh response is served as normal.
+ */
+function recordCacheEntry(cache, body, model, payload) {
+  if (!cache) return;
+  const entry = {
+    cacheFormat: CACHE_FORMAT_VERSION,
+    key: cache.key,
+    transport: cache.transport,
+    model,
+    contextId: cache.contextId,
+    attachmentIdentity: cache.attachmentIdentity,
+    recordedAt: new Date().toISOString(),
+    label: cacheLabel(body),
+    ...payload,
+  };
+  try {
+    const entryPath = writeCacheEntry(cache.directory, cache.key, entry);
+    cacheCounters.recorded += 1;
+    log(`cache RECORD ${cache.transport} ${shortKey(cache.key)} → ${entryPath}`);
+  } catch (err) {
+    cacheCounters.recordFailures += 1;
+    log(`cache RECORD FAILED ${cache.transport} ${shortKey(cache.key)}: ${err?.message || err}`);
+  }
+}
+
+/** Replay a recorded non-stream response — the same JSON body, byte for byte. */
+function replayNonStream(entry, res) {
+  sendJson(res, 200, entry.response);
+}
+
+/**
+ * Replay a recorded SSE stream: the SAME frames, in the SAME order, through the
+ * SAME serializer the live path writes with — so the consumer sees the event
+ * sequence it expects, never one concatenated blob.
+ */
+function replayStream(entry, res) {
+  writeSseHead(res);
+  for (const frame of entry.frames) res.write(sseFrame(frame.event, frame.data));
+  res.end();
+}
+
 // ── POST /v1/messages — NON-STREAM ───────────────────────────────────────────
 
-async function handleMessagesNonStream(body, contextId, res) {
+async function handleMessagesNonStream(body, contextId, res, cache) {
   const { options, clientToolNames } = buildQueryOptions(body, contextId);
   const clientNameSet = new Set(clientToolNames);
   const q = query({ prompt: buildPromptMessages(body.messages), options });
@@ -727,6 +890,7 @@ async function handleMessagesNonStream(body, contextId, res) {
     usage,
   };
   sendJson(res, 200, responseBody);
+  recordCacheEntry(cache, body, options.model, { response: responseBody });
 }
 
 // ── POST /v1/messages — STREAM (SSE) ─────────────────────────────────────────
@@ -736,12 +900,28 @@ function sseFrame(eventType, data) {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-async function handleMessagesStream(body, contextId, res) {
+/** The SSE response head — shared by the live stream and a cache replay. */
+function writeSseHead(res) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
   });
+}
+
+async function handleMessagesStream(body, contextId, res, cache) {
+  writeSseHead(res);
+
+  // Recorded frames, in emission order, when the cache is on. Only SUCCESSFUL
+  // frames land here: the error paths below write straight to `res`, so an
+  // error stream can never be recorded and replayed as an answer.
+  const recordedFrames = cache ? [] : null;
+
+  /** Write one SSE frame, capturing it for the recording when caching. */
+  function emit(eventType, data) {
+    if (recordedFrames) recordedFrames.push({ event: eventType, data });
+    res.write(sseFrame(eventType, data));
+  }
 
   const model = body.model || DEFAULT_MODEL;
   const { options, clientToolNames } = buildQueryOptions(body, contextId);
@@ -749,21 +929,19 @@ async function handleMessagesStream(body, contextId, res) {
   const q = query({ prompt: buildPromptMessages(body.messages), options });
 
   // message_start — carries usage the parser seeds from.
-  res.write(
-    sseFrame('message_start', {
-      type: 'message_start',
-      message: {
-        id: `msg_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-        type: 'message',
-        role: 'assistant',
-        model,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
-      },
-    }),
-  );
+  emit('message_start', {
+    type: 'message_start',
+    message: {
+      id: `msg_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  });
 
   // We synthesize the block envelope ourselves from assistant/result messages.
   // Block index counter across text + tool_use blocks in emission order.
@@ -778,41 +956,33 @@ async function handleMessagesStream(body, contextId, res) {
   function emitTextBlock(newText) {
     if (!newText) return;
     const index = blockIndex++;
-    res.write(
-      sseFrame('content_block_start', {
-        type: 'content_block_start',
-        index,
-        content_block: { type: 'text', text: '' },
-      }),
-    );
-    res.write(
-      sseFrame('content_block_delta', {
-        type: 'content_block_delta',
-        index,
-        delta: { type: 'text_delta', text: newText },
-      }),
-    );
-    res.write(sseFrame('content_block_stop', { type: 'content_block_stop', index }));
+    emit('content_block_start', {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'text', text: '' },
+    });
+    emit('content_block_delta', {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'text_delta', text: newText },
+    });
+    emit('content_block_stop', { type: 'content_block_stop', index });
   }
 
   /** Emit a tool_use block (start → input_json_delta → stop). */
   function emitToolUseBlock(id, name, input) {
     const index = blockIndex++;
-    res.write(
-      sseFrame('content_block_start', {
-        type: 'content_block_start',
-        index,
-        content_block: { type: 'tool_use', id, name, input: {} },
-      }),
-    );
-    res.write(
-      sseFrame('content_block_delta', {
-        type: 'content_block_delta',
-        index,
-        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input ?? {}) },
-      }),
-    );
-    res.write(sseFrame('content_block_stop', { type: 'content_block_stop', index }));
+    emit('content_block_start', {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'tool_use', id, name, input: {} },
+    });
+    emit('content_block_delta', {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input ?? {}) },
+    });
+    emit('content_block_stop', { type: 'content_block_stop', index });
   }
 
   // Set once a CLIENT tool_use is surfaced — we break the loop and report
@@ -864,6 +1034,8 @@ async function handleMessagesStream(body, contextId, res) {
         stopReason = m.subtype === 'success' ? m.stop_reason || 'end_turn' : 'end_turn';
         if (m.subtype !== 'success') {
           // Emit an Anthropic stream `error` event (chat.ts throws on it).
+          // Written straight to `res`, never through `emit` — a failed
+          // fulfilment is never recorded.
           res.write(
             sseFrame('error', {
               type: 'error',
@@ -879,6 +1051,7 @@ async function handleMessagesStream(body, contextId, res) {
       }
     }
   } catch (err) {
+    // Straight to `res`, never through `emit` — a failed query is never recorded.
     res.write(
       sseFrame('error', {
         type: 'error',
@@ -890,15 +1063,14 @@ async function handleMessagesStream(body, contextId, res) {
   }
 
   // message_delta (stop_reason + cumulative usage) then message_stop.
-  res.write(
-    sseFrame('message_delta', {
-      type: 'message_delta',
-      delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: usage.output_tokens ?? 0 },
-    }),
-  );
-  res.write(sseFrame('message_stop', { type: 'message_stop' }));
+  emit('message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: stopReason, stop_sequence: null },
+    usage: { output_tokens: usage.output_tokens ?? 0 },
+  });
+  emit('message_stop', { type: 'message_stop' });
   res.end();
+  recordCacheEntry(cache, body, model, { frames: recordedFrames });
 }
 
 // ── POST /v1/messages/count_tokens ───────────────────────────────────────────
@@ -1068,18 +1240,30 @@ async function handleHttp(req, res) {
 
   try {
     if (path === '/health' && method === 'GET') {
-      return sendJson(res, 200, { status: 'ok', fulfiller: 'claude-code' });
+      return sendJson(res, 200, { status: 'ok', fulfiller: 'claude-code', cache: cacheHealth() });
     }
 
     if (path === '/v1/messages' && method === 'POST') {
       const body = await readJson(req);
+      const transport = body.stream === true ? 'stream' : 'messages';
       debug(
         `/v1/messages model=${body.model || DEFAULT_MODEL} stream=${!!body.stream} tools=${Array.isArray(body.tools) ? body.tools.length : 0}`,
       );
-      if (body.stream === true) {
-        return handleMessagesStream(body, contextId, res);
+      // Replay before fulfilling. `cache` is null when the cache is off, which
+      // leaves both handlers on exactly the live path they have without it.
+      const cache = cacheContextFor(body, contextId, transport);
+      if (cache) {
+        const entry = lookupCachedEntry(cache, res);
+        if (entry) {
+          return transport === 'stream' ? replayStream(entry, res) : replayNonStream(entry, res);
+        }
+      } else {
+        markCacheOutcome(res, 'off');
       }
-      return handleMessagesNonStream(body, contextId, res);
+      if (body.stream === true) {
+        return handleMessagesStream(body, contextId, res, cache);
+      }
+      return handleMessagesNonStream(body, contextId, res, cache);
     }
 
     if (path === '/v1/messages/count_tokens' && method === 'POST') {
@@ -1117,6 +1301,10 @@ async function handleHttp(req, res) {
  * module for unit tests does NOT bind the port.
  */
 function startServer() {
+  if (cacheResetRequested()) {
+    clearCacheDirectory(cacheDirectory());
+    log(`response cache: reset — cleared ${cacheDirectory()}`);
+  }
   const server = createServer(handleHttp);
   server.listen(PORT, HOST, () => {
     log(`listening on http://${HOST}:${PORT} — fulfilling via Claude Code (no Anthropic credits)`);
@@ -1125,6 +1313,11 @@ function startServer() {
       DEV_CONTEXT_ID
         ? `tool bridge: enabled (context-ID set, Personalizer=${PERSONALIZER_API_URL})`
         : `tool bridge: disabled (set LS_DEV_CONTEXT_ID to enable /chat tool calls)`,
+    );
+    log(
+      cacheEnabled()
+        ? `response cache: ON (the default) — an identical repeat call is answered from ${cacheDirectory()} WITHOUT reaching the model (attachment identity: ${attachmentIdentityMode()}). Every response carries ${CACHE_HEADER}: hit|miss and GET /health reports the counts. Set SHIM_CACHE=0 to fulfil everything fresh.`
+        : `response cache: OFF (SHIM_CACHE opted out) — every call is fulfilled fresh via Claude Code`,
     );
   });
   return server;
@@ -1136,8 +1329,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   startServer();
 }
 
-// Export internals for unit tests (the translation layer + the guard).
+// Export internals for unit tests (the translation layer, the guard, and the
+// router itself — the cache's record/replay wiring is only true end to end).
 export {
+  handleHttp,
+  cacheContextFor,
+  CACHE_HEADER,
   systemToString,
   rehydrateBlock,
   normalizeContent,
