@@ -223,9 +223,8 @@ wrong Personalizer is worse than a loud 500). The classification line: frozen
 contracts and protocol facts stay in code (wire field names, tool names,
 routes, prompt text, Anthropic's 4-breakpoint limit + `1h` TTL, the
 cross-repo-frozen `MAX_ITERATIONS`/`MAX_CHAT_REFS`), as do internal
-robustness/observability constants whose doc comments state that
-classification (the dedup KV TTL, the count_tokens warn threshold). The rule
-is fitness-tested (`test/architecture.test.ts`: no absolute URLs in src or
+robustness/observability constants this log classifies that way (the dedup KV
+TTL, the count_tokens warn threshold). The rule is fitness-tested (`test/architecture.test.ts`: no absolute URLs in src or
 scripts/ outside the config module, no inline `||`/`??` fallbacks on `env` /
 `process.env` reads, accessor-only worker reads — the Node scripts take
 explicit required environment variables) and the production values are pinned

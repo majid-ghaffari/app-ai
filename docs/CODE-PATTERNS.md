@@ -91,8 +91,8 @@ acceptable only for trivially-scoped numeric loops.
 
 ### No Magic Literals
 
-A literal with meaning gets a named constant WITH a doc comment explaining
-it (`MAX_CACHE_BLOCKS`, `KV_RECORD_TTL_SECONDS`, `LARGE_PAYLOAD_TOKEN_THRESHOLD`)
+A literal with meaning gets a named constant whose name states that meaning
+(`MAX_CACHE_BLOCKS`, `KV_RECORD_TTL_SECONDS`, `LARGE_PAYLOAD_TOKEN_THRESHOLD`)
 — and if it is a deploy-time tunable rather than a contract/internal
 constant, it belongs in configuration (next section). Inline `4`s and
 `100000`s with unstated meaning are not acceptable.
@@ -175,7 +175,7 @@ CONFIGURATION, not in code:
    cross-repo-frozen `MAX_ITERATIONS` (= 8) / `MAX_CHAT_REFS` (= 5) (lib
    `CONTRACTS.md` §1). Internal robustness/observability constants with a
    written rationale (the dedup KV TTL, the count_tokens warn threshold)
-   also stay in code — their doc comments say so explicitly.
+   also stay in code — [DECISIONS.md](DECISIONS.md) carries that rationale.
 
 ### Enforcement
 
@@ -203,11 +203,10 @@ mirrors it.
 - **Mirror Brain's serialization:** PascalCase, enums as strings, null
   members omitted (`NullValueHandling.Ignore`) — `entity-context.ts` mirrors
   the omission.
-- Cite the Brain controller/entity path in a comment above the mirrored
-  shape so the next reader can re-verify.
+- Record each mirrored shape's Brain controller/entity path in the
+  authoritative list of mirrored surfaces so the next reader can re-verify.
 
-The authoritative list of mirrored surfaces is in the root
-[CLAUDE.md](../CLAUDE.md) → Hard rules.
+That list is in the root [CLAUDE.md](../CLAUDE.md) → Hard rules.
 
 ---
 
@@ -273,9 +272,8 @@ green CI that lies. Throw with an actionable error instead:
 
 ## Documentation Maintenance
 
-- **Current state only.** Docs and comments describe what the code IS —
-  no chronological narratives, no references to prior structures (root
-  CLAUDE.md → Documentation conventions).
+- **Style.** Documentation and comment style is
+  `../../_standards/documentation-and-comments.md`.
 - **Propagation.** Any code change updates the affected folder's
   `CLAUDE.md`, then the root CLAUDE.md, in the SAME commit.
 - **DECISIONS log contract.** Every architecturally significant decision

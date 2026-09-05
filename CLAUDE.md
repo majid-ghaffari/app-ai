@@ -4,8 +4,6 @@
 
 The seven always-in-context hard rules bind here and are inlined for Codex in [AGENTS.md](AGENTS.md) beside this file. The depth behind them lives once in the workspace repository's `../_standards/*.md` — `engineering`, `testing`, `documentation-and-comments`, `git-and-approval`, `architecture`, `naming`, `security`, `web-ui` — read on demand. This file carries only what is specific to app-ai and never restates a workspace standard. Activate this repository's git hooks once per clone: `../_enforcement/install-git-hooks.sh app-ai`.
 
-**CLAUDE.md Rule:** Any code change MUST update the CLAUDE.md of the affected folder (`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`, `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate the change up to this root file. If you add/rename a handler, inference module, lib module, toolset, prompt, or route, update the relevant section here AND the matching folder doc. Keep the documentation tree always valid.
-
 A Cloudflare Worker that validates merchant context and runs a provider-neutral inference service. Production prompt groups route to Anthropic; OpenAI Responses and Gemini `generateContent` are implemented as dormant candidate adapters pending recorded prompt-level evaluation. It holds the provider API keys, validates ordinary merchant requests through Personalizer, and provides a separate origin-scoped extension demo exchange for stores without a LimeSpot Context-ID. Parts of it serve **production**: the scoped extension demo sessions are the production callers of `/files` + `/messages`, while production Studio carries no app-ai client and its AI surfaces reach `/files`, `/messages`, and `/chat` only from a Studio build that ships one.
 
 ## Project docs
@@ -33,10 +31,9 @@ Adding or renaming a `docs/*` file updates this table (propagation rule below).
 
 ## Documentation conventions
 
-Two rules govern every `CLAUDE.md`, `README.md`, and code comment/JSDoc in this repo:
+Documentation and comment style — current state only, and where a doc comment is permitted — is `../_standards/documentation-and-comments.md`. The app-ai rule on top of it:
 
-1. **CLAUDE.md propagation.** Any code change MUST update the affected folder's `CLAUDE.md` (`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`, `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate the change up to this root file. Adding/renaming a handler, inference module, lib module, toolset, prompt, or route updates the relevant section here AND the matching folder doc. Keep the documentation tree always valid.
-2. **Current state only — no historical or chronological framing.** Docs and comments describe what the code IS, never what it was or how it got here. Do not write "previously", "now / no longer", "used to", "refactored from", "moved from X", "renamed", "preserved verbatim from the original", "behavior preserved", before→after comparisons, or any reference to a prior structure. A reader should learn only the current behavior. (Forward-looking operational status — KV provisioning steps, "needs live validation" notes — is current-state information and is allowed, phrased as present-tense state rather than a change log.)
+**CLAUDE.md propagation.** Any code change MUST update the affected folder's `CLAUDE.md` (`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`, `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate the change up to this root file. Adding/renaming a handler, inference module, lib module, toolset, prompt, or route updates the relevant section here AND the matching folder doc. Keep the documentation tree always valid.
 
 ## Definition of Done (ENFORCED)
 

@@ -17,7 +17,8 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 
 ## Conventions
 
-- Every exported function and type carries a doc comment (TSDoc; types are in the signatures).
+- Doc comments on exports follow `../../../_standards/documentation-and-comments.md` —
+  TSDoc only where the contract is not evident from the name and signature.
 - Cache/effort/dedup levers are **additive** — they never change external
   request/response shapes (see the token-saving section in the root CLAUDE.md).
 - Provider wire fields, beta flags, authentication, and HTTP calls live only in

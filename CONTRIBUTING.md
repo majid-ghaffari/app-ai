@@ -67,9 +67,8 @@ Any code change MUST update the affected folder's `CLAUDE.md`
 (`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`,
 `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate up to the root
 [CLAUDE.md](CLAUDE.md). Adding/renaming a handler, inference module, lib module, toolset, prompt, route,
-or doc updates the relevant sections. Keep the documentation tree valid. Docs are
-present-state only — describe what the code IS, never what it was (no
-"previously", "now", "refactored from", before→after framing).
+or doc updates the relevant sections. Keep the documentation tree valid.
+Documentation and comment style is `../_standards/documentation-and-comments.md`.
 
 ## Hard rules
 
