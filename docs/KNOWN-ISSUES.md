@@ -25,15 +25,15 @@ log line. So a payload that would exceed the model's context window is not
 blocked here; the live Messages call surfaces that as the real error. By design:
 the pre-flight is observability, not a guard.
 
-### Image-block typing adds a metadata GET per fileId
+### Image-block typing may add a metadata GET per fileId
 
-To choose `image` vs `document` for each `/chat` `fileId`, `buildFileBlock`
-issues a Files API metadata GET per file (mime-type lookup). For the placement
-flow that's typically two extra GETs (screenshot + HTML) per call. The cost is
-small and the lookups run in parallel (`Promise.all`), but they are real extra
-round-trips. A lookup failure falls back to `document`. This is the price of
-sending images as `image` blocks (Anthropic 400s an image inside a `document`
-block); the typing is not yet cached across calls within a session.
+To choose `image` vs `document` for each `/chat` `fileId`, `buildFileContent`
+(`handlers/chat.ts`) reads the media type sealed in the resolved reference and
+issues a provider metadata GET only for a reference that carries none. Those
+lookups run in parallel (`Promise.all`) but are real extra round-trips, and a
+lookup failure falls back to `document`. This is the price of sending images as
+`image` blocks (Anthropic 400s an image inside a `document` block); the typing
+is not cached across calls within a session.
 
 ### Optional live token-savings diagnostic requires manual credentials
 
@@ -62,7 +62,34 @@ mint fresh `file_id`s and the placement file-block cache entry won't be shared
 across calls (each upload is a distinct cache key). Not a failure mode — a
 degradation that the code handles silently.
 
-## Preview-environment only (production unaffected)
+### Rotating `TOKEN_ENCRYPTION_SECRET` is a hard cutover
+
+Neither sealed envelope carries a key identifier: a file reference
+(`file_ref_v1_…`, `inference/file-references.ts`) and a continuation token
+(`continuation_v2_…`, `inference/continuation.ts`) are AES-GCM ciphertext under
+subkeys derived from the one secret. Rotating it fails every outstanding
+reference (at most 15 days old) and continuation (at most 24 hours old) closed
+at once; there is no overlap window in which both the old and the new secret
+open a token.
+
+### Rotating `CLAUDE_API_KEY` also invalidates every sealed file reference
+
+The Anthropic account scope sealed into a reference is a hash prefix of the API
+key (`adapters/anthropic-wire.ts::fileAccountScope`), and resolution requires it
+to equal the current key's scope (`file-references.ts::validateReferenceRoute`).
+A key rotation is therefore a reference cutover as well, even though the
+uploaded objects still exist in the same Anthropic workspace. `FILES_KV` dedup
+records are keyed by the same scope, so they miss rather than mis-read.
+
+### Reference lifetimes: a rejected cached reference is not recovered client-side
+
+A sealed file reference expires 15 days after it is minted. Studio's screen cache
+reuses a proposal — and the uploaded tile references inside it — for up to 14 days,
+one day less, so the cache yields before the worker refuses. What remains is the
+recovery path: when a cached reference is rejected for any other reason (a rotated
+`TOKEN_ENCRYPTION_SECRET`, a rotated `CLAUDE_API_KEY`, a reference minted at the
+boundary), Studio ends the review instead of dropping the tile, re-capturing and
+re-uploading. That recovery is a Studio-side change.
 
 ### Grey-clouded `preview.personalizer.io` origin → "Too many redirects" (500)
 

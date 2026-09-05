@@ -1,0 +1,71 @@
+{
+  "promptInventory": [
+    "image-selection",
+    "chat",
+    "onboarding-chat",
+    "onboarding",
+    "placement",
+    "proposals",
+    "analytics-insights",
+    "probe-cart-wiring",
+    "probe-industry",
+    "probe-style",
+    "probe-template",
+    "probe-currency",
+    "onboarding-currency-recovery",
+    "onboarding-css-review",
+    "onboarding-batch",
+    "onboarding-batch-all",
+    "onboarding-review",
+    "onboarding-review-all",
+    "onboarding-review-gate-all",
+    "cartdrawer-batch-all",
+    "cartdrawer-review-all",
+    "optimize-demand",
+    "visual-verify"
+  ],
+  "request": {
+    "contentType": "multipart/form-data",
+    "fields": {
+      "file": "File",
+      "prompt": [
+        "onboarding-batch-all",
+        "onboarding-review-all",
+        "onboarding-review-gate-all"
+      ]
+    },
+    "promptField": "repeated; one or more registered prompt names"
+  },
+  "singleRouteResponse": {
+    "id": "opaque_file_reference",
+    "type": "file",
+    "references": {
+      "onboarding-batch-all": {
+        "id": "opaque_file_reference",
+        "type": "file"
+      },
+      "onboarding-review-all": {
+        "id": "opaque_file_reference",
+        "type": "file"
+      },
+      "onboarding-review-gate-all": {
+        "id": "opaque_file_reference",
+        "type": "file"
+      }
+    }
+  },
+  "multiRouteResponse": {
+    "id": "opaque_onboarding_reference",
+    "type": "file",
+    "references": {
+      "onboarding-review-all": {
+        "id": "opaque_onboarding_reference",
+        "type": "file"
+      },
+      "visual-verify": {
+        "id": "opaque_verification_reference",
+        "type": "file"
+      }
+    }
+  }
+}
