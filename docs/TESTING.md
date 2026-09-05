@@ -41,6 +41,32 @@ Declaration shims added for executable scripts contain no runtime behavior and a
 covered by the repository typecheck plus the architecture ban on TypeScript
 suppression directives. No live provider credit is required by this inventory.
 
+## Moonshot/Kimi Chat Completions coverage inventory
+
+Every executable Moonshot and Kimi Code seam is paired with deterministic offline
+coverage:
+
+| Changed seam                                                                                                                               | Direct coverage                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Chat Completions text/image/file/tool/strict-structured/reasoning translation and complete validation                                      | `test/moonshot-adapter.test.ts`                                                            |
+| SSE framing, required `[DONE]`, text/reasoning deltas, fragmented parallel tools, repeated identical terminal usage, and lifecycle failure | `test/moonshot-adapter.test.ts`, `test/kimi-adapter.test.ts`                               |
+| Preserved `reasoning_content` across complete, ordinary, capped, and shared-runtime server-tool turns                                      | `test/moonshot-adapter.test.ts`                                                            |
+| Moonshot Files transport, account scope, success validation, MIME-preserving upload result, and abort signals                              | `test/moonshot-adapter.test.ts`                                                            |
+| A sealed file reference that will not open answered as client input, never as a provider exception                                         | `test/moonshot-adapter.test.ts`, `test/proxy.test.ts`                                      |
+| The subscription account's own origin, credential, file scope, inline-only policy, and refused Files operations                            | `test/kimi-adapter.test.ts`                                                                |
+| K3/K2.8 effort, K2.7 HighSpeed thinking, tool-choice gates, and sibling-account continuation rejection before I/O                          | `test/kimi-adapter.test.ts`, `test/moonshot-adapter.test.ts`                               |
+| Factory selection and dormant-route provider/file-policy/capability fitness                                                                | `test/moonshot-adapter.test.ts`, `test/prompt-groups.test.ts`, `test/architecture.test.ts` |
+| Both accounts' config/secrets, production non-secret origins, dependency-free/provider-boundary rules                                      | `test/config.test.ts`, `test/architecture.test.ts`, TypeScript typecheck                   |
+| Paid smoke double opt-in, required config, multi-model structured result, and exact usage                                                  | `test/moonshot-live-guard.test.ts`, `test/kimi-live-guard.test.ts`                         |
+
+The adapter rejects external image URLs (current Kimi Vision accepts base64 or
+`ms://` file references), non-image direct-file policies, sampling overrides,
+provider-hosted tools, arbitrary metadata and service tiers, media tool results,
+unsupported image MIME including SVG, the K2.7 forced-specific and undocumented
+parallel-tool controls, and unsupported document forms before provider I/O. Those
+negative capability boundaries are frozen rather than silently degraded.
+Production prompt groups remain on Anthropic.
+
 ## Test-layer doctrine
 
 Pick the lowest layer that captures the bug:
@@ -51,7 +77,8 @@ Pick the lowest layer that captures the bug:
 2. **Adapter/runtime next** — does it translate canonical content, streams,
    tools, continuation, usage, errors, cancellation, or files? Add a deterministic
    fixture to the owning provider suite (`test/anthropic-adapter.test.ts`,
-   `test/openai-adapter.test.ts`, or `test/gemini-adapter.test.ts`).
+   `test/openai-adapter.test.ts`, `test/moonshot-adapter.test.ts`,
+   `test/kimi-adapter.test.ts`, or `test/gemini-adapter.test.ts`).
 3. **Integration next** — does it involve a handler driving the inference service
    or Personalizer dispatch (the agent loop, SSE framing, audit authorization,
    attachment injection,
@@ -82,6 +109,10 @@ One entry per spec file — the map, read on demand. It names what a spec assert
 - `test/anthropic-adapter.test.ts` — the canonical↔Anthropic adapter: media/tool/cache/effort/service-tier/structured-output mapping, strict complete and streaming envelope validation, path-aware continuation cache cleanup, normalized failures for malformed envelopes/timeouts/cancellations, modern usage and reasoning fields, and the provider file lifecycle.
 - `test/inference-deadline.test.ts` — the one upstream inference deadline through the real Worker: a model call that outlives it answers 504 `InferenceTimeoutException` / `inference_timeout`, one that answers inside it is kept, and a registered prompt streams upstream while the caller still receives one JSON message — a bodyless upstream 200 answering as a failure, and every `message_delta` member, a refusal's `stop_details` included, surviving into that message.
 - `test/openai-adapter.test.ts` + `test/openai-live-guard.test.ts` — the dormant OpenAI Responses candidate: dependency-free Responses/Files translation, strict complete/SSE validation, multimodal/structured/reasoning/tool/continuation/usage/error fixtures, and the offline guard that keeps the paid smoke matrix behind its explicit opt-ins.
+- `test/moonshot-adapter.test.ts` — the dormant metered Moonshot candidate: dependency-free Chat Completions/Files translation, strict complete and terminal-`[DONE]` SSE validation, multimodal/structured/reasoning/tool/usage/error fixtures, preserved `reasoning_content` round-tripping through both public continuation transports and the shared server-tool loop, key-isolated file scopes with incompatible policies refused before I/O, a sealed reference that will not open answered as client input rather than a provider exception, and selection only through the provider-neutral factory.
+- `test/kimi-adapter.test.ts` — the dormant Kimi Code subscription candidate on the same adapter: its own origin, bearer credential, and file scope kept off the metered account, K3 and K2.8 effort, K2.7 HighSpeed preserved thinking, tool-choice gates, inline base64 images, sealed reasoning across a streamed turn, a continuation minted for the metered account refused, and quota exhaustion normalized as a fatal 403 against a retryable 429 overload.
+- `test/kimi-evidence-route.test.ts` — real worker HTTP upload→message and upload→chat paths for Kimi: encrypted R2 image/text evidence, smart image detection's registry sample and bounded tool retrieval of oversized HTML, combined large-HTML onboarding chat retrieval before its client-tool stream and across an ordinary continuation, thirty shared tiled images through five-page onboarding proposal, review, and QC prompts, stable hosted image reuse, one retry after an expired hosted image id, tenant isolation, deletion, storage tamper rejection, and the 2 MiB preflight before the completion call.
+- `test/moonshot-live-guard.test.ts` + `test/kimi-live-guard.test.ts` — the offline guards on the two paid matrices (`scripts/verify-moonshot.mjs`, `scripts/verify-kimi.mjs`): both explicit opt-ins required, a missing precondition throwing before any provider call, and the probe selection the subscription host's absent API reference makes necessary.
 - `test/gemini-adapter.test.ts` — the dormant Gemini `generateContent` candidate: the documented request contract and `x-goog-api-key` header, stable-prefix emission ahead of the volatile conversation tail, canonical system messages joined into `systemInstruction`, the shared thinking/answer budget split, rejection of every undocumented canonical control before provider I/O, camelCase `inlineData` and full `fileData` uris with undocumented media and foreign references refused, response translation (visible text, dropped thought parts, usage, a `functionCall` as a tool-call stop whatever `finishReason` says, a function call missing its thought signature, a thinking-starved or otherwise empty terminal turn, a prompt-level block as a content filter), sentinel-free streaming that completes on a clean close and fails on a truncated or in-band error frame, part-level thought-signature replay across the client-tool round trip and server-executed iterations, sealed capped tool results, fail-closed lost/foreign/mismatched continuation state, the two-call resumable Files upload with its `PROCESSING` poll and fail-closed endpoint/uri checks, stable non-secret account scope on read/delete, the `countTokens` wrapper, normalized cancellation/transport/invalid-JSON failures, and selection only through the provider-neutral factory.
 - `test/gemini-live-guard.test.ts` — the offline guard on the paid Gemini probe matrix (`scripts/verify-gemini.mjs`): both explicit opt-ins required, a missing precondition throwing before any provider call, every documented unknown recorded and asserted against the shipped contract, a thinking-starved turn reported as its own outcome rather than a contract failure, a broken required probe failing loudly, an aliased smoke model accepted as the numbered snapshot it resolves to, and every generating probe budgeting thinking alongside its answer.
 - `test/free-visual-verify.test.ts` — the protected visual-verification route: only the free prompt resolves to the configured Workers AI vision family, production visual verification stays on Anthropic, one inline screenshot and its intent reach the binding, and the model's verdict returns through the established `/messages` envelope.
@@ -101,7 +132,7 @@ One entry per spec file — the map, read on demand. It names what a spec assert
 - `test/probes.test.ts` — the Website-Analysis probe mechanism: the registry resolves `probe-industry` (text/metadata/model), resolves the Sonnet probes `probe-cart-wiring` + `probe-style` on the `balanced` tier (≠ the default `frontier` tier, `usesTools: false`, no attachments) with their selector/style-descriptor prompt contracts, the `probe-<id>` convention (`PROBE_PREFIX` / `isProbeName`) + the `PROBE_SCHEMAS` index ↔ registry coherence, `/messages` routing the `probe-industry` / `probe-cart-wiring` / `probe-style` headers (system block injected, no attachments, model defaulted to the registry entry, caller blocks pass through), and the frozen `{ industry, confidence, findings }` output contract (schema/parse checks: well-formed, `Unknown`/empty-findings sink, rejects missing keys / out-of-range confidence / non-string findings).
 - `test/proposals.test.ts` — the TOOL-CAPABLE per-store SETUP PROPOSALS prompt: the registry resolves `proposals` on the `balanced` tier (Sonnet, ≠ the default `frontier` tier) + `usesTools: true`, the prompt reasons over page evidence (screenshots + cleaned HTML) AND instructs the model to pull real store data via the personalizer tools (AOV-derived progress-bar threshold), and `POST /chat` with the `proposals` header sends the personalizer tool surface + the page-evidence file blocks and drives the tool loop (tool_call → Brain `v2/ai-tools` → tool_result → final JSON proposal).
 - `test/config.test.ts` — `src/config.ts`: the no-fallback contract (every accessor throws on a missing/empty variable, naming it and where to set it), the `resolveModel(env, tier)` tier→model mapping (each tier → its bound var, throws named when absent), the PRODUCTION `[vars]` pins, which the spec reads out of `wrangler.toml` itself rather than restating (the Personalizer and provider origins, the three tier→model bindings, the empty `MODEL_OVERRIDES`, the master subscriber, the credentialed-origin allowlist, the status-callback origin allowlist), and the reconciliation between the two configuration files and the typed `Env`: every declared binding is documented in `.dev.vars.example`, every declared secret is blank there, and no declared secret appears in `[vars]` — all three derived from `src/config.ts` rather than retyped, so a new binding or secret cannot slip past them.
-- `test/model-catalog.test.ts` — `src/inference/model-catalog.ts` and the configured-model routing over it: the catalog's own consistency contract (unique prefixes and profiles, each family on a file policy its provider and API family own), family-prefix matching so an unreleased version inherits its family, provider inference for non-Anthropic ids, capabilities stated as model facts, the unrecognised-id throw naming the id and the supplying variable, a tier routed to another provider from configuration alone, the capability-mismatch rejection naming the group and the missing capability, and `MODEL_OVERRIDES` (empty by default, group and prompt precedence, unknown-key throw listing the valid keys, malformed and repeated entries, and the rejection of an override that would move one prompt off its shared provider file route).
+- `test/model-catalog.test.ts` — `src/inference/model-catalog.ts` and the configured-model routing over it: the catalog's own consistency contract (unique prefixes and profiles, each family on a file policy its provider and API family own), prefix matching for versioned families plus exact matching for fixed Kimi/Moonshot IDs, provider inference for non-Anthropic ids, capabilities stated as model facts, the unrecognised-id throw naming the id and the supplying variable, every registered Studio group routable to Kimi by model name while the protected free judge stays separate, a tier routed to another provider from configuration alone, the capability-mismatch rejection naming the group and the missing capability, and `MODEL_OVERRIDES` (empty by default, group and prompt precedence, unknown-key throw listing the valid keys, malformed and repeated entries, and the rejection of an override that would move one prompt off its shared provider file route).
 - `test/prompts-route.test.ts` — `GET /prompts` driven through the real router: the master subscriber receives every registered prompt's resolved route, a validated non-master merchant and a validation payload without a `SubscriberID` receive the unknown-route answer byte for byte, a missing context-ID is refused before any Personalizer call, an unroutable prompt is reported with its reason rather than throwing, blank required secrets are named without leaking a value or prefix, and `/health` stays unauthenticated with its exact shape. The `personalizerContextId` query parameter is covered on the same path: the master context-ID is accepted from the URL, the header wins when a request carries both, a non-master URL credential gets the unknown-route answer byte for byte, no other route or method reads the parameter, and a request carrying the credential in the URL produces no log record containing it.
 - `test/architecture.test.ts` — fitness scans over `src/` + `scripts/` enforcing the standing invariants: party- and AI-capability-driven toolset composition, the exact version-1 router gate, credentials never in logs or the model-visible system builder, degraded tool results structurally unable to carry raw bodies, one error shape (no bespoke `{ error: { message } }` envelopes), query-string credentials confined to the master-gated `GET /prompts` diagnostics (one module naming the parameter, one guarded router call, no other `searchParams` read, and the logger sanitizer every logged string passes through), and No Hardcoded Config Values (no absolute URL literals in src or scripts, no inline `||`/`??` fallbacks on `env`/`process.env` reads, required worker vars read only through `src/config.ts`). The dev Claude-Code shim (`scripts/dev-claude-shim.mjs`) is carved out of the no-URL-literal scan only — it is standalone local tooling with overridable dev-default endpoints, outside the worker's fail-fast config contract (never bundled); it still passes the env-fallback scan (it reads config via `envOr(name, fallback)` bracket access, not inline `||`/`??`).
 - `test/dev-shim.test.ts` — the free dev Claude-Code channel (`scripts/dev-claude-shim.mjs`): the pure Anthropic⇄Claude-Code translation layer (`systemToString`, `rehydrateBlock` file→inline base64 image/document + tool_result flatten + unknown-file degrade, `normalizeContent`, `buildPromptMessages` user turn + assistant-history preamble, `estimateTokens` char/4, `bareToolName` mcp-prefix strip, `stripCodeFence`, `usageFrom`, `extractFilePart` multipart), plus the **cred-burn GUARD** (`assertDevAiChannel`: throws when a dev/test run points `ANTHROPIC_API_BASE` at `api.anthropic.com` without `AI_CHANNEL=prod`; allows the local shim; opt-in with `AI_CHANNEL=prod`) and a check that `.dev.vars.example` ships the free-shim default.
@@ -161,8 +192,8 @@ It also freezes the exact secret-minimized child environment, ChatGPT-vs-API
 authentication mode, API-key opt-in, shell/web/plugin/subagent/app-connector/dependency-install disablement, strict
 terminal JSONL usage (including cached input), delayed SIGTERM/SIGKILL lifecycle,
 process failures, and the real shim non-stream/error/stream-rejection handlers.
-The worker config suite proves every non-loopback Anthropic, OpenAI, and Gemini
-origin requires `AI_CHANNEL=prod` outside production.
+The worker config suite proves every non-loopback Anthropic, OpenAI, Moonshot,
+Kimi Code, and Gemini origin requires `AI_CHANNEL=prod` outside production.
 
 ## Optional paid OpenAI smoke matrix
 
@@ -187,6 +218,61 @@ OPENAI_SMOKE_MODELS=<candidate-model-1>,<candidate-model-2> \
 `test/openai-live-guard.test.ts` proves the two-key guard and multi-model
 matrix offline. Running the smoke does not authorize production prompt routing;
 prompt-level evaluations and a separate registry change remain required.
+
+## Optional paid Moonshot smoke matrix
+
+`npm run verify:moonshot` calls the configured metered Moonshot Chat Completions
+endpoint for every comma-separated `MOONSHOT_SMOKE_MODELS` candidate. It requests
+strict JSON Schema output with low K3 reasoning effort or preserved K2 thinking,
+validates the selected model, terminal stop, exact `{ ok: true }` result, and
+internally consistent usage. It is outside CI/default gates and requires both
+explicit credit acknowledgements:
+
+```bash
+MOONSHOT_LIVE_SMOKE=1 \
+AI_CHANNEL=prod \
+MOONSHOT_API_BASE=https://api.moonshot.ai \
+MOONSHOT_API_KEY=<paid-key> \
+MOONSHOT_SMOKE_MODELS=<candidate-model-1>,<candidate-model-2> \
+  npm run verify:moonshot
+```
+
+`test/moonshot-live-guard.test.ts` proves the guard and matrix offline. Running
+it neither activates a production route nor authorizes deployment.
+
+## Optional paid Kimi Code probe matrix
+
+`npm run verify:kimi` calls the configured Kimi Code subscription Chat
+Completions endpoint for the single `KIMI_SMOKE_MODEL` candidate. Kimi documents
+the subscription endpoints and model IDs, while the probes verify the remaining
+wire behavior: bearer auth, the metered request body under a subscription id,
+`data: [DONE]` framing, strict `json_schema` output, inline base64 images,
+whether `/v1/files` exists at all, whether historical `reasoning_content` is
+required across tool rounds, and the literal error envelope. It is outside
+CI/default gates and requires both explicit credit acknowledgements:
+
+```bash
+KIMI_LIVE_SMOKE=1 \
+AI_CHANNEL=prod \
+KIMI_API_BASE=https://api.kimi.com/coding \
+KIMI_API_KEY=<subscription-key> \
+KIMI_SMOKE_MODEL=<subscription-model> \
+  npm run verify:kimi
+```
+
+`test/kimi-live-guard.test.ts` proves the guard and probe selection offline.
+Running it neither activates a production route nor authorizes deployment.
+
+The required live matrix validates authentication, strict structured output,
+terminal SSE framing and usage, image upload plus `ms://` inference, and the
+provider error envelope. Inline-image and reasoning-history probes remain
+observational. Metadata and delete results are recorded because the coding
+endpoint does not expose a complete file lifecycle.
+
+Worker-path coverage exercises encrypted R2 image/text evidence, smart image
+selector output, five-page onboarding proposal/review/QC requests, stable
+hosted-image reuse, large-HTML retrieval, and deletion. Visual quality on
+representative merchant pages remains a prompt-level evaluation gate.
 
 ## Optional paid Gemini probe matrix
 

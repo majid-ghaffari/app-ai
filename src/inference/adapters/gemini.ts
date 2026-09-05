@@ -142,6 +142,7 @@ const FILE_ACTIVATION_POLL_DELAY_MILLISECONDS = 250;
 
 /** Gemini adapter bound to one Worker request environment. */
 export class GeminiGenerateContentAdapter implements InferenceProviderAdapter {
+  readonly continuationOwnsAgentHistory = true;
   readonly provider = 'gemini' as const;
   readonly apiFamily = 'gemini-generate-content' as const;
   /**
@@ -152,6 +153,10 @@ export class GeminiGenerateContentAdapter implements InferenceProviderAdapter {
   readonly requiresOrdinaryTurnContinuation = true;
 
   constructor(private readonly env: Env) {}
+
+  aggregateAgentUsage(usages: readonly InferenceUsage[]): InferenceUsage {
+    return aggregateGeminiUsage(usages);
+  }
 
   finalizeAgentContinuation(
     state: ProviderContinuationState,
@@ -631,7 +636,10 @@ function toGeminiContents(request: InferenceRequest, env: Env): GeminiContentTra
       if (canonicalJson(stateModel) !== canonicalJson(currentModel)) {
         throw new Error('Gemini continuation did not match assistant-owned provider state');
       }
-      contents.push(modelContentFromState(stateModel, message));
+      contents.push(
+        ...replayedTranscript(currentSegment).slice(0, -1),
+        modelContentFromState(stateModel, message),
+      );
       stateContentIndex = contents.length - 1;
       return;
     }
@@ -1219,6 +1227,39 @@ function normalizeUsage(usage: GeminiUsageMetadata): InferenceUsage {
     cacheWriteInputTokens: null,
     reasoningTokens: usage.thoughtsTokenCount ?? null,
     providerDetails: { ...usage },
+  };
+}
+
+function aggregateGeminiUsage(usages: readonly InferenceUsage[]): InferenceUsage {
+  const only = usages.length === 1 ? usages[0] : undefined;
+  if (only) return only;
+  const total = (read: (usage: InferenceUsage) => number | null): number | null => {
+    const values = usages.map(read);
+    return values.some((value) => value === null)
+      ? null
+      : values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  };
+  const providerTotal = usages.reduce<number | null>((sum, usage) => {
+    const value = usage.providerDetails?.totalTokenCount;
+    return sum === null || typeof value !== 'number' ? null : sum + value;
+  }, 0);
+  const inputTokens = total((usage) => usage.inputTokens);
+  const outputTokens = total((usage) => usage.outputTokens);
+  const cachedInputTokens = total((usage) => usage.cachedInputTokens);
+  const reasoningTokens = total((usage) => usage.reasoningTokens);
+  const providerDetails: Record<string, unknown> = { ...usages.at(-1)?.providerDetails };
+  if (inputTokens !== null) providerDetails.promptTokenCount = inputTokens;
+  if (outputTokens !== null) providerDetails.candidatesTokenCount = outputTokens;
+  if (providerTotal !== null) providerDetails.totalTokenCount = providerTotal;
+  if (cachedInputTokens !== null) providerDetails.cachedContentTokenCount = cachedInputTokens;
+  if (reasoningTokens !== null) providerDetails.thoughtsTokenCount = reasoningTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens: null,
+    reasoningTokens,
+    providerDetails,
   };
 }
 

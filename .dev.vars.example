@@ -39,7 +39,7 @@ MASTER_SUBSCRIBER_ID=1
 #
 # Each prompt group declares a capability TIER. The model id bound to that tier
 # decides which provider serves it, over which API family, with which
-# capabilities and direct-file policy, through the family-prefix catalog in
+# capabilities and direct-file policy, through the family/explicit-id catalog in
 # src/inference/model-catalog.ts. A model id the catalog does not recognise, or
 # one whose capabilities cannot satisfy a group on that tier, fails at
 # resolution — before any provider call. Pointing a tier at another provider's
@@ -83,6 +83,29 @@ OPENAI_API_BASE=https://api.openai.com
 # REQUIRED SECRET only while a resolved route uses OpenAI; blank otherwise. Only
 # the OpenAI wire adapter reads it (src/inference/adapters/openai-wire.ts).
 OPENAI_API_KEY=
+
+# ── Moonshot (metered platform account) ──────────────────────────────────────
+
+# REQUIRED. Moonshot Chat Completions origin, no trailing slash.
+MOONSHOT_API_BASE=https://api.moonshot.ai
+
+# REQUIRED SECRET only while a resolved route uses Moonshot; blank otherwise.
+# Only the Moonshot wire adapter reads it
+# (src/inference/adapters/moonshot-wire.ts).
+MOONSHOT_API_KEY=
+
+# ── Kimi Code (subscription account) ─────────────────────────────────────────
+
+# REQUIRED. Kimi Code coding-endpoint origin, no trailing slash. A different
+# origin and credential from the metered Moonshot account above.
+KIMI_API_BASE=https://api.kimi.com/coding
+KIMI_EVIDENCE_MAX_BYTES=8000000
+KIMI_EVIDENCE_MAX_TOTAL_BYTES=64000000
+KIMI_EVIDENCE_MAX_TEXT_BYTES=16000000
+
+# REQUIRED SECRET only while a resolved route uses Kimi Code; blank otherwise.
+# Only the Kimi wire adapter reads it (src/inference/adapters/kimi-wire.ts).
+KIMI_API_KEY=
 
 # ── Gemini ───────────────────────────────────────────────────────────────────
 
@@ -193,6 +216,9 @@ LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
 # FILES_KV      — OPTIONAL metadata-only KV namespace for best-effort file
 #                 dedup. Its absence no-ops to a plain direct upload; public
 #                 reference correctness never depends on it.
+# INLINE_EVIDENCE_R2 — REQUIRED when a Kimi route stores uploaded evidence for
+#                      later text or compact image submission; configured as a
+#                      private R2 binding with an expiry lifecycle.
 # AI            — REQUIRED Workers AI binding for protected visual verification.
 # AUDIT_SESSIONS — REQUIRED Durable Object namespace backing the audit session
 #                 authority and a separately addressed protected visual-verification

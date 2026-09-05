@@ -146,8 +146,9 @@ CONFIGURATION, not in code:
    `MODEL_BALANCED` / `MODEL_FRONTIER`). Nothing
    else reads `env.X` for a required variable. The Node scripts (`scripts/`)
    follow the same discipline with explicit REQUIRED environment variables
-   (`APP_AI_TARGET`, `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`; guarded OpenAI or
-   Gemini smoke variables; or explicit `CODEX_LOCAL_MODEL`). The documented
+   (`APP_AI_TARGET`, `APP_AI_CONTEXT_ID`/`APP_AI_CONTEXT_FILE`; guarded OpenAI,
+   Moonshot, Kimi Code, or Gemini smoke variables; or explicit
+   `CODEX_LOCAL_MODEL`). The documented
    `LOCAL_AI_FULFILLER=claude-code` default selects a no-provider-API local
    execution strategy, never a paid target, credential, or model.
 2. **Missing config = thrown error.** Every required-variable read fails

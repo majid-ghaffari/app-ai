@@ -131,7 +131,7 @@ export interface PromptGroupDefinition {
 const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = {
   'image-selection': {
     tier: 'fast',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'studio-data-agent': {
     tier: 'frontier',
@@ -139,32 +139,32 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
   },
   'studio-visual-agent': {
     tier: 'frontier',
-    requirements: ['vision', 'providerFiles', 'streaming', 'clientTools'],
+    requirements: ['vision', 'reusableFiles', 'streaming', 'clientTools'],
   },
   'placement-vision': {
     tier: 'fast',
-    requirements: ['vision', 'providerFiles', 'streaming', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'streaming', 'structuredOutput'],
   },
   'setup-strategy': {
     tier: 'balanced',
-    requirements: ['vision', 'providerFiles', 'streaming', 'structuredOutput', 'serverTools'],
+    requirements: ['vision', 'reusableFiles', 'streaming', 'structuredOutput', 'serverTools'],
   },
   'onboarding-visual': {
     tier: 'balanced',
-    requirements: ['vision', 'providerFiles', 'structuredOutput', 'reasoning'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput', 'reasoning'],
   },
   'onboarding-qc-gate': {
     tier: 'fast',
     fileRouteGroup: 'onboarding-visual',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'cartdrawer-visual': {
     tier: 'balanced',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'render-verification': {
     tier: 'balanced',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'free-render-verification': {
     tier: 'balanced',
@@ -172,11 +172,11 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
   },
   'website-analysis-visual': {
     tier: 'balanced',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'website-industry': {
     tier: 'frontier',
-    requirements: ['vision', 'providerFiles', 'structuredOutput'],
+    requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'analytics-narrative': {
     tier: 'balanced',
@@ -1089,7 +1089,7 @@ function featureRequirements(definition: SystemPromptDefinition): readonly Model
   const requirements: ModelCapabilityName[] = [];
   if (definition.usesTools) requirements.push('serverTools');
   if (definition.clientTools) requirements.push('clientTools');
-  if (definition.attachments.length > 0) requirements.push('providerFiles');
+  if (definition.attachments.length > 0) requirements.push('reusableFiles');
   if (definition.effort || definition.adaptiveEffort) requirements.push('reasoning');
   return requirements;
 }

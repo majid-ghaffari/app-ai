@@ -17,6 +17,8 @@ import {
   WorkerError,
 } from '../src/lib/responses';
 import { validateContextId } from '../src/lib/auth';
+import { InferenceFailure } from '../src/inference/adapter';
+import type { InferenceBackendName } from '../src/lib/inference-types';
 import type { Env } from '../src/config';
 import { manageCacheControl } from '../src/inference/adapters/anthropic-cache';
 import type {
@@ -156,6 +158,33 @@ describe('responses', () => {
     expect(await res.text()).toBe(
       '{"Message":"boom","ExceptionType":"ArgumentException","MessageDetail":"detail"}',
     );
+  });
+
+  it('errorResponseFrom names the API a normalized provider failure came from', async () => {
+    const named: readonly (readonly [InferenceBackendName, string])[] = [
+      ['anthropic', 'AnthropicApiException'],
+      ['claude-code', 'AnthropicApiException'],
+      ['openai', 'OpenAIApiException'],
+      ['codex', 'OpenAIApiException'],
+      ['moonshot', 'MoonshotApiException'],
+      ['kimi', 'MoonshotApiException'],
+      ['gemini', 'GeminiApiException'],
+    ];
+    for (const [backend, exceptionType] of named) {
+      const res = errorResponseFrom(
+        new InferenceFailure({
+          backend,
+          status: 429,
+          code: 'rate_limit',
+          message: 'rate limited',
+          retryable: true,
+          failureClass: 'http',
+        }),
+        CORS,
+      );
+      expect(res.status, backend).toBe(429);
+      expect(await res.json(), backend).toMatchObject({ ExceptionType: exceptionType });
+    }
   });
 
   it('errorResponseFrom maps a WorkerError to its own status + ExceptionType', async () => {
@@ -651,7 +680,13 @@ describe('handleHealth', () => {
     });
     expect(JSON.stringify(body)).not.toMatch(/CLAUDE_API_KEY|secret|\.dev\.vars/i);
     // A dormant provider's key is not a readiness failure on an Anthropic-only route set.
-    const { OPENAI_API_KEY: _openai, GEMINI_API_KEY: _gemini, ...anthropicOnly } = ENV;
+    const {
+      OPENAI_API_KEY: _openai,
+      MOONSHOT_API_KEY: _moonshot,
+      KIMI_API_KEY: _kimi,
+      GEMINI_API_KEY: _gemini,
+      ...anthropicOnly
+    } = ENV;
     expect(
       handleHealth(CORS, { ...anthropicOnly, ENVIRONMENT: 'production' }, undefined, 'fc00704')
         .status,
@@ -730,6 +765,20 @@ describe('handleHealth', () => {
       'fc00704',
     );
     expect(configured.status).toBe(200);
+  });
+
+  it('requires the evidence bucket when a production prompt routes to Kimi', () => {
+    const routed = {
+      ...ENV,
+      ENVIRONMENT: 'production',
+      MODEL_OVERRIDES:
+        'free-render-verification=@cf/qwen/qwen3.8-27b,render-verification=kimi-for-coding',
+    };
+    expect(handleHealth(CORS, routed, undefined, 'fc00704').status).toBe(503);
+    expect(
+      handleHealth(CORS, { ...routed, INLINE_EVIDENCE_R2: {} as R2Bucket }, undefined, 'fc00704')
+        .status,
+    ).toBe(200);
   });
 
   it('stays a plain liveness check outside production', async () => {

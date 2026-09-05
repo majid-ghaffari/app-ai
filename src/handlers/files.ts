@@ -88,6 +88,15 @@ export async function handleFileUpload(
       prompts.map((prompt) => resolvePromptFileRoute(prompt, env, files, tenantScope)),
     );
     const uniqueRoutes = uniqueFileRoutes(promptRoutes);
+    for (const route of uniqueRoutes) {
+      files.validateUpload(
+        route.profile,
+        route.policy,
+        file.size,
+        file.name || 'upload',
+        file.type || 'application/octet-stream',
+      );
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     const settled = await Promise.allSettled(
       uniqueRoutes.map(async (route): Promise<RouteUpload> => {

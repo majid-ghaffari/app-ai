@@ -8,14 +8,15 @@
  * is a property of the model itself, not of a deployment, so it lives here in code
  * and never in `wrangler.toml`.
  *
- * Matching is by model-id FAMILY PREFIX, never by exact id, so a newly released
- * version inside a family inherits its family's facts with no code change. A model
- * id matching no family THROWS, naming the id and the variable that supplied it —
+ * Versioned families match by model-id prefix so a newly released version can
+ * inherit stable facts. Provider-fixed service aliases match exact ids so an
+ * undocumented name cannot inherit unsupported behavior. A model id matching no
+ * family THROWS, naming the id and the variable that supplied it —
  * there is no default provider to fall through to, because guessing a provider is
  * how a credential, a file route, and a tenant's evidence end up at the wrong
  * vendor.
  *
- * A family prefix resolves to exactly ONE provider. Two providers serving the same
+ * A family match resolves to exactly ONE provider. Two providers serving the same
  * model family (the same weights behind two endpoints) cannot be distinguished by
  * a model id alone and must be separated at the prefix, not guessed here.
  *
@@ -55,6 +56,22 @@ const FILE_POLICIES = {
     lifecycle: 'provider-managed',
     purpose: 'user_data',
   },
+  'moonshot-image-files': {
+    name: 'moonshot-image-files',
+    provider: 'moonshot',
+    compatibleApiFamilies: ['moonshot-chat-completions'],
+    inputMode: 'provider-file',
+    lifecycle: 'provider-managed',
+    purpose: 'image',
+  },
+  'kimi-stored-evidence': {
+    name: 'kimi-stored-evidence',
+    provider: 'kimi',
+    compatibleApiFamilies: ['moonshot-chat-completions'],
+    inputMode: 'worker-file',
+    lifecycle: 'worker-managed',
+    purpose: null,
+  },
   'gemini-provider-files': {
     name: 'gemini-provider-files',
     provider: 'gemini',
@@ -87,14 +104,15 @@ export function listFilePolicies(): readonly FilePolicyName[] {
 }
 
 /**
- * One model family: the model-id prefixes that identify it and everything a
- * model id inside it implies.
+ * One model family: the model-id patterns that identify it and everything a
+ * matching model id implies.
  */
 interface ModelFamilyDefinition {
   /** Stable profile identity carried by continuation tokens, traces, and errors. */
   readonly profile: string;
-  /** The model-id prefixes that belong to this family. Longest match wins. */
+  /** Model ids or prefixes in this family. Longest match wins. */
   readonly prefixes: readonly [string, ...string[]];
+  readonly exact?: true;
   readonly provider: ProviderName;
   readonly apiFamily: ProviderApiFamily;
   readonly capabilities: ModelCapabilities;
@@ -103,6 +121,7 @@ interface ModelFamilyDefinition {
 
 const EVERY_CAPABILITY: ModelCapabilities = {
   vision: true,
+  reusableFiles: true,
   providerFiles: true,
   streaming: true,
   structuredOutput: true,
@@ -162,6 +181,97 @@ const MODEL_FAMILIES = [
     filePolicy: 'openai-user-data-files',
   },
   {
+    profile: 'kimi-metered-k3',
+    prefixes: ['kimi-k3'],
+    provider: 'moonshot',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      reusableFiles: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'moonshot-image-files',
+    exact: true,
+  },
+  {
+    profile: 'kimi-metered-k26',
+    prefixes: ['kimi-k2.6'],
+    provider: 'moonshot',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      reusableFiles: false,
+      reasoning: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'moonshot-image-files',
+    exact: true,
+  },
+  {
+    profile: 'kimi-metered-k27',
+    prefixes: ['kimi-k2.7-code'],
+    provider: 'moonshot',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      reusableFiles: false,
+      reasoning: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'moonshot-image-files',
+    exact: true,
+  },
+  {
+    profile: 'kimi-metered-k27-highspeed',
+    prefixes: ['kimi-k2.7-code-highspeed'],
+    provider: 'moonshot',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      reusableFiles: false,
+      reasoning: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'moonshot-image-files',
+    exact: true,
+  },
+  {
+    profile: 'kimi-code-k3',
+    prefixes: ['k3', 'k3-256k'],
+    provider: 'kimi',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: { ...EVERY_CAPABILITY, providerFiles: false, inlineCacheBreakpoints: false },
+    filePolicy: 'kimi-stored-evidence',
+    exact: true,
+  },
+  {
+    profile: 'kimi-code-coding',
+    prefixes: ['kimi-for-coding'],
+    provider: 'kimi',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      providerFiles: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'kimi-stored-evidence',
+    exact: true,
+  },
+  {
+    profile: 'kimi-code-highspeed',
+    prefixes: ['kimi-for-coding-highspeed'],
+    provider: 'kimi',
+    apiFamily: 'moonshot-chat-completions',
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      providerFiles: false,
+      inlineCacheBreakpoints: false,
+      reasoning: false,
+    },
+    filePolicy: 'kimi-stored-evidence',
+    exact: true,
+  },
+  {
     profile: 'gemini',
     prefixes: ['gemini-'],
     provider: 'gemini',
@@ -179,6 +289,7 @@ const MODEL_FAMILIES = [
     apiFamily: 'cloudflare-workers-ai',
     capabilities: {
       vision: true,
+      reusableFiles: false,
       providerFiles: false,
       streaming: false,
       structuredOutput: false,
@@ -198,6 +309,7 @@ export type ModelProfileName = (typeof MODEL_FAMILIES)[number]['profile'];
 export interface ModelFamily {
   readonly profile: ModelProfileName;
   readonly prefixes: readonly [string, ...string[]];
+  readonly exact?: true;
   readonly provider: ProviderName;
   readonly apiFamily: ProviderApiFamily;
   readonly capabilities: ModelCapabilities;
@@ -215,12 +327,25 @@ const MODEL_OUTPUT_LIMITS: readonly (readonly [prefix: string, maxOutputTokens: 
   ['gemini-3', 65_536],
 ];
 
+const EXACT_MODEL_OUTPUT_LIMITS = new Map<string, number>([
+  ['kimi-k3', 131_072],
+  ['kimi-k2.6', 131_072],
+  ['kimi-k2.7-code', 131_072],
+  ['kimi-k2.7-code-highspeed', 131_072],
+  ['k3', 131_072],
+  ['k3-256k', 131_072],
+  ['kimi-for-coding', 131_072],
+  ['kimi-for-coding-highspeed', 131_072],
+]);
+
 /**
  * The most output tokens one request to `model` may ask for. Throws for a model whose generation
  * the catalog records no limit for, so a prompt sized to its model's maximum fails before provider
  * I/O rather than at the provider.
  */
 export function modelMaxOutputTokens(model: string): number {
+  const exact = EXACT_MODEL_OUTPUT_LIMITS.get(model);
+  if (exact !== undefined) return exact;
   let limit: number | null = null;
   let matchedLength = 0;
   for (const [prefix, maxOutputTokens] of MODEL_OUTPUT_LIMITS) {
@@ -263,7 +388,12 @@ export function resolveModelFamily(model: string, configuredBy: string): ModelFa
   let matchedLength = 0;
   for (const family of MODEL_FAMILIES) {
     for (const prefix of family.prefixes) {
-      if (model.startsWith(prefix) && prefix.length > matchedLength) {
+      if (
+        ('exact' in family && family.exact === true
+          ? model === prefix
+          : model.startsWith(prefix)) &&
+        prefix.length > matchedLength
+      ) {
         matched = family;
         matchedLength = prefix.length;
       }
@@ -280,9 +410,11 @@ export function resolveModelFamily(model: string, configuredBy: string): ModelFa
 }
 
 function knownPrefixes(): string {
-  return MODEL_FAMILIES.flatMap((family) => family.prefixes)
-    .map((prefix) => `${prefix}*`)
-    .join(', ');
+  return MODEL_FAMILIES.flatMap((family) =>
+    family.prefixes.map((prefix) =>
+      'exact' in family && family.exact === true ? prefix : `${prefix}*`,
+    ),
+  ).join(', ');
 }
 
 /**
@@ -321,9 +453,15 @@ export function validateModelCatalog(): void {
     for (const [other, otherOwner] of prefixes) {
       // A nested prefix is fine (longest match wins) only while both sides agree
       // on the provider; otherwise one id would belong to two vendors.
-      if (prefix === other || !other.startsWith(prefix)) continue;
       const ownerFamily = MODEL_FAMILIES.find((family) => family.profile === owner);
       const otherFamily = MODEL_FAMILIES.find((family) => family.profile === otherOwner);
+      if (
+        prefix === other ||
+        (ownerFamily && 'exact' in ownerFamily && ownerFamily.exact === true) ||
+        (otherFamily && 'exact' in otherFamily && otherFamily.exact === true) ||
+        !other.startsWith(prefix)
+      )
+        continue;
       if (ownerFamily && otherFamily && ownerFamily.provider !== otherFamily.provider) {
         throw new Error(
           `Nested model-id prefixes "${prefix}" and "${other}" resolve to different providers`,

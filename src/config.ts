@@ -48,6 +48,8 @@ export interface WorkersAiBinding {
  * values only through the accessors below.
  */
 export interface Env {
+  /** Private encrypted evidence storage used by worker-managed file policies. */
+  readonly INLINE_EVIDENCE_R2?: R2Bucket;
   /** Deployment label used for diagnostics; LOG_TARGETS_* alone controls log routing. */
   readonly ENVIRONMENT?: string;
   /** Explicit opt-in for paid provider calls outside production. */
@@ -65,6 +67,20 @@ export interface Env {
   readonly ANTHROPIC_API_BASE?: string;
   /** OpenAI API origin (`https://api.openai.com`), no trailing slash. Non-secret var. */
   readonly OPENAI_API_BASE?: string;
+  /** Moonshot API origin (`https://api.moonshot.ai`), no trailing slash. Non-secret var. */
+  readonly MOONSHOT_API_BASE?: string;
+  /**
+   * Kimi Code subscription origin (`https://api.kimi.com/coding`), no trailing
+   * slash. The Chat Completions adapter appends `/v1/chat/completions` to it.
+   * Non-secret var; distinct from the metered `MOONSHOT_API_BASE` account.
+   */
+  readonly KIMI_API_BASE?: string;
+  /** Maximum bytes accepted by one worker-managed Kimi evidence upload. */
+  readonly KIMI_EVIDENCE_MAX_BYTES?: string;
+  /** Maximum aggregate bytes materialized by one Kimi inference request. */
+  readonly KIMI_EVIDENCE_MAX_TOTAL_BYTES?: string;
+  /** Maximum aggregate stored text bytes retained by one Kimi inference request. */
+  readonly KIMI_EVIDENCE_MAX_TEXT_BYTES?: string;
   /**
    * Gemini Developer API origin including its version segment
    * (`https://generativelanguage.googleapis.com/v1beta`), no trailing slash.
@@ -132,6 +148,18 @@ export interface Env {
    */
   readonly OPENAI_API_KEY?: string;
   /**
+   * Moonshot API key for the metered platform account. SECRET — required only
+   * while a resolved route uses Moonshot; a blank one is not reported missing
+   * on a deployment that routes nothing there (`missingRequiredSecretNames`).
+   */
+  readonly MOONSHOT_API_KEY?: string;
+  /**
+   * Kimi Code subscription API key. SECRET — required only while a resolved
+   * route uses Kimi Code; a blank one is not reported missing on a deployment
+   * that routes nothing there (`missingRequiredSecretNames`).
+   */
+  readonly KIMI_API_KEY?: string;
+  /**
    * Gemini API key. SECRET — required only while a resolved route uses Gemini;
    * a blank one is not reported missing on a deployment that routes nothing
    * there (`missingRequiredSecretNames`).
@@ -190,6 +218,11 @@ export interface Env {
   readonly AUDIT_MAX_MESSAGE_BYTES?: string;
 }
 
+export function inlineEvidenceBucket(env: Env): R2Bucket {
+  if (!env.INLINE_EVIDENCE_R2) throw new Error('Missing required binding INLINE_EVIDENCE_R2');
+  return env.INLINE_EVIDENCE_R2;
+}
+
 /** Required string variables; optional bindings and LOG_SEQ_API_KEY are intentionally excluded. */
 type RequiredVarName =
   | 'ENVIRONMENT'
@@ -197,6 +230,11 @@ type RequiredVarName =
   | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
   | 'OPENAI_API_BASE'
+  | 'MOONSHOT_API_BASE'
+  | 'KIMI_API_BASE'
+  | 'KIMI_EVIDENCE_MAX_BYTES'
+  | 'KIMI_EVIDENCE_MAX_TOTAL_BYTES'
+  | 'KIMI_EVIDENCE_MAX_TEXT_BYTES'
   | 'GEMINI_API_BASE'
   | 'LOG_TARGETS_TRACE'
   | 'LOG_TARGETS_DEBUG'
@@ -224,6 +262,8 @@ type RequiredVarName =
   | 'AUDIT_MAX_UPLOAD_BYTES'
   | 'AUDIT_MAX_MESSAGE_BYTES'
   | 'OPENAI_API_KEY'
+  | 'MOONSHOT_API_KEY'
+  | 'KIMI_API_KEY'
   | 'GEMINI_API_KEY'
   | 'TOKEN_ENCRYPTION_SECRET';
 
@@ -231,6 +271,8 @@ type RequiredVarName =
 const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
   'CLAUDE_API_KEY',
   'OPENAI_API_KEY',
+  'MOONSHOT_API_KEY',
+  'KIMI_API_KEY',
   'GEMINI_API_KEY',
   'TOKEN_ENCRYPTION_SECRET',
   'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
@@ -314,6 +356,31 @@ export function anthropicApiBase(env: Env): string {
 /** OpenAI API origin. Only the OpenAI wire adapter may call this. */
 export function openaiApiBase(env: Env): string {
   return paidProviderBase(env, 'OPENAI_API_BASE', 'openai');
+}
+
+/** Moonshot API origin. Only the Moonshot wire adapter may call this. */
+export function moonshotApiBase(env: Env): string {
+  return paidProviderBase(env, 'MOONSHOT_API_BASE', 'moonshot');
+}
+
+/** Kimi Code subscription origin. Only the Kimi wire adapter may call this. */
+export function kimiApiBase(env: Env): string {
+  return paidProviderBase(env, 'KIMI_API_BASE', 'kimi');
+}
+
+/** Maximum byte length of one worker-managed Kimi evidence object. */
+export function kimiEvidenceMaxBytes(env: Env): number {
+  return positiveIntegerVar(env, 'KIMI_EVIDENCE_MAX_BYTES');
+}
+
+/** Maximum aggregate byte length of worker-managed evidence in one request. */
+export function kimiEvidenceMaxTotalBytes(env: Env): number {
+  return positiveIntegerVar(env, 'KIMI_EVIDENCE_MAX_TOTAL_BYTES');
+}
+
+/** Maximum aggregate stored text bytes retained by one Kimi request. */
+export function kimiEvidenceMaxTextBytes(env: Env): number {
+  return positiveIntegerVar(env, 'KIMI_EVIDENCE_MAX_TEXT_BYTES');
 }
 
 /** Gemini API origin. Only the Gemini wire adapter may call this. */
@@ -444,6 +511,8 @@ export function masterSubscriberId(env: Env): number {
 const PROVIDER_SECRET_VAR: Readonly<Partial<Record<ProviderName, RequiredVarName>>> = {
   anthropic: 'CLAUDE_API_KEY',
   openai: 'OPENAI_API_KEY',
+  moonshot: 'MOONSHOT_API_KEY',
+  kimi: 'KIMI_API_KEY',
   gemini: 'GEMINI_API_KEY',
 };
 
@@ -485,6 +554,16 @@ export function claudeApiKey(env: Env): string {
 /** The OpenAI API key. Only the OpenAI wire adapter may call this. */
 export function openaiApiKey(env: Env): string {
   return requireVar(env, 'OPENAI_API_KEY');
+}
+
+/** The Moonshot API key. Only the Moonshot wire adapter may call this. */
+export function moonshotApiKey(env: Env): string {
+  return requireVar(env, 'MOONSHOT_API_KEY');
+}
+
+/** The Kimi Code subscription API key. Only the Kimi wire adapter may call this. */
+export function kimiApiKey(env: Env): string {
+  return requireVar(env, 'KIMI_API_KEY');
 }
 
 /** The Gemini API key. Only the Gemini wire adapter may call this. */
@@ -655,6 +734,9 @@ function positiveIntegerVar(
   env: Env,
   name:
     | 'MASTER_SUBSCRIBER_ID'
+    | 'KIMI_EVIDENCE_MAX_BYTES'
+    | 'KIMI_EVIDENCE_MAX_TOTAL_BYTES'
+    | 'KIMI_EVIDENCE_MAX_TEXT_BYTES'
     | 'AUDIT_SESSION_TTL_SECONDS'
     | 'AUDIT_MAX_RUNS'
     | 'AUDIT_RUN_HEADROOM'

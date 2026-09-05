@@ -17,6 +17,7 @@ import {
   freeVisualVerifyEnabled,
   auditSessionAuthority,
   inferenceQuotaInternalOrigin,
+  inlineEvidenceBucket,
   missingRequiredSecretNames,
   workersAiBinding,
   type Env,
@@ -74,6 +75,7 @@ function productionReadinessFailure(env: Env): Error | null {
   }
   try {
     validateModelRouting(env);
+    if (providers.has('kimi')) inlineEvidenceBucket(env);
     if (providers.has('cloudflare')) {
       workersAiBinding(env);
       auditSessionAuthority(env);

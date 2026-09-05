@@ -21,11 +21,11 @@ purpose, or ordinary model override, and a provider, model, or capability claim 
 nowhere but app-ai's own code and configuration. Controlled app-ai-local and test seams may override
 a profile without widening the public contract.
 
-Four things the system does not do, each a boundary the fitness suites hold: it keeps no production
-intermediary file or blob store (no R2, KV, Durable Object, or other service holds upload bytes); it
-routes through no third-party AI gateway; it rewrites no prompt text in transport; and it claims no
-cross-provider parity by silently dropping tools, files, structured output, reasoning, caching, or
-usage data.
+The system routes through no third-party AI gateway, rewrites no prompt text in transport, and
+claims no cross-provider parity by silently dropping tools, files, structured output, reasoning,
+caching, or usage data. Provider-managed routes upload bytes directly. Kimi's worker-managed file
+policy stores encrypted evidence in a private R2 bucket so the same public `/files` references can
+be materialized as text or compact `ms://` image inputs across HTTP requests.
 
 ## The routing chain
 
@@ -42,10 +42,10 @@ Each link is owned by exactly one place, and none of them is a caller:
   `wrangler.toml [vars]`, with sparse per-prompt exceptions in `MODEL_OVERRIDES`. Model IDs are
   configuration; a key in `MODEL_OVERRIDES` that names no registered prompt or prompt group throws
   rather than being ignored.
-- **Model id → provider.** `src/inference/model-catalog.ts` maps a model-id FAMILY PREFIX to the
-  provider, API family, capabilities, and direct-file policy that model implies. What a model IS is
-  a fact about the model, so it lives in code; matching by prefix rather than exact id means a new
-  release inside a family inherits its family's facts with no edit. An id no family claims throws,
+- **Model id → provider.** `src/inference/model-catalog.ts` maps versioned family prefixes and exact
+  provider-fixed Kimi/Moonshot ids to the provider, API family, capabilities, and direct-file policy
+  that model implies. What a model IS is a fact about the model, so it lives in code; a new release
+  inherits facts only inside a versioned family. An id no family claims throws,
   naming the id and the variable that supplied it — there is no default provider to fall through
   to, because guessing one is how a credential, a file route, and a tenant's evidence reach the
   wrong vendor.
@@ -108,8 +108,12 @@ destination to its group's file route, collapses duplicates — including groups
 group's route, so a cascade's evidence is uploaded once — uploads distinct routes concurrently, and
 returns opaque authenticated references: one primary reference plus a `references` map naming every
 declared prompt, so a caller reads the reference for the prompt it is about to run whether the
-declared prompts resolved to one route or several. File bytes go directly to providers and are never
-stored by app-ai.
+declared prompts resolved to one route or several. Provider-managed routes send bytes directly to
+the provider. A Kimi route stores encrypted image and text bytes in `INLINE_EVIDENCE_R2`, bounded
+by the reference's expiry, and uses Kimi's image Files upload to keep model requests small.
+When the combined uploaded HTML would crowd Kimi's request limit, the adapter
+keeps large documents in R2 and asks Kimi to search or read exact fragments
+through bounded internal tools before the public completion or chat stream.
 
 A public reference carries no provider authority in its identifier: the route is sealed inside it
 under `TOKEN_ENCRYPTION_SECRET` and bound to a keyed tenant pseudonym. Resolution rejects a
@@ -117,6 +121,11 @@ malformed, expired, tampered, cross-tenant, cross-account, cross-policy, or cros
 before an adapter is selected. `DELETE /files/{id}` reads the provider out of that sealed reference.
 No verb enumerates a provider account: one account holds every tenant's uploads, so a listing could
 only answer with files its caller never uploaded, and `GET /files` is not a route.
+
+The catalog distinguishes `reusableFiles`, which means the app-ai upload and
+reference contract works, from `providerFiles`, which means the provider owns
+the full upstream file lifecycle. Kimi's worker-managed evidence has the first
+capability and lacks the second.
 
 Provider-scoped dedup metadata records only what validating and deduplicating the upstream object
 needs — provider, account scope, file policy, content hash, upstream file id, media type, expiry, and
@@ -126,13 +135,15 @@ is unavailable and fails explicitly.
 
 ## Providers
 
-| Provider              | Status                      | What it is used for                                                                          |
-| --------------------- | --------------------------- | -------------------------------------------------------------------------------------------- |
-| Anthropic Messages    | Primary production provider | Every production prompt except the protected-CI visual judge resolves to Anthropic.          |
-| Cloudflare Workers AI | Protected visual judge      | One inline-image, non-streaming route used by protected CI within the daily free allocation. |
-| OpenAI Responses      | Adapter present, unrouted   | Deterministic adapter contract tests and the explicit paid smoke matrix.                     |
-| Gemini                | Adapter present, unrouted   | Deterministic adapter contract tests and the double-opt-in paid probe matrix.                |
-| Claude Code, Codex    | Local development only      | The free local fulfillers behind the dev shim; never bundled, never reached in production.   |
+| Provider                   | Status                      | What it is used for                                                                          |
+| -------------------------- | --------------------------- | -------------------------------------------------------------------------------------------- |
+| Anthropic Messages         | Primary production provider | Every production prompt except the protected-CI visual judge resolves to Anthropic.          |
+| Cloudflare Workers AI      | Protected visual judge      | One inline-image, non-streaming route used by protected CI within the daily free allocation. |
+| OpenAI Responses           | Adapter present, unrouted   | Deterministic adapter contract tests and the explicit paid smoke matrix.                     |
+| Moonshot Chat Completions  | Adapter present, unrouted   | Metered platform account with deterministic contract tests and an opt-in paid smoke matrix.  |
+| Kimi Code Chat Completions | Adapter present, unrouted   | Subscription account with deterministic contract tests and an opt-in paid probe matrix.      |
+| Gemini                     | Adapter present, unrouted   | Deterministic adapter contract tests and the double-opt-in paid probe matrix.                |
+| Claude Code, Codex         | Local development only      | The free local fulfillers behind the dev shim; never bundled, never reached in production.   |
 
 An unrouted adapter is reachable only by configuring a model in its family. Doing so is a
 deliberate act with the conditions below attached to it.

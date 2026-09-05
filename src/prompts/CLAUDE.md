@@ -11,6 +11,10 @@ NAME to its text and metadata is [`../prompt-registry.ts`](../prompt-registry.ts
 `X-Personalizer-System-Prompt` header) and never hardcodes prompt content — the lib-side contract is
 `packages/storefront/src/admin/ai/CONTRACTS.md` + `docs/AI-LAYER.md` in the lib repo.
 
+`kimi-html-retrieval.md` is an adapter-internal prompt for selecting exact fragments from oversized
+uploaded HTML. It has no public prompt name or registry entry; the Kimi adapter invokes it before
+the original registered prompt and keeps its tool transcript inside app-ai.
+
 Every prompt belongs to exactly one typed compatibility group. The same registry owns each group's
 capability tier, capability requirements, and file-reusing fallback edges. The
 registry resolves prompt → group → tier → configured model, and the model id decides provider,

@@ -219,6 +219,9 @@ describe('GET /prompts — master gate', () => {
     for (const secret of [
       ENV.CLAUDE_API_KEY,
       ENV.OPENAI_API_KEY,
+      ENV.MOONSHOT_API_KEY,
+      ENV.KIMI_API_KEY,
+      ENV.GEMINI_API_KEY,
       ENV.PERSONALIZER_INTEGRATION_BRIDGE_TOKEN,
       ENV.AUDIT_SESSION_SIGNING_SECRET,
     ]) {

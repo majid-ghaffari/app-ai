@@ -563,6 +563,8 @@ describe('Anthropic complete adapter', () => {
   it('does not synthesize opaque state for non-Anthropic compatibility history', () => {
     const raw = [{ role: 'assistant', content: [{ type: 'text', text: 'ordinary history' }] }];
     expect(parseCompatibilityMessages(raw, 'openai')[0]?.providerState).toBeUndefined();
+    expect(parseCompatibilityMessages(raw, 'moonshot')[0]?.providerState).toBeUndefined();
+    expect(parseCompatibilityMessages(raw, 'kimi')[0]?.providerState).toBeUndefined();
     expect(parseCompatibilityMessages(raw, 'gemini')[0]?.providerState).toBeUndefined();
     expect(parseCompatibilityMessages(raw, 'anthropic')[0]?.providerState).toMatchObject({
       backend: 'anthropic',
@@ -1013,6 +1015,84 @@ describe('Anthropic streaming and shared agent loop', () => {
         }),
       ]),
     );
+  });
+
+  it('retains both Anthropic tool cycles through a third provider completion', async () => {
+    const toolTurn = (id: string) =>
+      sse([
+        { type: 'message_start', message: { usage: { input_tokens: 4 } } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: `thinking:${id}` },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: `signature:${id}` },
+        },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id, name: 'lookup' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"id":"42"}' },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { output_tokens: 1 },
+        },
+      ]);
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(toolTurn('tool_first'))
+      .mockResolvedValueOnce(toolTurn('tool_second'))
+      .mockResolvedValueOnce(
+        sse([
+          { type: 'message_start', message: { usage: { input_tokens: 6 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done' } },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { output_tokens: 1 },
+          },
+        ]),
+      );
+    await createInferenceService(ENV).runAgent({
+      ...canonicalRequest(),
+      mode: 'server',
+      maxIterations: 3,
+      tools: canonicalRequest().tools.filter(
+        (tool): tool is CanonicalServerToolDefinition => tool.execution === 'server',
+      ),
+      async executeTool(call) {
+        return {
+          type: 'tool-result',
+          toolCallId: call.id,
+          content: [{ type: 'text', text: `result:${call.id}`, cache: 'none' }],
+          isError: false,
+          cache: 'none',
+        };
+      },
+    });
+    const third = JSON.stringify(sentBody(fetchCall(fetchMock, 2).init).messages);
+    expect(third).toContain('tool_first');
+    expect(third).toContain('result:tool_first');
+    expect(third).toContain('thinking:tool_first');
+    expect(third).toContain('signature:tool_first');
+    expect(third).toContain('tool_second');
+    expect(third).toContain('result:tool_second');
+    expect(third).toContain('thinking:tool_second');
+    expect(third).toContain('signature:tool_second');
   });
 
   it('passes initial continuation to the first adapter turn', async () => {

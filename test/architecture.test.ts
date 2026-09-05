@@ -148,11 +148,17 @@ describe('fitness: party-driven composition', () => {
 describe('fitness: secrets never enter logs or model context', () => {
   const SECRET_IDENTIFIERS = [
     'CLAUDE_API_KEY',
+    'OPENAI_API_KEY',
+    'MOONSHOT_API_KEY',
+    'KIMI_API_KEY',
+    'GEMINI_API_KEY',
+    'TOKEN_ENCRYPTION_SECRET',
     'apiKey',
     'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
     'serviceToken',
     'AUDIT_ACTIVATION_SIGNING_SECRET',
     'AUDIT_SESSION_SIGNING_SECRET',
+    'AUDIT_STATUS_SIGNING_SECRET',
   ];
 
   it('no log/console call references a credential identifier', () => {
@@ -297,7 +303,7 @@ describe('fitness: prompt-grouped provider authority', () => {
       if (path.includes('/inference/adapters/') || path.endsWith('/inference/factory.ts')) continue;
       const code = stripComments(source);
       expect(code, `${path}: provider protocol imports belong to adapters`).not.toMatch(
-        /from ['"][^'"]*inference\/adapters\/(?:anthropic|openai|gemini)[^'"]*['"]|from ['"][^'"]*lib\/anthropic['"]/,
+        /from ['"][^'"]*inference\/adapters\/(?:anthropic|openai|moonshot|kimi|gemini)[^'"]*['"]|from ['"][^'"]*lib\/anthropic['"]/,
       );
     }
   });
@@ -307,7 +313,7 @@ describe('fitness: prompt-grouped provider authority', () => {
       if (path.includes('/inference/adapters/') || path.endsWith('/config.ts')) continue;
       const code = stripComments(source);
       expect(code, `${path}: provider transport authority belongs to its adapter`).not.toMatch(
-        /\b(?:anthropicApiBase|claudeApiKey|openaiApiBase|openaiApiKey|geminiApiBase|geminiApiKey)\b/,
+        /\b(?:anthropicApiBase|claudeApiKey|openaiApiBase|openaiApiKey|moonshotApiBase|moonshotApiKey|kimiApiBase|kimiApiKey|geminiApiBase|geminiApiKey)\b/,
       );
     }
   });
@@ -329,7 +335,9 @@ describe('fitness: prompt-grouped provider authority', () => {
       expect(
         code,
         `${path}: provider history recovery belongs to inference compatibility`,
-      ).not.toMatch(/\.provider\s*===\s*['"](?:anthropic|openai|gemini)['"]|\bcontentBlocks\b/);
+      ).not.toMatch(
+        /\.provider\s*===\s*['"](?:anthropic|openai|moonshot|kimi|gemini)['"]|\bcontentBlocks\b/,
+      );
     }
   });
 
@@ -555,7 +563,7 @@ describe('fitness: No Hardcoded Config Values', () => {
       // FILES_KV is the one documented OPTIONAL binding (graceful dedup no-op)
       // and may be read off the typed Env directly.
       expect(code, `${path}: read config via the src/config.ts accessors`).not.toMatch(
-        /\benv\.(PERSONALIZER_API_URL|ANTHROPIC_API_BASE|OPENAI_API_BASE|GEMINI_API_BASE|LOG_TARGETS_TRACE|LOG_TARGETS_DEBUG|LOG_TARGETS_INFO|LOG_TARGETS_WARN|LOG_TARGETS_ERROR|LOG_TARGETS_FATAL|LOG_SEQ_INGEST_URL|LOG_SEQ_API_KEY|CLAUDE_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY|TOKEN_ENCRYPTION_SECRET|PERSONALIZER_INTEGRATION_BRIDGE_TOKEN|CREDENTIALED_ORIGINS|MASTER_SUBSCRIBER_ID|MODEL_OVERRIDES|ENVIRONMENT)\b/,
+        /\benv\.(INLINE_EVIDENCE_R2|PERSONALIZER_API_URL|ANTHROPIC_API_BASE|OPENAI_API_BASE|MOONSHOT_API_BASE|KIMI_API_BASE|KIMI_EVIDENCE_MAX_BYTES|KIMI_EVIDENCE_MAX_TOTAL_BYTES|KIMI_EVIDENCE_MAX_TEXT_BYTES|GEMINI_API_BASE|LOG_TARGETS_TRACE|LOG_TARGETS_DEBUG|LOG_TARGETS_INFO|LOG_TARGETS_WARN|LOG_TARGETS_ERROR|LOG_TARGETS_FATAL|LOG_SEQ_INGEST_URL|LOG_SEQ_API_KEY|CLAUDE_API_KEY|OPENAI_API_KEY|MOONSHOT_API_KEY|KIMI_API_KEY|GEMINI_API_KEY|TOKEN_ENCRYPTION_SECRET|PERSONALIZER_INTEGRATION_BRIDGE_TOKEN|CREDENTIALED_ORIGINS|MASTER_SUBSCRIBER_ID|MODEL_OVERRIDES|ENVIRONMENT)\b/,
       );
     }
   });

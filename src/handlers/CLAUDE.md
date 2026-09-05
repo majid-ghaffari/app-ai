@@ -124,10 +124,11 @@ or changes the inference response.
   is defined in `../lib/client-tools.ts`; the wire schema the model sees is the
   `page?: string` hint. See the top-level CLAUDE.md → CLIENT-tool mode.
 - An adapter can set the provider-neutral `requiredOnNextTurn` hint when an
-  ordinary terminal assistant turn must also survive the HTTP boundary (Gemini
-  thought signatures). `/chat` and registered `/messages` seal and return that
+  ordinary terminal assistant turn must also survive the HTTP boundary, as
+  Gemini does for thought signatures. `/chat` and registered `/messages` seal and return that
   state, accept the opaque token on the matching next request, and validate it
-  before attachment/file/provider I/O. Ordinary Anthropic text adds no token.
+  before attachment/file/provider I/O. Ordinary Anthropic, Moonshot, and Kimi
+  text adds no token; Moonshot/Kimi tool transcripts still carry sealed state.
 - Accept the router's `LoggingRuntime`, derive a scoped logger, and thread it into shared helpers.
   Direct `console.*` calls are forbidden outside the logger's Console sink.
 - Every HTTP error body — and every SSE `error` event payload — is the Brain wire

@@ -16,6 +16,7 @@ export { default as onboarding } from './onboarding.md';
 export { default as placement } from './placement.md';
 export { default as proposals } from './proposals.md';
 export { default as analyticsInsights } from './analytics-insights.md';
+export { default as kimiHtmlRetrieval } from './kimi-html-retrieval.md';
 
 // Multi-file prompt: image-selection. `prompt.md` = system text; `sample.md` =
 // a training-examples attachment (uploaded, prepended to the first message).

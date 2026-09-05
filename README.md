@@ -1,6 +1,6 @@
 # App AI Service
 
-Cloudflare Worker that provides context-validated, prompt-grouped inference for LimeSpot applications. Production routes use Anthropic except the protected-CI visual judge, which uses the configured Cloudflare Workers AI vision binding within its free daily allocation. OpenAI Responses and Gemini `generateContent` adapters are implemented as dormant candidates pending evaluations.
+Cloudflare Worker that provides context-validated, prompt-grouped inference for LimeSpot applications. Production routes use Anthropic except the protected-CI visual judge, which uses the configured Cloudflare Workers AI vision binding within its free daily allocation. OpenAI Responses, Moonshot/Kimi Chat Completions (the metered platform and Kimi Code subscription accounts), and Gemini `generateContent` adapters are implemented as dormant candidates pending evaluations.
 
 ## Quick Start
 
@@ -303,8 +303,9 @@ variable, no fallback defaults.
 **Production:**
 
 - Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
-  the provider origins `ANTHROPIC_API_BASE` / `OPENAI_API_BASE` /
-  `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, `MASTER_SUBSCRIBER_ID`, the
+  the provider origins `ANTHROPIC_API_BASE` / `OPENAI_API_BASE` / `MOONSHOT_API_BASE` /
+  `KIMI_API_BASE` / `GEMINI_API_BASE`, the Kimi evidence limit
+  `KIMI_EVIDENCE_MAX_BYTES` / `KIMI_EVIDENCE_MAX_TOTAL_BYTES` / `KIMI_EVIDENCE_MAX_TEXT_BYTES`, `CREDENTIALED_ORIGINS`, `MASTER_SUBSCRIBER_ID`, the
   tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` and their sparse
   per-prompt `MODEL_OVERRIDES` exceptions, plus `LOG_TARGETS_*` and
   `LOG_SEQ_INGEST_URL`, `AUDIT_STATUS_ORIGINS`, plus the `AUDIT_*` session/quota limits (values pinned by `test/config.test.ts`)
@@ -312,6 +313,9 @@ variable, no fallback defaults.
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
   - Add `OPENAI_API_KEY` before configuring an OpenAI model or smoke-testing one
+  - Add `MOONSHOT_API_KEY` before configuring a metered Moonshot/Kimi model or smoke-testing one
+  - Add `KIMI_API_KEY` before configuring a Kimi Code subscription model or smoke-testing one
+  - Provision the private `app-ai-inline-evidence` R2 bucket and its preview bucket before deploying this configuration. Apply a 16-day expiry lifecycle to the `inline-evidence/v1/` prefix; app-ai refuses references after 15 days and deletes its own objects when the caller deletes a reference.
   - Add `GEMINI_API_KEY` before configuring a model in the Gemini family
   - Add `TOKEN_ENCRYPTION_SECRET` as encrypted secret (exactly 32 random bytes encoded as base64,
     the HKDF root for every app-ai-sealed token; rotating it invalidates outstanding opaque file
@@ -462,10 +466,12 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
    `wrangler.toml`; its raw defaults bypass the required revision stamp.
 4. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
-   - Add secrets with keys `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+   - Add secrets with keys `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `MOONSHOT_API_KEY`,
+     `KIMI_API_KEY`, `GEMINI_API_KEY`,
      `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET` (32 random bytes
      encoded as base64), `AUDIT_ACTIVATION_SIGNING_SECRET`,
      `AUDIT_SESSION_SIGNING_SECRET`, and `AUDIT_STATUS_SIGNING_SECRET`
+   - Provision `app-ai-inline-evidence` and `app-ai-inline-evidence-preview` as private R2 buckets with a 16-day expiration lifecycle on `inline-evidence/v1/` before the worker receives the new binding. Kimi stores encrypted merchant evidence there; no public bucket route is needed.
 5. Deploy the Brain `CanAdministerAllSubscribers` validation response first, then deploy this
    worker and make one authenticated `visual-verify-free` request. The live-store workflow is not
    pointed at the route until that smoke returns a parseable `{ pass, reason, fix }` verdict from
@@ -511,8 +517,9 @@ All configured in [wrangler.toml](wrangler.toml):
   - Auto-deploys from `main` branch
 
 Every environment provides the full variable set — `ENVIRONMENT`,
-`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`,
-`GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` /
+`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`, `MOONSHOT_API_BASE`,
+`KIMI_API_BASE`, `KIMI_EVIDENCE_MAX_BYTES` / `KIMI_EVIDENCE_MAX_TOTAL_BYTES` / `KIMI_EVIDENCE_MAX_TEXT_BYTES`, `GEMINI_API_BASE`,
+`CREDENTIALED_ORIGINS`, the tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` /
 `MODEL_FRONTIER`, and the provider API keys + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` +
 `TOKEN_ENCRYPTION_SECRET` + three audit signing secrets, the `AUDIT_STATUS_ORIGINS` allowlist,
 six `LOG_TARGETS_*` routes, and

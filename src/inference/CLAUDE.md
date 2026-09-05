@@ -12,21 +12,30 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 ## Rules
 
 - `model-catalog.ts` is the ONE place a model id implies a provider, API family,
-  capability set, and direct-file policy. It matches by model-id FAMILY PREFIX,
-  never by exact id, so a new release inside a family inherits its family's
-  facts; an id no family claims throws, naming the id and the variable that
+  capability set, and direct-file policy. Versioned families match by prefix;
+  provider-fixed Kimi/Moonshot service aliases match exact documented ids. A
+  new release inherits facts only inside a versioned family; an id no family
+  claims throws, naming the id and the variable that
   supplied it, rather than defaulting to a provider. Model IDS are
-  configuration; what a model IS is a fact and lives here. A family prefix
-  resolves to exactly one provider: two accounts serving one vendor's weights
-  are separated at the prefix rather than guessed, and the catalog rejects a
-  nested prefix pair that would resolve to different providers. It also records
-  each model generation's documented maximum output (`modelMaxOutputTokens`,
-  longest prefix wins, throwing for an unrecorded generation), which the
-  registry's `MODEL_MAXIMUM_OUTPUT` budget resolves through and the Gemini
-  adapter caps its shared thinking-plus-answer budget at. The limits are model-id
-  prefixes: a family entry states its current generation and a narrower entry an
-  earlier one with a lower limit. `/health` readiness and `GET /prompts` resolve
-  every prompt's budget, so an unrecorded generation is reported before a request.
+  configuration; what a model IS is a fact and lives here. Every routing
+  entry resolves to exactly one provider. Versioned families match by prefix;
+  the metered Moonshot account accepts its four exact `kimi-k*` ids and the
+  subscription accepts its four exact `k3` / `kimi-for-coding` ids.
+  Undocumented aliases, including `moonshot-*`, match no family, and the catalog
+  rejects overlapping claims that would resolve one id to different providers.
+  The catalog also records each model generation's documented maximum output
+  (`modelMaxOutputTokens`, longest prefix wins, throwing for an unrecorded
+  generation), which the registry's `MODEL_MAXIMUM_OUTPUT` budget resolves
+  through and the Gemini adapter caps its shared thinking-plus-answer budget at.
+  Exact Kimi/Moonshot Chat Completions ids use 131072, the documented K3
+  default and the Kimi Code 128K safety ceiling, so conductor routes remain
+  below the context-dependent provider maximum.
+  `/health` readiness and `GET /prompts` resolve every prompt's budget, so an
+  unrecorded generation is reported before a request.
+- `reusableFiles` means app-ai can honor its opaque upload-reference contract
+  for a model; `providerFiles` means the provider itself owns a complete Files
+  lifecycle. Kimi has reusable files through encrypted R2 but its provider
+  Files metadata and delete endpoints do not work.
 - Adapters accept only fully resolved `ModelProfile`/`FilePolicy` authority from
   the registry path. They do not infer providers from model names.
 - The runtime never switches on a provider. Adapter selection belongs only in
@@ -53,9 +62,18 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   only their prefix, purpose, envelope shape, and route checks. Their wire
   formats are pinned by fixtures in `test/token-sealing.test.ts`.
 - Adapters mark state `requiredOnNextTurn` only when an ordinary terminal turn
-  must round-trip opaquely (Gemini thought signatures). `/chat` and registered
-  `/messages` then return/accept the sealed token; ordinary Anthropic text keeps
-  its established response shape.
+  must round-trip opaquely, as Gemini does for thought signatures. Moonshot and
+  Kimi ordinary text is replayable from public history; their tool transcripts
+  carry sealed state because hidden reasoning and calls must remain exact.
+- An adapter whose continuation contains the complete internal agent transcript
+  declares `continuationOwnsAgentHistory`. The shared loop then rebuilds each
+  iteration from the initial public messages plus the latest assistant/tool
+  turn, and the adapter replays its sealed transcript. OpenAI, Gemini, and
+  Moonshot/Kimi own that replay; Anthropic receives the canonically accumulated
+  message history. Adapters that need accumulated agent usage own its
+  provider-shaped aggregation; Moonshot/Kimi and Gemini sum their internal
+  calls. Anthropic retains its established terminal-turn raw usage envelope, so
+  production `/chat` behavior is unchanged.
 - Server/client tool ownership is expressed by the `AgentRequest` discriminated
   union. Browser tools are returned; the worker never executes them.
 - Every transport error, abort, timeout, HTTP failure, and invalid response is
@@ -91,6 +109,62 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   four writable breakpoints before provider I/O. OpenAI currently exposes no
   distinct extended TTL, so `short` and `extended` preserve the same canonical
   boundary under that provider policy.
+- Moonshot/Kimi is factory-selectable only for deterministic adapter tests and
+  the double-opt-in paid smoke matrix. No production prompt group selects it.
+  The candidate uses strict Chat Completions JSON Schema/tools, base64 or
+  `ms://` image inputs, an image-purpose direct file policy, and adapter-owned
+  assistant `reasoning_content` replay. External image URLs, non-image direct
+  files, Kimi sampling overrides, arbitrary metadata/service tiers, hosted
+  tools, unsupported image MIME, forced-specific/undocumented parallel-tool
+  controls, and media tool results fail before provider I/O. A stream is successful
+  only after an exact terminal finish, validated final usage, and `data: [DONE]`.
+  A following empty-choices chunk may repeat identical terminal usage; conflicting
+  counts fail the stream. Captured nullable members are accepted on their known
+  fields and unknown delta members fail closed. The paid matrix verifies streamed
+  text and non-streaming tool calls separately; streamed tool deltas follow the
+  same documented Chat Completions schema and are pinned by deterministic
+  split-frame tests. Usage normalization reads cached input tokens from the
+  top-level or nested prompt detail and reasoning tokens from the nested
+  completion detail, rejecting inconsistent duplicate cache counts.
+  Neither account honours an inline cache breakpoint, so `inlineCacheBreakpoints`
+  is false for both even though the platform may cache a prefix on its own.
+- One Chat Completions implementation serves two credentialed accounts. An
+  account descriptor in `adapters/moonshot.ts` carries the transport, provider
+  identity, model namespace, and metered Files API. The catalog resolves exact
+  Kimi/Moonshot ids to stable profiles; the adapter keys wire behavior from
+  those profiles rather than maintaining a second model-id authority.
+- Kimi's `worker-file` / `worker-managed` policy stores encrypted image and
+  text evidence in `INLINE_EVIDENCE_R2` behind the existing tenant- and
+  route-bound reference. `kimi/evidence.ts` owns encryption, expiry,
+  revocation, and byte recovery. Kimi's image upload returns a compact `ms://`
+  reference; an encrypted R2 sidecar reuses that upstream id for repeated
+  inference. A missing-resource 404 before a complete response or any stream
+  event invalidates the sidecar and retries once from encrypted bytes. Text
+  evidence is decoded and sent as text. Uploads are bounded before buffering,
+  and oversized uploaded HTML is accessed through bounded internal search/read
+  tools. All routes retain their public tools after exact selected fragments
+  replace the full HTML. The internal transcript
+  stays in app-ai and usage is aggregated across calls. A remaining request
+  over 2 MiB fails before the completion call with 413. Kimi's coding
+  endpoint currently answers 404 for
+  file metadata and deletion, so deleting a public reference revokes app-ai's
+  copy and sidecar, while upstream retention follows Kimi's own policy.
+- Ordinary assistant text is replayable from public history without a
+  continuation token. Tool transcripts still require sealed provider state so
+  hidden reasoning and tool calls remain exact across internal and client-tool
+  boundaries. That state owns the accumulated internal agent transcript, so the
+  shared loop sends only initial public history plus the latest tool boundary;
+  the adapter replays every earlier reasoning, call, and result exactly once.
+- The subscription endpoint accepts `k3`, `k3-256k`, `kimi-for-coding`, and
+  `kimi-for-coding-highspeed`. K3 and the K2.8 model behind `kimi-for-coding`
+  accept semantic effort through `reasoning_effort`; K2.7 HighSpeed preserves
+  thinking without an effort control. The Kimi Code CLI can connect to other
+  providers with separate credentials; those model IDs do not become Kimi
+  subscription models.
+- Both accounts speak one Chat Completions API, so an upstream failure from
+  either is answered as `MoonshotApiException` (`lib/responses.ts`). A sealed
+  file reference that will not open is client input under the shared rule above
+  and consults no provider, so it is never that envelope.
 - Gemini is factory-selectable only for deterministic adapter tests and the
   double-opt-in paid probe matrix. No production prompt group selects it. It
   serves the `gemini-3` family exclusively — the generation with a documented

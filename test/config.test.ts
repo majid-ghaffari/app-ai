@@ -18,11 +18,15 @@ import {
   personalizerIntegrationBridgeToken,
   anthropicApiBase,
   openaiApiBase,
+  moonshotApiBase,
+  kimiApiBase,
   logSeqApiKey,
   logSeqIngestUrl,
   logTargets,
   claudeApiKey,
   openaiApiKey,
+  moonshotApiKey,
+  kimiApiKey,
   tokenEncryptionSecret,
   credentialedOrigins,
   auditActivationSigningSecret,
@@ -53,10 +57,14 @@ describe('config accessors — present values', () => {
     expect(personalizerApiUrl(ENV)).toBe('https://brain.test');
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
     expect(openaiApiBase(ENV)).toBe('https://api.openai.com');
+    expect(moonshotApiBase(ENV)).toBe('https://api.moonshot.ai');
+    expect(kimiApiBase(ENV)).toBe('https://api.kimi.com/coding');
     expect(logSeqIngestUrl(ENV)).toBe('https://seq.test/ingest/clef');
     expect(logSeqApiKey(ENV)).toBeNull();
     expect(claudeApiKey(ENV)).toBe('test-key');
     expect(openaiApiKey(ENV)).toBe('test-openai-key');
+    expect(moonshotApiKey(ENV)).toBe('test-moonshot-key');
+    expect(kimiApiKey(ENV)).toBe('test-kimi-key');
     expect(tokenEncryptionSecret(ENV)).toBe(ENV.TOKEN_ENCRYPTION_SECRET);
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
     expect(auditActivationSigningSecret(ENV)).toBe(ENV.AUDIT_ACTIVATION_SIGNING_SECRET);
@@ -73,6 +81,8 @@ describe('config accessors — present values', () => {
   it.each([
     ['anthropic', anthropicApiBase, 'ANTHROPIC_API_BASE', 'https://api.anthropic.com'],
     ['openai', openaiApiBase, 'OPENAI_API_BASE', 'https://api.openai.com'],
+    ['moonshot', moonshotApiBase, 'MOONSHOT_API_BASE', 'https://api.moonshot.ai'],
+    ['kimi', kimiApiBase, 'KIMI_API_BASE', 'https://api.kimi.com/coding'],
   ] as const)('requires explicit local paid opt-in for %s', (_provider, accessor, key, base) => {
     const { AI_CHANNEL: _channel, ...withoutChannel } = ENV;
     const local = { ...withoutChannel, ENVIRONMENT: 'local', [key]: base };
@@ -172,6 +182,24 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     );
     expect(() => openaiApiKey(EMPTY_ENV)).toThrow(
       /Missing required configuration variable OPENAI_API_KEY.*encrypted secret.*\.dev\.vars/,
+    );
+  });
+
+  it('Moonshot accessors fail fast with the correct config channel', () => {
+    expect(() => moonshotApiBase(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable MOONSHOT_API_BASE.*wrangler\.toml/,
+    );
+    expect(() => moonshotApiKey(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable MOONSHOT_API_KEY.*encrypted secret.*\.dev\.vars/,
+    );
+  });
+
+  it('Kimi Code accessors fail fast with the correct config channel', () => {
+    expect(() => kimiApiBase(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable KIMI_API_BASE.*wrangler\.toml/,
+    );
+    expect(() => kimiApiKey(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable KIMI_API_KEY.*encrypted secret.*\.dev\.vars/,
     );
   });
 
@@ -276,6 +304,8 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   it('reports a provider key missing only while a route uses that provider', () => {
     const {
       OPENAI_API_KEY: _openai,
+      MOONSHOT_API_KEY: _moonshot,
+      KIMI_API_KEY: _kimi,
       GEMINI_API_KEY: _gemini,
       CLAUDE_API_KEY: _claude,
       ...none
@@ -285,9 +315,15 @@ describe('config accessors — missing config = error (no fallback defaults)', (
       'CLAUDE_API_KEY',
       'GEMINI_API_KEY',
     ]);
-    expect(missingRequiredSecretNames(none, ['anthropic', 'openai', 'gemini'])).toEqual([
+    expect(missingRequiredSecretNames(none, ['moonshot'])).toEqual(['MOONSHOT_API_KEY']);
+    expect(missingRequiredSecretNames(none, ['kimi'])).toEqual(['KIMI_API_KEY']);
+    expect(
+      missingRequiredSecretNames(none, ['anthropic', 'openai', 'moonshot', 'kimi', 'gemini']),
+    ).toEqual([
       'CLAUDE_API_KEY',
       'OPENAI_API_KEY',
+      'MOONSHOT_API_KEY',
+      'KIMI_API_KEY',
       'GEMINI_API_KEY',
     ]);
     // Non-provider secrets are required whatever is routed.
@@ -430,20 +466,20 @@ describe('configuration files stay reconciled with the typed Env', () => {
     expect(example).toMatch(/OPTIONAL/);
   });
 
-  it('declares the provisioned Gemini channel in both files', () => {
+  it('declares the provisioned Gemini and Kimi channel in both files', () => {
     const example = Object.values(devVarsExampleFiles)[0] ?? '';
     const manifest = Object.values(wranglerFiles)[0] ?? '';
     expect(productionVars()).toContain(
       'GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"',
     );
-    for (const key of ['GEMINI_API_BASE', 'GEMINI_API_KEY']) {
+    expect(productionVars()).toContain('KIMI_API_BASE = "https://api.kimi.com/coding"');
+    for (const key of ['GEMINI_API_BASE', 'KIMI_API_BASE', 'GEMINI_API_KEY', 'KIMI_API_KEY']) {
       expect(example, `${key} is undocumented in .dev.vars.example`).toContain(key);
     }
-    // The key is documented above [vars] as an encrypted secret, never declared
-    // in it: a plain-text var is re-applied on every deploy and would clobber
-    // the real secret.
-    expect(productionVars()).not.toContain('GEMINI_API_KEY');
-    expect(manifest).toContain('GEMINI_API_KEY');
+    for (const secret of ['GEMINI_API_KEY', 'KIMI_API_KEY']) {
+      expect(productionVars()).not.toContain(secret);
+      expect(manifest).toContain(secret);
+    }
   });
 });
 
@@ -458,6 +494,25 @@ describe('production [vars] — the deployed configuration values', () => {
 
   it('pins the dormant OpenAI Responses origin without changing prompt routes', () => {
     expect(productionVars()).toContain('OPENAI_API_BASE = "https://api.openai.com"');
+  });
+
+  it('pins the dormant Moonshot Chat Completions origin without changing prompt routes', () => {
+    expect(productionVars()).toContain('MOONSHOT_API_BASE = "https://api.moonshot.ai"');
+  });
+
+  it('pins the dormant Kimi Code subscription origin on its own account', () => {
+    expect(productionVars()).toContain('KIMI_API_BASE = "https://api.kimi.com/coding"');
+    expect(productionVars()).toContain('KIMI_EVIDENCE_MAX_BYTES = "8000000"');
+    expect(productionVars()).toContain('KIMI_EVIDENCE_MAX_TOTAL_BYTES = "64000000"');
+    expect(productionVars()).toContain('KIMI_EVIDENCE_MAX_TEXT_BYTES = "16000000"');
+  });
+
+  it('pins the private production and preview R2 evidence buckets', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(manifest).toContain('[[r2_buckets]]');
+    expect(manifest).toContain('binding = "INLINE_EVIDENCE_R2"');
+    expect(manifest).toContain('bucket_name = "app-ai-inline-evidence"');
+    expect(manifest).toContain('preview_bucket_name = "app-ai-inline-evidence-preview"');
   });
 
   it('pins the tier→model bindings (fast + balanced + frontier)', () => {
@@ -563,6 +618,8 @@ describe('production [vars] — the deployed configuration values', () => {
       'PERSONALIZER_API_URL',
       'ANTHROPIC_API_BASE',
       'OPENAI_API_BASE',
+      'MOONSHOT_API_BASE',
+      'KIMI_API_BASE',
       'CREDENTIALED_ORIGINS',
       'MASTER_SUBSCRIBER_ID',
       'MODEL_FAST',
@@ -589,6 +646,8 @@ describe('production [vars] — the deployed configuration values', () => {
     }
     expect(vars).not.toContain('CLAUDE_API_KEY');
     expect(vars).not.toContain('OPENAI_API_KEY');
+    expect(vars).not.toContain('MOONSHOT_API_KEY');
+    expect(vars).not.toContain('KIMI_API_KEY');
     expect(vars).not.toContain('PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
     expect(vars).not.toContain('AUDIT_ACTIVATION_SIGNING_SECRET');
     expect(vars).not.toContain('AUDIT_SESSION_SIGNING_SECRET');

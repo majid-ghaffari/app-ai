@@ -49,6 +49,10 @@ local_protocol = "http"
 #   Providers — one key per provider, read only by that provider's wire adapter:
 #     CLAUDE_API_KEY  — the Anthropic API key (src/inference/adapters/anthropic-wire.ts).
 #     OPENAI_API_KEY  — the OpenAI API key, required only while a resolved route uses OpenAI.
+#     MOONSHOT_API_KEY — the metered Moonshot platform key, required only while a resolved
+#       route uses Moonshot.
+#     KIMI_API_KEY    — the Kimi Code subscription key, required only while a resolved route
+#       uses Kimi Code. A separate account from MOONSHOT_API_KEY, not interchangeable.
 #     GEMINI_API_KEY  — the Google Gemini API key, required only while a resolved route uses Gemini.
 #
 #   Sealed tokens and service credentials:
@@ -86,7 +90,7 @@ MASTER_SUBSCRIBER_ID = "1"
 # ── Model routing ──
 # CAPABILITY TIERS bound to concrete models. Each prompt group declares a tier;
 # the model id set here decides which provider serves it, over which API family,
-# with which capabilities and direct-file policy, through the family-prefix
+# with which capabilities and direct-file policy, through the family/explicit-id
 # catalog in src/inference/model-catalog.ts. Pointing a tier at another
 # provider's model is therefore a settings change — the catalog must know the
 # model's family, and the resolved capabilities must satisfy every group on the
@@ -113,6 +117,17 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 # ── OpenAI ──
 OPENAI_API_BASE = "https://api.openai.com"
+
+# ── Moonshot (metered platform account) ──
+MOONSHOT_API_BASE = "https://api.moonshot.ai"
+
+# ── Kimi Code (subscription account) ──
+# A different origin and credential from the metered Moonshot account above; the
+# adapter appends /v1/chat/completions, so no trailing slash.
+KIMI_API_BASE = "https://api.kimi.com/coding"
+KIMI_EVIDENCE_MAX_BYTES = "8000000"
+KIMI_EVIDENCE_MAX_TOTAL_BYTES = "64000000"
+KIMI_EVIDENCE_MAX_TEXT_BYTES = "16000000"
 
 # ── Gemini ──
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -160,11 +175,16 @@ fallthrough = true
 
 # Metadata-only best-effort file dedup: route-scoped content hashes reuse direct
 # provider uploads. Public reference correctness uses sealed tokens, not KV's
-# eventual consistency. File bytes and reference-route metadata are never stored.
+# eventual consistency. Kimi's separate R2 binding stores encrypted evidence bytes.
 [[kv_namespaces]]
 binding = "FILES_KV"
 id = "eb048ab9979f46ce93d8b0dfcdb9d58f"
 preview_id = "b524e2d6d53d482ead49f7ea60881dbd"
+
+[[r2_buckets]]
+binding = "INLINE_EVIDENCE_R2"
+bucket_name = "app-ai-inline-evidence"
+preview_bucket_name = "app-ai-inline-evidence-preview"
 
 [ai]
 binding = "AI"

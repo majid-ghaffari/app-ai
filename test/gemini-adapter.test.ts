@@ -37,6 +37,7 @@ const PROFILE: ModelProfile = {
   model: 'gemini-3.5-flash',
   capabilities: {
     vision: true,
+    reusableFiles: true,
     providerFiles: true,
     streaming: true,
     structuredOutput: true,
@@ -1043,6 +1044,130 @@ describe('Gemini thought-signature continuation', () => {
         parts: [
           {
             functionResponse: { id: 'fc_agent', name: 'weather', response: { output: 'Sunny' } },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('replays both signed tool cycles on a third server-agent completion', async () => {
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        sse([
+          chunk(
+            [
+              {
+                functionCall: { id: 'fc_first', name: 'weather', args: { city: 'Paris' } },
+                thoughtSignature: 'sig-first',
+              },
+            ],
+            'STOP',
+            { usageMetadata: usage() },
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sse([
+          chunk(
+            [
+              {
+                functionCall: { id: 'fc_second', name: 'weather', args: { city: 'Rome' } },
+                thoughtSignature: 'sig-second',
+              },
+            ],
+            'STOP',
+            { usageMetadata: usage() },
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(sse([chunk([{ text: 'Done' }], 'STOP', { usageMetadata: usage() })]));
+    const result = await createInferenceService(GEMINI_ENV).runAgent({
+      ...request(),
+      mode: 'server',
+      maxIterations: 3,
+      tools: [
+        {
+          name: 'weather',
+          description: 'Get weather',
+          inputSchema: SCHEMA,
+          execution: 'server',
+        },
+      ],
+      executeTool: async (call) => ({
+        type: 'tool-result',
+        toolCallId: call.id,
+        content: [{ type: 'text', text: `result:${call.id}`, cache: 'none' }],
+        isError: false,
+        cache: 'none',
+      }),
+    });
+    expect(result).toMatchObject({
+      text: 'Done',
+      stopReason: 'completed',
+      iterations: 3,
+      usage: {
+        inputTokens: 36,
+        outputTokens: 15,
+        cachedInputTokens: 12,
+        reasoningTokens: 9,
+        providerDetails: {
+          promptTokenCount: 36,
+          candidatesTokenCount: 15,
+          totalTokenCount: 60,
+          cachedContentTokenCount: 12,
+          thoughtsTokenCount: 9,
+        },
+      },
+    });
+    const done = await toDonePayload(result, ROUTE, GEMINI_ENV);
+    expect(done.usage).toEqual({
+      promptTokenCount: 36,
+      candidatesTokenCount: 15,
+      totalTokenCount: 60,
+      cachedContentTokenCount: 12,
+      thoughtsTokenCount: 9,
+    });
+    expect(contentsOf(fetchCall(fetchMock, 2).init)).toEqual([
+      { role: 'user', parts: [{ text: 'Hello' }] },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: { id: 'fc_first', name: 'weather', args: { city: 'Paris' } },
+            thoughtSignature: 'sig-first',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: 'fc_first',
+              name: 'weather',
+              response: { output: 'result:fc_first' },
+            },
+          },
+        ],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: { id: 'fc_second', name: 'weather', args: { city: 'Rome' } },
+            thoughtSignature: 'sig-second',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: 'fc_second',
+              name: 'weather',
+              response: { output: 'result:fc_second' },
+            },
           },
         ],
       },

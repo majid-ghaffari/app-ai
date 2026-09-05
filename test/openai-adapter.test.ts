@@ -29,6 +29,7 @@ const PROFILE: ModelProfile = {
   model: 'gpt-test',
   capabilities: {
     vision: true,
+    reusableFiles: true,
     providerFiles: true,
     streaming: true,
     structuredOutput: true,

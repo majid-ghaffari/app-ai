@@ -61,6 +61,8 @@ describe('local inference channel selection and paid guards', () => {
   it.each([
     ['ANTHROPIC_API_BASE', 'https://api.anthropic.com'],
     ['OPENAI_API_BASE', 'https://api.openai.com'],
+    ['MOONSHOT_API_BASE', 'https://api.moonshot.ai'],
+    ['KIMI_API_BASE', 'https://api.kimi.com/coding'],
   ])('blocks local paid %s without explicit production opt-in', (name, base) => {
     expect(() => assertLocalInferenceChannel({ [name]: base })).toThrow(/AI_CHANNEL=prod/);
     expect(() => assertLocalInferenceChannel({ [name]: base, AI_CHANNEL: 'prod' })).not.toThrow();
@@ -71,6 +73,8 @@ describe('local inference channel selection and paid guards', () => {
       assertLocalInferenceChannel({
         ANTHROPIC_API_BASE: 'http://127.0.0.1:8788',
         OPENAI_API_BASE: 'http://localhost:8789',
+        MOONSHOT_API_BASE: 'http://localhost:8790',
+        KIMI_API_BASE: 'http://localhost:8791',
       }),
     ).not.toThrow();
     expect(() =>

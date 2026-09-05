@@ -15,6 +15,7 @@ import {
   getFilePolicy,
   listFilePolicies,
   listModelFamilies,
+  modelMaxOutputTokens,
   resolveModelFamily,
   validateModelCatalog,
 } from '../src/inference/model-catalog';
@@ -42,6 +43,21 @@ describe('model catalog', () => {
     expect(new Set(profiles).size).toBe(profiles.length);
   });
 
+  it('records a safe Kimi Chat Completions output ceiling for every exact service id', () => {
+    for (const model of [
+      'kimi-k3',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+      'kimi-k2.7-code-highspeed',
+      'k3',
+      'k3-256k',
+      'kimi-for-coding',
+      'kimi-for-coding-highspeed',
+    ]) {
+      expect(modelMaxOutputTokens(model), model).toBe(131_072);
+    }
+  });
+
   it('keeps every family on a file policy its own provider and API family own', () => {
     for (const family of listModelFamilies()) {
       const policy = getFilePolicy(family.filePolicy);
@@ -57,7 +73,14 @@ describe('model catalog', () => {
   });
 
   it('reports exactly the providers a configured model can name', () => {
-    expect([...PROVIDER_NAMES].sort()).toEqual(['anthropic', 'cloudflare', 'gemini', 'openai']);
+    expect([...PROVIDER_NAMES].sort()).toEqual([
+      'anthropic',
+      'cloudflare',
+      'gemini',
+      'kimi',
+      'moonshot',
+      'openai',
+    ]);
     expect(new Set(PROVIDER_NAMES).size).toBe(PROVIDER_NAMES.length);
   });
 
@@ -83,6 +106,46 @@ describe('model catalog', () => {
       filePolicy: 'gemini-provider-files',
     });
     expect(resolveModelFamily('gpt-5.2', 'MODEL_FRONTIER').provider).toBe('openai');
+    expect(() => resolveModelFamily('kimi-k2-0905-preview', 'MODEL_BALANCED')).toThrow(
+      /Unknown model id/,
+    );
+    expect(() => resolveModelFamily('moonshot-v1-128k', 'MODEL_BALANCED')).toThrow(
+      /Unknown model id/,
+    );
+  });
+
+  it('separates the metered Kimi weights from the Kimi Code subscription namespace', () => {
+    for (const [model, profile, reasoning] of [
+      ['kimi-k3', 'kimi-metered-k3', true],
+      ['kimi-k2.6', 'kimi-metered-k26', false],
+      ['kimi-k2.7-code', 'kimi-metered-k27', false],
+      ['kimi-k2.7-code-highspeed', 'kimi-metered-k27-highspeed', false],
+    ] as const) {
+      expect(resolveModelFamily(model, 'MODEL_BALANCED').profile, model).toBe(profile);
+      expect(resolveModelFamily(model, 'MODEL_BALANCED').provider, model).toBe('moonshot');
+      expect(resolveModelFamily(model, 'MODEL_BALANCED').capabilities.reasoning, model).toBe(
+        reasoning,
+      );
+      expect(resolveModelFamily(model, 'MODEL_BALANCED').capabilities.reusableFiles, model).toBe(
+        false,
+      );
+    }
+    for (const model of ['k3', 'k3-256k']) {
+      expect(resolveModelFamily(model, 'MODEL_BALANCED')).toMatchObject({
+        profile: 'kimi-code-k3',
+        provider: 'kimi',
+        apiFamily: 'moonshot-chat-completions',
+        filePolicy: 'kimi-stored-evidence',
+      });
+    }
+    const coding = resolveModelFamily('kimi-for-coding', 'MODEL_BALANCED');
+    expect(coding.profile).toBe('kimi-code-coding');
+    expect(coding.provider).toBe('kimi');
+    expect(coding.capabilities.reasoning).toBe(true);
+    const highspeed = resolveModelFamily('kimi-for-coding-highspeed', 'MODEL_BALANCED');
+    expect(highspeed.profile).toBe('kimi-code-highspeed');
+    expect(highspeed.provider).toBe('kimi');
+    expect(highspeed.capabilities.reasoning).toBe(false);
   });
 
   it('declares no inline cache breakpoints where the provider exposes none', () => {
@@ -99,6 +162,34 @@ describe('model catalog', () => {
     });
   });
 
+  it('routes Kimi file references to worker-managed evidence', () => {
+    expect(resolveModelFamily('k3', 'MODEL_BALANCED').capabilities.reusableFiles).toBe(true);
+    expect(resolveModelFamily('k3', 'MODEL_BALANCED').capabilities.providerFiles).toBe(false);
+    expect(resolveModelFamily('kimi-for-coding', 'MODEL_BALANCED').capabilities.reusableFiles).toBe(
+      true,
+    );
+    expect(resolveModelFamily('kimi-for-coding', 'MODEL_BALANCED').capabilities.providerFiles).toBe(
+      false,
+    );
+    expect(getFilePolicy('kimi-stored-evidence')).toMatchObject({
+      inputMode: 'worker-file',
+      lifecycle: 'worker-managed',
+      purpose: null,
+    });
+    expect(resolveModelFamily('kimi-k2.6', 'MODEL_BALANCED').capabilities.providerFiles).toBe(true);
+    expect(getFilePolicy('moonshot-image-files')).toMatchObject({
+      inputMode: 'provider-file',
+      lifecycle: 'provider-managed',
+      purpose: 'image',
+    });
+    expect(() =>
+      getSystemPrompt('image-selection', {
+        ...ENV,
+        MODEL_OVERRIDES: 'image-selection=kimi-k3',
+      }),
+    ).toThrow(/Group image-selection requires reusableFiles/);
+  });
+
   it('states each family capability set as a fact, not as a prompt-group preference', () => {
     // Haiku carries no reasoning control; nothing else in the Anthropic families does not.
     expect(resolveModelFamily('claude-haiku-4-5', 'MODEL_FAST').capabilities.reasoning).toBe(false);
@@ -109,6 +200,12 @@ describe('model catalog', () => {
     expect(
       resolveModelFamily('gemini-3-pro', 'MODEL_BALANCED').capabilities.inlineCacheBreakpoints,
     ).toBe(false);
+    expect(
+      resolveModelFamily('kimi-k2.6', 'MODEL_BALANCED').capabilities.inlineCacheBreakpoints,
+    ).toBe(false);
+    expect(resolveModelFamily('k3', 'MODEL_BALANCED').capabilities.inlineCacheBreakpoints).toBe(
+      false,
+    );
   });
 
   it('throws on an unrecognised model id, naming the id and the setting that supplied it', () => {
@@ -122,6 +219,27 @@ describe('model catalog', () => {
 });
 
 describe('configured model routing', () => {
+  it('can route every registered Studio group to Kimi by model name while keeping the protected judge separate', () => {
+    const kimiGroups = listPromptGroups().filter((group) => group !== 'free-render-verification');
+    const env: Env = {
+      ...ENV,
+      MODEL_OVERRIDES: [
+        ENV.MODEL_OVERRIDES,
+        ...kimiGroups.map((group) => `${group}=kimi-for-coding`),
+      ].join(','),
+    };
+    expect(() => validateModelRouting(env)).not.toThrow();
+    for (const group of kimiGroups) {
+      const route = getGroupModelRoute(group, env);
+      expect(route.profile.provider, group).toBe('kimi');
+      expect(route.policy.name, group).toBe('kimi-stored-evidence');
+    }
+    for (const prompt of describePromptRoutes(env)) {
+      expect(prompt.valid, `${prompt.name}: ${prompt.error ?? ''}`).toBe(true);
+      expect(prompt.provider).toBe(prompt.name === 'visual-verify-free' ? 'cloudflare' : 'kimi');
+    }
+  });
+
   it('resolves every registered prompt and group under the test fixture bindings', () => {
     expect(() => validateModelRouting(ENV)).not.toThrow();
     for (const description of describePromptRoutes(ENV)) {
@@ -189,6 +307,18 @@ describe('configured model routing', () => {
     expect(route?.requirements).not.toContain('inlineCacheBreakpoints');
     // A prompt on an unchanged tier still reports honoured markers.
     expect(routes.find((entry) => entry.name === 'chat')?.inlineCacheBreakpoints).toBe(true);
+  });
+
+  it('refuses a tier bound to a model missing a capability its groups declare', () => {
+    for (const model of ['@cf/qwen/qwen3.8-27b']) {
+      const env: Env = { ...ENV, MODEL_FAST: model };
+      const reason = /Group placement-vision requires reusableFiles/;
+      expect(() => getSystemPrompt('placement', env), model).toThrow(reason);
+      const route = describePromptRoutes(env).find((entry) => entry.name === 'placement');
+      expect(route?.valid, model).toBe(false);
+      expect(route?.provider, model).toBeNull();
+      expect(route?.error, model).toMatch(reason);
+    }
   });
 
   it('fails a tier bound to a model no family claims, before any provider I/O', () => {

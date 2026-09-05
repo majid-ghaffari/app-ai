@@ -8,6 +8,26 @@ isn't surprised.
 
 ## Active
 
+### Kimi Code image uploads have no working metadata or delete endpoint
+
+The coding endpoint accepted a valid image upload and served its `ms://` id to
+the model. Metadata, content-read, and delete requests for that id returned 404. Deleting an app-ai file reference removes app-ai's encrypted bytes and
+hosted-id sidecar, so the caller can no longer use it; the image already sent
+to Kimi remains subject to Kimi's provider retention policy. Overlapping first
+use can create an unreachable duplicate upstream image even inside one Worker
+isolate because each request owns its provider I/O. Later requests reuse the
+completed encrypted sidecar.
+
+### Direct inline text can exceed Kimi's message limit
+
+Kimi accepts compact `ms://` image references, so tiled screenshots do not
+inflate its message body. Oversized uploaded HTML is retrieved through bounded
+internal read/search tools for smart image, Studio chat, and other Kimi routes.
+Direct inline text and a request still over 2 MiB after retrieval return 413
+before the completion call. The tool path fails closed when Kimi does not
+inspect every stored document within its turn limit. Visual quality on
+representative merchant pages still needs evaluation before routes switch.
+
 ### Placement system prompt is not cacheable on Haiku 4.5
 
 The placement system prompt (~370 tokens) sits below Haiku 4.5's minimum

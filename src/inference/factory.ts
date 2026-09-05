@@ -17,6 +17,7 @@ import { AnthropicMessagesAdapter } from './adapters/anthropic';
 import { OpenAIResponsesAdapter } from './adapters/openai';
 import { GeminiGenerateContentAdapter } from './adapters/gemini';
 import { CloudflareWorkersAiAdapter } from './adapters/cloudflare';
+import { KimiChatCompletionsAdapter, MoonshotChatCompletionsAdapter } from './adapters/moonshot';
 import { DefaultInferenceService } from './service';
 import { resolveInferenceFileReferences } from './file-references';
 import { completeWithinDeadline } from './deadline';
@@ -110,6 +111,13 @@ export function createInferenceDiagnosticsService(
 
 /** Provider-neutral direct file operations used by inference preparation. */
 export interface InferenceFileService {
+  validateUpload(
+    profile: ModelProfile,
+    policy: FilePolicy,
+    sizeBytes: number,
+    filename: string,
+    mediaType: string,
+  ): void;
   scope(profile: ModelProfile, policy: FilePolicy): Promise<string>;
   getMetadata(
     profile: ModelProfile,
@@ -132,6 +140,10 @@ export function createInferenceFileService(env: Env): InferenceFileService {
   const adapters = createAdapters(env);
   const adapterFor = (profile: ModelProfile) => resolveAdapter({ modelProfile: profile }, adapters);
   return {
+    validateUpload(profile, policy, sizeBytes, filename, mediaType) {
+      const adapter = adapterFor(profile);
+      adapter.validateUpload?.({ policy, sizeBytes, filename, mediaType });
+    },
     async scope(profile, policy) {
       const adapter = adapterFor(profile);
       if (!adapter.getFileScope) throw new Error(`${profile.name} does not support files`);
@@ -166,6 +178,8 @@ function createAdapters(env: Env): readonly InferenceProviderAdapter[] {
   return [
     new AnthropicMessagesAdapter(env),
     new OpenAIResponsesAdapter(env),
+    new MoonshotChatCompletionsAdapter(env),
+    new KimiChatCompletionsAdapter(env),
     new GeminiGenerateContentAdapter(env),
     new CloudflareWorkersAiAdapter(env),
   ];

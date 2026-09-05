@@ -65,6 +65,7 @@ type OpenAIInputItem = Readonly<Record<string, unknown>>;
 
 /** OpenAI adapter bound to one Worker environment. */
 export class OpenAIResponsesAdapter implements InferenceProviderAdapter {
+  readonly continuationOwnsAgentHistory = true;
   readonly provider = 'openai' as const;
   readonly apiFamily = 'openai-responses' as const;
 

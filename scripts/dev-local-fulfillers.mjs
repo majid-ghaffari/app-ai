@@ -45,7 +45,12 @@ export function localFulfillerName(env = process.env) {
 /** Block every known paid provider origin in local/test unless the channel is explicit. */
 export function assertLocalInferenceChannel(env = process.env) {
   const channel = envText(env, 'AI_CHANNEL').trim().toLowerCase();
-  const selected = ['ANTHROPIC_API_BASE', 'OPENAI_API_BASE'].filter((name) => {
+  const selected = [
+    'ANTHROPIC_API_BASE',
+    'OPENAI_API_BASE',
+    'MOONSHOT_API_BASE',
+    'KIMI_API_BASE',
+  ].filter((name) => {
     const value = envText(env, name).trim();
     if (!value) return false;
     let url;

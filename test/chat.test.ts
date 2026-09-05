@@ -73,6 +73,7 @@ function anthropicSse(
   blocks: SseBlockSpec[],
   stopReason: string,
   startUsage: Record<string, unknown> = { input_tokens: 10 },
+  endUsage: Record<string, unknown> = { output_tokens: 5 },
 ): string {
   // Real Anthropic SSE carries `type` inside the data JSON too (not just the
   // event: line). The worker switches on the data's `type`, so include it.
@@ -114,7 +115,7 @@ function anthropicSse(
       push('content_block_stop', { index });
     }
   });
-  push('message_delta', { delta: { stop_reason: stopReason }, usage: { output_tokens: 5 } });
+  push('message_delta', { delta: { stop_reason: stopReason }, usage: endUsage });
   push('message_stop', {});
   return lines.join('');
 }
@@ -892,8 +893,29 @@ describe('handleChat — streaming', () => {
     const anthropicTurn1 = anthropicSse(
       [{ type: 'tool_use', id: 'tu_1', name: 'get_store_analytics', input: {} }],
       'tool_use',
+      {
+        input_tokens: 3,
+        cache_creation_input_tokens: 1,
+        cache_read_input_tokens: null,
+        cache_creation: { ephemeral_5m_input_tokens: 1 },
+        service_tier: 'standard',
+        server_tool_use: { web_search_requests: 1 },
+      },
+      { output_tokens: 5, output_tokens_details: { thinking_tokens: 1 } },
     );
-    const anthropicTurn2 = anthropicSse([{ type: 'text', text: 'Your AOV is $46.' }], 'end_turn');
+    const anthropicTurn2 = anthropicSse(
+      [{ type: 'text', text: 'Your AOV is $46.' }],
+      'end_turn',
+      {
+        input_tokens: 11,
+        cache_creation_input_tokens: 3,
+        cache_read_input_tokens: 4,
+        cache_creation: { ephemeral_5m_input_tokens: 2 },
+        service_tier: 'priority',
+        server_tool_use: { web_search_requests: 2 },
+      },
+      { output_tokens: 5, output_tokens_details: { thinking_tokens: 2 } },
+    );
     const fetchMock = stubFetch();
     fetchMock
       // turn 1: Anthropic asks for the tool
@@ -931,6 +953,16 @@ describe('handleChat — streaming', () => {
     const done = eventOf(events, 'done');
     expect(done.data.text).toContain('$46');
     expect(done.data.iterations).toBe(2);
+    expect(done.data.usage).toEqual({
+      input_tokens: 11,
+      output_tokens: 5,
+      cache_creation_input_tokens: 3,
+      cache_read_input_tokens: 4,
+      cache_creation: { ephemeral_5m_input_tokens: 2 },
+      output_tokens_details: { thinking_tokens: 2 },
+      service_tier: 'priority',
+      server_tool_use: { web_search_requests: 2 },
+    });
 
     // The Brain call was made server→server with the context-ID.
     const brainCallIndex = fetchedUrls(fetchMock).findIndex((u) => u.includes('/v2/ai-tools/'));

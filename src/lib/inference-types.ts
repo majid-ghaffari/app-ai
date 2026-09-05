@@ -12,7 +12,7 @@
  * (`src/inference/model-catalog.ts`). Naming one whose adapter is absent fails
  * at adapter selection, before provider I/O.
  */
-export type ProviderName = 'anthropic' | 'openai' | 'gemini' | 'cloudflare';
+export type ProviderName = 'anthropic' | 'openai' | 'moonshot' | 'kimi' | 'gemini' | 'cloudflare';
 
 /** Production providers and local development fulfillers that can produce results. */
 export type InferenceBackendName = ProviderName | 'claude-code' | 'codex';
@@ -21,6 +21,7 @@ export type InferenceBackendName = ProviderName | 'claude-code' | 'codex';
 export type ProviderApiFamily =
   | 'anthropic-messages'
   | 'openai-responses'
+  | 'moonshot-chat-completions'
   | 'gemini-generate-content'
   | 'cloudflare-workers-ai';
 
@@ -30,6 +31,7 @@ export type SemanticEffort = 'low' | 'medium' | 'high' | 'xhigh';
 /** Capabilities declared by every concrete model profile. */
 export interface ModelCapabilities {
   readonly vision: boolean;
+  readonly reusableFiles: boolean;
   readonly providerFiles: boolean;
   readonly streaming: boolean;
   readonly structuredOutput: boolean;
@@ -51,22 +53,22 @@ export interface ModelProfile {
   readonly capabilities: ModelCapabilities;
 }
 
-/** Direct-provider file behavior owned by a prompt group. */
+/** File behavior owned by a prompt group. */
 export interface FilePolicy {
   readonly name: string;
   readonly provider: ProviderName;
   readonly compatibleApiFamilies: readonly ProviderApiFamily[];
   /**
-   * `provider-file` uploads the bytes to the provider's file API and references
-   * the stored object; `inline` embeds the bytes in the completion request
-   * itself, which is the only mode a provider without a file API can serve.
+   * `provider-file` names an upstream object, `worker-file` names encrypted
+   * app-ai evidence that the adapter materializes for its provider, and
+   * `inline` carries the bytes in the completion request itself.
    */
-  readonly inputMode: 'provider-file' | 'inline';
+  readonly inputMode: 'provider-file' | 'worker-file' | 'inline';
   /**
-   * `provider-managed` objects outlive the request that created them;
+   * `provider-managed` and `worker-managed` objects outlive one request;
    * `request-scoped` bytes exist only inside the request that carries them.
    */
-  readonly lifecycle: 'provider-managed' | 'request-scoped';
+  readonly lifecycle: 'provider-managed' | 'worker-managed' | 'request-scoped';
   readonly purpose: string | null;
 }
 

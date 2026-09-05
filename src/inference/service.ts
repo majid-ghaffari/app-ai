@@ -57,8 +57,10 @@ export class DefaultInferenceService implements InferenceService {
   }
 
   async runAgent(request: AgentRequest): Promise<AgentResult> {
-    const messages: InferenceMessage[] = [...request.messages];
+    const initialMessages: InferenceMessage[] = [...request.messages];
+    let messages: InferenceMessage[] = [...initialMessages];
     const accumulatedContent: InferenceContent[] = [];
+    const turnUsages: InferenceUsage[] = [];
     let usage = emptyUsage();
     let stopReason: AgentResult['stopReason'] = 'unknown';
     let providerStopReason: string | null | undefined;
@@ -97,13 +99,14 @@ export class DefaultInferenceService implements InferenceService {
       let turn: InferenceResult | null = null;
       for await (const event of this.stream(turnRequest)) {
         if (request.onEvent) await request.onEvent(event);
-        if (event.type === 'usage') usage = event.usage;
         if (event.type === 'complete') turn = event.result;
         if (event.type === 'error') throw new InferenceFailure(event.error);
       }
       if (!turn) throw new Error('Inference stream completed without a terminal result');
 
-      usage = turn.usage;
+      const adapter = this.resolveAdapter(turnRequest);
+      turnUsages.push(turn.usage);
+      usage = adapter.aggregateAgentUsage?.(turnUsages) ?? turn.usage;
       stopReason = turn.stopReason;
       providerStopReason = turn.providerStopReason;
       providerState = turn.providerState;
@@ -116,12 +119,12 @@ export class DefaultInferenceService implements InferenceService {
         .map((content) => content.text)
         .join('');
       if (turnText) text += `${text ? '\n' : ''}${turnText}`;
-      messages.push({
+      const assistant: InferenceMessage = {
         role: 'assistant',
         content: turn.content,
         ...(turn.providerState ? { providerState: turn.providerState } : {}),
-      });
-
+      };
+      messages.push(assistant);
       if (turn.stopReason !== 'tool-call' || turn.toolCalls.length === 0) break;
       if (request.mode === 'client') break;
       if (request.mode === 'none') {
@@ -134,9 +137,12 @@ export class DefaultInferenceService implements InferenceService {
         toolResults.push(result);
         if (request.onEvent) await request.onEvent({ type: 'tool-result', result });
       }
-      messages.push({ role: 'user', content: toolResults });
+      if (turn.providerState && adapter.continuationOwnsAgentHistory === true) {
+        messages = [...initialMessages, assistant, { role: 'user', content: toolResults }];
+      } else {
+        messages.push({ role: 'user', content: toolResults });
+      }
       if (iterations === request.maxIterations && providerState) {
-        const adapter = this.resolveAdapter(turnRequest);
         if (adapter.finalizeAgentContinuation) {
           providerState = adapter.finalizeAgentContinuation(providerState, toolResults);
         }

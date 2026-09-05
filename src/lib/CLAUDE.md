@@ -25,6 +25,16 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   request/response shapes (see the token-saving section in the root CLAUDE.md).
 - Provider wire fields, beta flags, authentication, and HTTP calls live only in
   `../inference/adapters/`; shared lib must not import provider modules.
+- `ProviderName`, `ProviderApiFamily`, and `ModelCapabilities` are the canonical
+  routing vocabulary. `reusableFiles` means app-ai can preserve opaque file
+  references across requests; `providerFiles` separately reports that the
+  provider owns a complete file lifecycle.
+- `FilePolicy.inputMode` distinguishes provider objects, encrypted worker-managed
+  objects, and request-scoped inline bytes. Its lifecycle and compatible API
+  families are validated before upload or inference.
+- Client-correctable canonical validation uses `WorkerError` with the Brain
+  `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
+  provider-protocol failures after a route reaches its adapter.
 - `logger.ts` sanitizes every string on its way into a record — opaque provider
   handles and the value of any credential-bearing query parameter — so a URL
   quoted in a message, detail, or stack cannot carry a credential into a sink.

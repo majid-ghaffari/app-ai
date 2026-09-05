@@ -239,6 +239,7 @@ describe('prompt registry groups and routes', () => {
       apiFamily: 'openai-responses' as const,
       capabilities: {
         vision: true,
+        reusableFiles: true,
         providerFiles: true,
         streaming: true,
         structuredOutput: true,
@@ -275,6 +276,53 @@ describe('prompt registry groups and routes', () => {
         'clientTools',
       ]),
     ).toThrow(/requires clientTools/);
+  });
+
+  it('rejects incompatible dormant Moonshot routes before a prompt group can select them', () => {
+    const candidate = {
+      name: 'moonshot-kimi-k3-candidate',
+      provider: 'moonshot' as const,
+      apiFamily: 'moonshot-chat-completions' as const,
+      capabilities: {
+        vision: true,
+        reusableFiles: true,
+        providerFiles: true,
+        streaming: true,
+        structuredOutput: true,
+        serverTools: true,
+        clientTools: true,
+        reasoning: true,
+        inlineCacheBreakpoints: false,
+      },
+    };
+    const moonshotFilePolicy = {
+      name: 'moonshot-image-files',
+      provider: 'moonshot' as const,
+      compatibleApiFamilies: ['moonshot-chat-completions' as const],
+      inputMode: 'provider-file' as const,
+      lifecycle: 'provider-managed' as const,
+      purpose: 'image',
+    };
+    expect(() =>
+      validateResolvedGroupRoute('candidate', candidate, moonshotFilePolicy, [
+        'vision',
+        'structuredOutput',
+        'serverTools',
+      ]),
+    ).not.toThrow();
+    expect(() =>
+      validateResolvedGroupRoute(
+        'candidate',
+        candidate,
+        getFilePolicy('anthropic-provider-files'),
+        [],
+      ),
+    ).toThrow(/incompatible/);
+    expect(() =>
+      validateResolvedGroupRoute('image-selection', candidate, moonshotFilePolicy, [
+        'inlineCacheBreakpoints',
+      ]),
+    ).toThrow(/requires inlineCacheBreakpoints/);
   });
 });
 

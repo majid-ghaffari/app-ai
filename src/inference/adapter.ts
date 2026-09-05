@@ -7,6 +7,7 @@ import type {
   InferenceRequest,
   InferenceResult,
   InferenceToolResult,
+  InferenceUsage,
   ProviderApiFamily,
   ProviderContinuationState,
   ProviderName,
@@ -19,6 +20,14 @@ export interface ProviderUploadRequest {
   readonly mediaType: string;
   readonly policy: FilePolicy;
   readonly abortSignal?: AbortSignal;
+}
+
+/** Metadata validated before a route buffers an upload body. */
+export interface ProviderUploadPreflight {
+  readonly filename: string;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly policy: FilePolicy;
 }
 
 /** Provider file metadata used for validation and content-block typing. */
@@ -38,6 +47,10 @@ export interface InferenceProviderAdapter {
   readonly apiFamily: ProviderApiFamily;
   /** Whether every successful assistant turn must cross the next public HTTP boundary. */
   readonly requiresOrdinaryTurnContinuation?: boolean;
+  /** Whether continuation state carries the complete internal agent transcript. */
+  readonly continuationOwnsAgentHistory?: boolean;
+  /** Aggregate provider usage across a shared agent loop without losing its public envelope. */
+  aggregateAgentUsage?(usages: readonly InferenceUsage[]): InferenceUsage;
   /** Seal server-executed terminal tool results when the shared loop reaches its cap. */
   finalizeAgentContinuation?(
     state: ProviderContinuationState,
@@ -47,6 +60,7 @@ export interface InferenceProviderAdapter {
   stream(request: InferenceRequest): AsyncIterable<InferenceEvent>;
   countTokens?(request: InferenceRequest): Promise<number | null>;
   getFileScope?(policy: FilePolicy): Promise<string>;
+  validateUpload?(request: ProviderUploadPreflight): void;
   uploadFile?(request: ProviderUploadRequest): Promise<ProviderUploadResult>;
   getFileMetadata?(id: string, abortSignal?: AbortSignal): Promise<ProviderFileMetadata | null>;
   deleteFile?(id: string, abortSignal?: AbortSignal): Promise<void>;

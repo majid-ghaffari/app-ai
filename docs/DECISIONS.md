@@ -212,7 +212,9 @@ bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 
 Every URL and deploy-time tunable lives in configuration behind the single
 typed `Env` in `src/config.ts`: `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`,
-`OPENAI_API_BASE`, `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
+`OPENAI_API_BASE`, `MOONSHOT_API_BASE`, `KIMI_API_BASE`,
+`KIMI_EVIDENCE_MAX_BYTES` / `KIMI_EVIDENCE_MAX_TOTAL_BYTES` / `KIMI_EVIDENCE_MAX_TEXT_BYTES`, `GEMINI_API_BASE`,
+`CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
 `MODEL_BALANCED` / `MODEL_FRONTIER` in wrangler.toml `[vars]` (production) /
 `.dev.vars` (local; documented in the committed `.dev.vars.example`), and the
 provider API keys plus `TOKEN_ENCRYPTION_SECRET` and the Personalizer integration token
@@ -595,8 +597,10 @@ destinations, and starts distinct route uploads concurrently. It returns random
 the audit session identifier for a scoped audit session, which carries no context ID
 and therefore uploads into a namespace of its own.
 Self-contained tokens avoid Workers KV's eventual-consistency window in the
-immediate upload→inference flow; `FILES_KV` is best-effort dedup only. File bytes
-are sent directly to each provider and never retained by app-ai. Inference
+immediate upload→inference flow; `FILES_KV` is best-effort dedup only. A
+provider-managed policy sends bytes directly to its provider. A worker-managed
+policy stores encrypted bytes in private R2 for the lifetime of the reference.
+Inference
 recursively resolves public tokens to internal provider references and validates
 tenant, provider, account, policy, API family, expiry, and compatible group
 before adapter I/O. Registered/canonical inference rejects raw provider IDs, and
@@ -609,12 +613,11 @@ cost. The worker-first deployment order and the paired rollback this
 contract imposes on app-ai and Studio are a hard rule in the root
 [CLAUDE.md](../CLAUDE.md) → Hard rules.
 
-The direct-upload path sends provider bytes to every resolved vendor
-route without production byte retention, and evidence reuse is valid only
-inside a compatible prompt group. The alternatives — a second registry,
-model-prefix provider inference, caller-supplied provider/profile fields, and
-intermediary blob storage — split authority or add an avoidable custody
-boundary, so they are excluded.
+Evidence reuse is valid only inside a compatible prompt group. Provider-managed
+and worker-managed objects share the same sealed public reference contract; the
+policy decides which side owns storage. A second registry, caller-supplied
+provider/profile fields, and provider inference outside the model catalog remain
+excluded because they split routing authority.
 
 ### 26. One canonical runtime owns inference; adapters own provider protocols
 
@@ -626,7 +629,8 @@ tools, and returns browser-owned calls without executing them.
 
 When a browser-owned tool pauses `/chat`, the terminal payload includes an
 opaque `continuation` token alongside `toolCalls`. An adapter can also mark state
-as required after an ordinary terminal turn (Gemini thought signatures), in which
+as required after an ordinary terminal turn, as Gemini does for thought
+signatures, in which
 case `/chat` and registered `/messages` return the same sealed token. The client
 echoes that token with its matching next request. The worker rejects
 malformed, tampered, expired, cross-tenant, cross-group, cross-profile, or
@@ -635,6 +639,16 @@ envelopes bound to the server-resolved route; only the owning adapter interprets
 the decoded provider state. This preserves signed Anthropic thinking blocks and
 provider-native continuation handles without allowing stored provider state to
 cross an app-ai ownership boundary.
+
+Adapters whose continuation owns the complete internal agent transcript declare
+that capability to the shared loop. OpenAI, Gemini, and Moonshot/Kimi therefore
+receive initial public messages plus only the latest assistant/tool boundary and
+replay earlier provider-native turns from their state without duplication;
+Anthropic receives the accumulated canonical history. History-owning adapters
+that need accumulated usage perform provider-shaped aggregation themselves;
+Moonshot/Kimi and Gemini sum their internal calls. Anthropic retains the
+terminal raw usage envelope exposed by the established production `/chat`
+contract.
 
 `src/inference/factory.ts` is the only provider/API-family switch. Provider
 authentication, HTTP, wire types, file operations, request serialization,
@@ -732,8 +746,9 @@ a `finally` path. The invocation follows the current official
 
 The production Worker remains dependency-free and unchanged by this Node-only
 tooling. Outside production, provider-base accessors reject non-loopback Anthropic,
-OpenAI, and Gemini origins unless `AI_CHANNEL=prod` is explicit. Offline tests
-mock the Codex process boundary and never invoke Codex or a paid provider.
+OpenAI, Moonshot, Kimi Code, and Gemini origins unless `AI_CHANNEL=prod` is
+explicit. Offline tests mock the Codex process boundary and never invoke Codex or
+a paid provider.
 
 ### 29. The configured model id decides the provider
 
@@ -750,13 +765,14 @@ family, with which capabilities and direct-file policy, is a fact about the
 model, so it lives in code. Configuration that carried facts would let a
 deployment assert a capability the model does not have.
 
-The catalog matches by model-id FAMILY PREFIX, following the same routing
-principle as Brain's `ModelProviders`/`ModelClientRouter`, and not by exact id:
-an exact-id table silently drops a newly released version out of its family,
-and an effort gate keyed by exact id drops `output_config.effort` on every
-version bump. app-ai needs more than a provider
-name from that match, because a profile also carries capabilities and a file
-policy, so each family resolves the whole profile at once.
+The catalog uses prefix matching for versioned families and exact matching for
+provider-fixed service aliases. Prefixes let a newly released Claude/OpenAI/
+Gemini version inherit stable family facts. Kimi Code and metered Moonshot
+publish a fixed set of ids whose generations have different effort and file
+capabilities, so exact matching prevents an invented alias from inheriting a
+wire contract it cannot use. app-ai needs more than a provider name from that
+match, because a profile also carries capabilities and a file policy, so each
+match resolves the whole profile at once.
 
 An id no family claims THROWS at resolution, naming the id and the variable
 that supplied it. There is no default provider to fall through to: guessing one
@@ -786,8 +802,9 @@ sibling of `functionCall`, present only on the FIRST call part of a parallel
 batch, and Gemini 3 rejects a replayed call part that has lost it. The adapter
 therefore stores the exact `role:"model"` content it received in opaque
 `backend: 'gemini'` provider state, replays it verbatim, and declares
-`requiresOrdinaryTurnContinuation`, so the signature crosses the public HTTP
-boundary of a browser client-tool round trip. A response whose first function
+`requiresOrdinaryTurnContinuation` and complete agent-history ownership, so the
+signature crosses the public HTTP boundary of a browser client-tool round trip
+and every earlier signed tool cycle is replayed on later internal turns. A response whose first function
 call carries no signature, and a replay whose signature was stripped, both fail
 before provider I/O rather than becoming a provider 400 mid-loop.
 
@@ -868,7 +885,7 @@ Because it reads as a cost characteristic rather than a correctness one, no
 prompt group requires it. Requiring the mechanism made a provider that caches by
 another route unroutable, which is a routing defect and not a safety property: a
 group needs caching to be affordable, not to be correct. Groups still require
-what they cannot work without — vision, provider files, streaming, structured
+what they cannot work without — vision, reusable files, streaming, structured
 output, tools, reasoning — and `GET /prompts` reports, per prompt, whether the
 resolved model honours the markers its canonical request carries, so an operator
 can see which prompts pay for reuse by another route.
@@ -959,7 +976,10 @@ The catalog records a limit per model generation, as model-id prefixes where the
 the current Claude families at 128000 (Fable, Opus, Sonnet) and 64000 (Haiku), the earlier
 `claude-opus-4-5` and `claude-sonnet-4-5` at 64000 (their model pages), GPT-5 at 128000
 ([GPT-5.2](https://developers.openai.com/api/docs/models/gpt-5.2)), and Gemini 3 at 65536
-([Gemini 3 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-preview)). A settings-only
+([Gemini 3 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-preview)). Exact
+Kimi/Moonshot Chat Completions ids use 131072: K3 documents that default while
+allowing a context-dependent larger value, and Kimi Code caps compaction output
+at 128K to avoid provider `max_tokens` failures. A settings-only
 route change therefore carries its own model's ceiling, and a model whose generation records no limit
 fails route resolution before any provider call. Gemini's one output budget covers thinking and the
 answer, so its adapter never asks for more than that model maximum.
@@ -980,3 +1000,94 @@ logging it at `warn` with its QC telemetry, so a truncated proposal is never del
 counted, as a success. Registered prompts stream upstream
 ([One upstream inference deadline, owned by app-ai](#one-upstream-inference-deadline-owned-by-app-ai)),
 which is the transport the provider recommends for budgets this large.
+
+### 34. Moonshot serves two accounts over one Chat Completions adapter
+
+The dormant Moonshot adapter uses dependency-free Web `fetch` against the
+official `/v1/chat/completions` and Files APIs. One implementation serves two
+credentialed accounts that speak the same wire contract — the metered Moonshot
+platform (`MOONSHOT_API_BASE` / `MOONSHOT_API_KEY`, exact ids `kimi-k3`,
+`kimi-k2.6`, `kimi-k2.7-code`, and `kimi-k2.7-code-highspeed`) and the Kimi Code
+subscription (`KIMI_API_BASE` / `KIMI_API_KEY`, exact ids `k3`, `k3-256k`,
+`kimi-for-coding`, and `kimi-for-coding-highspeed`) — separated by an account descriptor carrying
+transport, provider identity, model namespace, and whether a provider Files API
+exists at all. Exact matching keeps undocumented aliases from inheriting a
+generation's effort or file capabilities. Provider and API selection stay in
+`inference/factory.ts`; every
+production prompt group remains on Anthropic. The implementation contract was
+checked against the current official
+[Chat Completions](https://platform.moonshot.ai/docs/api/chat),
+[model-parameter](https://platform.moonshot.ai/docs/api/models-overview),
+[thinking](https://platform.moonshot.ai/docs/guide/use-thinking-models),
+[tool-call](https://platform.moonshot.ai/docs/guide/use-kimi-api-to-complete-tool-calls),
+[vision](https://platform.moonshot.ai/docs/guide/use-kimi-vision-model), and
+[Files](https://platform.moonshot.ai/docs/api/files-upload) documentation. Kimi Code
+publishes its separate [subscription endpoint and model IDs](https://www.kimi.com/code/docs/en/)
+and [model effort controls](https://www.kimi.com/code/docs/en/kimi-code/models.html).
+
+Conversation continuation is stateless at the HTTP layer but stateful in message
+history. Ordinary assistant text replays from public history without a token.
+Tool transcripts replay complete assistant messages, including
+`reasoning_content` and exact `tool_calls`, before tool results; the adapter
+stores that accumulated transcript in opaque provider state and marks it
+required across the tool boundary. The state owns internal agent history, so the
+shared runtime compacts to the latest boundary while the adapter replays the
+complete transcript without duplication. The shared runtime never interprets it, and
+public `/chat` and registered `/messages` tool continuations ride the one sealed-token
+implementation in `inference/token-sealing.ts` through
+`inference/continuation.ts`, tenant/group/profile-bound and expiring. The adapter
+verifies raw state against canonical assistant content and tool calls
+semantically while preserving the provider's exact JSON argument string, so
+foreign or stale state — including state minted for the sibling account — fails
+before provider I/O.
+
+Streaming is accepted only when strict Chat Completion chunk identities remain
+stable, reasoning precedes visible or tool output, tool-call indexes are
+contiguous, IDs are unique and unchanging, a terminal finish reason matches the
+assembled calls, final usage is valid and consistent, and the provider sends the
+documented `data: [DONE]` marker. Both usage placements — top-level and nested
+final choice — normalize into the same canonical usage contract. Kimi Code may
+repeat identical nested terminal usage in a following empty-choices chunk; the
+adapter accepts equality and rejects disagreement. Malformed JSON, truncation, missing terminal state, and
+provider or transport failures leave the adapter as normalized
+`InferenceFailure`s, and an upstream failure from either account is answered as
+`MoonshotApiException` because both name the same API. A sealed file reference
+that will not open is client input instead — `ArgumentException` or
+`UnauthorizedAccessException`, decided before any provider was consulted.
+
+The metered account's direct-file policy is `provider-managed` with purpose
+`image`. Upload, retrieve and delete success envelopes are shape-checked, and
+route-scoped dedup metadata retains upload MIME because Moonshot metadata does
+not expose it. Kimi's worker-managed policy stores encrypted uploaded bytes in
+`INLINE_EVIDENCE_R2`. The upload response stays the existing prompt-aware sealed
+reference; a later request opens it under the same tenant, account, policy, and
+group checks. Kimi's image Files upload returns an `ms://` reference small enough
+to keep screenshots out of the message body, and an encrypted sidecar reuses the
+same id across repeated inference. Cleaned HTML and prompt sample documents are
+decoded into text. Oversized uploaded HTML stays in encrypted storage; the
+adapter offers Kimi bounded read/search tools and passes exact selected
+fragments into the final request. Smart image detection can finish within that
+tool loop; chat and other routes retain their original public tools and stream
+after retrieval. Internal provider continuation stays in app-ai and usage is
+aggregated across calls. A 2 MiB request-size guard fails
+before the completion call; existing bounded lib callers can fan out a holistic
+onboarding request on 413. Kimi's
+coding endpoint accepted image and text uploads in live probes, but its
+metadata, content-read, and delete endpoints answered 404. Deleting the public
+reference revokes app-ai's encrypted object and sidecar, while Kimi retains any
+native image upload under its own provider policy. External image URLs,
+unsupported documents, and media tool results fail closed. Sampling values are
+model-fixed; explicit sampling overrides
+and the undocumented parallel-tool toggle likewise fail before I/O. K3 and the
+K2.8 `kimi-for-coding` model support semantic effort. K2.7 HighSpeed preserves
+thinking without an effort control. Specific-function tool choice remains gated
+to K3 until the subscription host's behavior is verified. Requests use the current
+`max_completion_tokens` field rather than the deprecated `max_tokens`. Neither
+account claims inline cache breakpoints, even though Moonshot may perform
+provider-managed prefix caching.
+
+The optional `npm run verify:moonshot` and `npm run verify:kimi` matrices are
+paid and each requires two explicit acknowledgements plus an explicit base, key,
+and model. Kimi Code documents the subscription endpoint and model IDs; the
+probes verify the remaining wire behavior. Both sit outside CI and release
+gates and activate no production route.
