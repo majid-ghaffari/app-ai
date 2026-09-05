@@ -10,7 +10,7 @@ This is a SINGLE-FILE prompt — not composed. There are no shared blocks under 
 
 ## Model
 
-The `frontier` default tier — resolved via `resolveModel` at registration time, currently `claude-opus-4-8` (the wrangler `MODEL_FRONTIER` `[vars]` pin in [`wrangler.toml`](../../wrangler.toml)). It shares the default tier with `chat` / `onboarding-chat` / `image-selection` (they omit `tier`); it is NOT a distinct tier like `proposals`' `balanced` tier. No `temperature` / `top_p` / `top_k` / `effort` — current models reject the sampling knobs and the default output effort is fine for a short structured reply.
+The `analytics-narrative` prompt group runs on the `balanced` tier, currently bound through `MODEL_BALANCED` to `claude-sonnet-5`. No `temperature` / `top_p` / `top_k` / `effort` override is present; the provider default effort is used for this short structured reply.
 
 ## Tools
 
@@ -51,7 +51,7 @@ Rules baked into the prompt:
 
 lib's `parseAnalyticsInsights` (in `admin/ai/structured-output.ts`) is tolerant — it accepts a direct array, a fenced array, or an array embedded in text — and DROPS any entry missing a valid `kind` (one of the three literals) or a non-empty `text`. Each surviving entry is mapped onto the per-tab scaffolding card of the same `kind`. Keeping the `kind` vocabulary (`opportunity` / `attention` / `trending`) and the `{ kind, text }` shape stable is what lets the Analytics cards render unchanged — changing either breaks the mapping.
 
-`maxTokens` is `1024`, ample for three short insights; the client may override via the request body's `max_tokens` but does not.
+`maxTokens` is `1024`, ample for three short insights. The registered prompt contract is authoritative; a client-supplied `max_tokens`, model, or effort policy is overwritten.
 
 ## Caching notes
 
@@ -59,4 +59,4 @@ The base prompt ships as the FIRST system block with a 1h extended `cache_contro
 
 ## Tests
 
-No prompt-specific pinning spec exists today (`analytics-insights` is not referenced by any file under `test/`). Its config resolves through the shared registry machinery covered by `test/config.test.ts` (the `resolveModel` tier mapping + the wrangler `MODEL_FRONTIER` pin). The output contract is exercised end-to-end on the lib side (`parseAnalyticsInsights` + the Analytics AI e2e). If this prompt grows enough to warrant one, add a registry-resolution spec asserting `usesTools: false`, `model = ENV.MODEL_FRONTIER`, `attachments: []`, and the JSON-array output shape.
+`test/prompt-groups.test.ts` pins `analytics-insights` to the `analytics-narrative` group and validates the group's profile/capabilities. The output contract is exercised end-to-end on the lib side (`parseAnalyticsInsights` + the Analytics AI e2e). A prompt-specific content test should additionally pin the JSON-array output shape if this prompt's contract expands.

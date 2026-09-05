@@ -34,6 +34,8 @@ const DEMO_AUDIENCE = 'studio-extension';
 const DEMO_TOKEN_PREFIX = 'ls_demo_';
 const MAX_TOKEN_LENGTH = 8192;
 const MAX_IDENTIFIER_LENGTH = 256;
+/** A sealed public file reference is authenticated ciphertext, so it is far longer than an id. */
+const MAX_FILE_REFERENCE_LENGTH = 4096;
 const MAX_ACTIVATION_LIFETIME_SECONDS = 900;
 const ALLOWED_DEMO_UPLOAD_PROMPTS = new Set([
   'onboarding-batch-all',
@@ -475,7 +477,7 @@ function validateDemoMessage(value: unknown): string[] {
       continue;
     }
     const source = asRecord(block.source);
-    if (source?.type !== 'file' || !isBoundedIdentifier(source.file_id)) {
+    if (source?.type !== 'file' || !isBoundedFileReference(source.file_id)) {
       throw forbidden('Demo image and document blocks must reference an uploaded file.');
     }
     fileIdentifiers.push(source.file_id);
@@ -523,6 +525,10 @@ async function opaqueSessionIdentifier(tokenIdentifier: string): Promise<string>
 
 function isBoundedIdentifier(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_IDENTIFIER_LENGTH;
+}
+
+function isBoundedFileReference(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_FILE_REFERENCE_LENGTH;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

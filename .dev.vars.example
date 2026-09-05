@@ -1,88 +1,159 @@
 # Local development configuration for `wrangler dev` (npm run dev).
 #
-# Copy this file to `.dev.vars` (gitignored) and fill in the secrets. Values
-# here OVERRIDE the production `[vars]` in wrangler.toml for the local worker.
-# Every variable is REQUIRED unless marked otherwise — src/config.ts throws on
-# a missing one (no fallback defaults). See docs/CODE-PATTERNS.md →
-# "No Hardcoded Config Values".
+# Copy this file to `.dev.vars` (gitignored). Values here OVERRIDE the
+# production `[vars]` in wrangler.toml for the local worker.
+#
+# Every key the worker reads is listed below and marked REQUIRED or OPTIONAL.
+# A REQUIRED key that is absent throws at first access, naming the variable and
+# the channel to set it in — there are no fallback defaults (docs/CODE-PATTERNS.md
+# → "No Hardcoded Config Values"). SECRETS are left BLANK here on purpose: fill
+# them in your own `.dev.vars`, never in a committed file.
+#
+# The sections below are the concerns the worker is configured by, in order:
+# worker identity, model routing, one section per provider, the local inference
+# channel, sealed-token and service credentials, the scoped demo, logging, the
+# wrangler.toml bindings, and the optional source overrides.
 
-# Deployment label. Logging behavior is controlled only by the LOG_TARGETS_* variables below.
+# ── Worker identity ──────────────────────────────────────────────────────────
+
+# REQUIRED. Deployment label. Logging behaviour is controlled only by the
+# LOG_TARGETS_* variables below; this label gates production fail-closed rules.
 ENVIRONMENT=local
 
-# OPTIONAL dev-launcher output path. `npm run dev` mirrors Wrangler output here so another process
-# can inspect the active inference trace. Defaults to app-ai-dev.log (already covered by *.log in
-# .gitignore).
-# APP_AI_DEV_LOG_FILE=app-ai-dev.log
-
-# Each level fans out to a comma-separated target list (`console`, `seq`) or `ignore`.
-# Local development intentionally mirrors every level to the terminal and private Seq.
-LOG_TARGETS_TRACE=console,seq
-LOG_TARGETS_DEBUG=console,seq
-LOG_TARGETS_INFO=console,seq
-LOG_TARGETS_WARN=console,seq
-LOG_TARGETS_ERROR=console,seq
-LOG_TARGETS_FATAL=console,seq
-LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
-# OPTIONAL secret. The shared endpoint currently accepts anonymous CLEF ingestion.
-# LOG_SEQ_API_KEY=
-
-# Personalizer API base URL, no trailing slash. Miniflare/workerd fetch can't
-# accept nginx's self-signed cert on https://local.personalizer.io, so the
-# LOCAL worker talks to Personalizer over plain HTTP (same Personalizer process;
-# nginx just fronts it with TLS for the browser).
+# REQUIRED. Personalizer API base URL, no trailing slash. Miniflare/workerd
+# fetch can't accept nginx's self-signed cert on https://local.personalizer.io,
+# so the LOCAL worker talks to Personalizer over plain HTTP (same Personalizer
+# process; nginx just fronts it with TLS for the browser).
 PERSONALIZER_API_URL=http://127.0.0.1:5000
 
-# SECRET — caller-auth token toward Personalizer's integration bridge (the
-# platform toolsets send it as X-Personalizer-Integration-Bridge-Token;
-# src/toolsets/integration-bridge.ts). Must match a token in the local
-# Personalizer's IntegrationBridge caller map.
-PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=local-dev-integration-bridge-token
+# REQUIRED. Origins allowed to send credentialed CORS requests (comma-separated).
+# Every other Origin is echoed WITHOUT credentials — see src/lib/cors.ts.
+CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http://localhost:3000
 
-# ── AI channel ───────────────────────────────────────────────────────────────
-# Anthropic API origin, no trailing slash.
+# REQUIRED. The SubscriberID Personalizer reports for the master account. Only
+# that subscriber may read GET /prompts; every other validated merchant is
+# answered as though the route did not exist.
+MASTER_SUBSCRIBER_ID=1
+
+# ── Model routing ────────────────────────────────────────────────────────────
+#
+# Each prompt group declares a capability TIER. The model id bound to that tier
+# decides which provider serves it, over which API family, with which
+# capabilities and direct-file policy, through the family-prefix catalog in
+# src/inference/model-catalog.ts. A model id the catalog does not recognise, or
+# one whose capabilities cannot satisfy a group on that tier, fails at
+# resolution — before any provider call. Pointing a tier at another provider's
+# model is therefore a settings change, and the provider sections below are what
+# that change needs configured.
+
+# REQUIRED. Latency-sensitive / cheapest one-shot prompts.
+MODEL_FAST=claude-haiku-4-5
+# REQUIRED. The multi-modal / JSON reasoners.
+MODEL_BALANCED=claude-sonnet-5
+# REQUIRED. The most-capable flagship (the DEFAULT tier).
+MODEL_FRONTIER=claude-opus-4-8
+
+# OPTIONAL. Sparse per-prompt exceptions to the tier bindings above, as a
+# comma-separated promptGroupOrPromptName=modelId list. A prompt name beats its
+# group, and a group beats its tier binding. Empty means every prompt follows
+# its tier; a key naming no registered prompt or prompt group throws.
+# MODEL_OVERRIDES=website-analysis-visual=claude-opus-4-8,probe-style=claude-sonnet-5
+
+# ── Anthropic ────────────────────────────────────────────────────────────────
+
+# REQUIRED. Anthropic API origin, no trailing slash. The worker talks to
+# Anthropic through exactly one seam, so this ONE line is the whole toggle
+# between the free local shim (below) and the paid origin.
+ANTHROPIC_API_BASE=http://127.0.0.1:8788
+
+# REQUIRED SECRET. Your Anthropic API key. Only the Anthropic wire adapter reads
+# it (src/inference/adapters/anthropic-wire.ts).
+CLAUDE_API_KEY=
+
+# ── OpenAI ───────────────────────────────────────────────────────────────────
+
+# REQUIRED. OpenAI Responses origin, no trailing slash.
+OPENAI_API_BASE=https://api.openai.com
+
+# REQUIRED SECRET only while a resolved route uses OpenAI; blank otherwise. Only
+# the OpenAI wire adapter reads it (src/inference/adapters/openai-wire.ts).
+OPENAI_API_KEY=
+
+# ── Gemini ───────────────────────────────────────────────────────────────────
+
+# REQUIRED. Google Gemini origin including its version segment, no trailing
+# slash.
+GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta
+
+# REQUIRED SECRET only while a resolved route uses Gemini; blank otherwise. Only
+# the Gemini wire adapter reads it (src/inference/adapters/gemini-wire.ts).
+GEMINI_API_KEY=
+
+# ── Local inference channel ──────────────────────────────────────────────────
 #
 # DEV DEFAULT = the FREE local Claude-Code shim (scripts/dev-claude-shim.mjs).
 # Start it with `npm run dev:shim`, then plain `wrangler dev` fulfils every
 # worker inference via Claude Code (the machine's Claude Code auth) — NO
-# Anthropic credits are ever spent. This is the standard, permanent local
-# channel; leave it as-is.
+# provider credits are ever spent. This is the standard, permanent local
+# channel; leave the provider origins above as they are.
 #
-# The worker talks to Anthropic through exactly one seam (src/lib/anthropic.ts,
-# `${ANTHROPIC_API_BASE}/v1/...`), so this ONE line is the whole toggle — no
-# src change, no code branch.
-ANTHROPIC_API_BASE=http://127.0.0.1:8788
+# To use a REAL, PAID provider from local dev (rarely needed — prod-only by
+# policy) takes TWO deliberate steps: point that provider's base at its real
+# origin AND set AI_CHANNEL=prod. The cred-burn guard (test/dev-shim.test.ts →
+# assertDevAiChannel) FAILS a dev/test config that points at a paid origin
+# without that opt-in, so a credit-spending default cannot slip in silently.
 
-# To use the REAL, PAID Anthropic API from local dev (rarely needed — prod-only
-# by policy), you must do TWO things, both deliberate:
-#   1. Point the base back at the real API:  ANTHROPIC_API_BASE=https://api.anthropic.com
-#   2. Opt in explicitly:                     AI_CHANNEL=prod
-# The cred-burn guard (test/dev-shim.test.ts → assertDevAiChannel) FAILS a
-# dev/test run that points at api.anthropic.com without AI_CHANNEL=prod, so a
-# credit-spending config can never slip in silently.
+# OPTIONAL. Explicit opt-in for PAID provider calls outside production. Without
+# it, any provider base that is not a loopback address is refused.
 # AI_CHANNEL=prod
 
-# Origins allowed to send credentialed CORS requests (comma-separated).
-CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http://localhost:3000
+# OPTIONAL. Local fulfiller behind the dev shim. `claude-code` is the default
+# and supports the established streaming/tool bridge. `codex` is intentionally
+# one-shot/tool-free for visual + structured prompts and uses `codex exec`
+# ephemerally with read-only sandboxing. Set an explicit installed Codex model.
+LOCAL_AI_FULFILLER=claude-code
+# CODEX_LOCAL_MODEL=<installed-codex-model>
 
-# Capability tiers (provider-agnostic) bound to concrete models — the prompt
-# registry (src/prompt-registry.ts) tags each prompt with a tier; resolveModel maps it
-# here. Swap a value to bump a model version or switch provider.
-MODEL_FAST=claude-haiku-4-5
-MODEL_BALANCED=claude-sonnet-5
-MODEL_FRONTIER=claude-opus-4-8
+# OPTIONAL SECRET. Saved Codex auth is forced to ChatGPT by default. A
+# CODEX_API_KEY is paid and rejected unless AI_CHANNEL=prod; never place
+# unrelated app/provider secrets in the Codex child environment (the shim passes
+# only an internal allowlist).
+# CODEX_API_KEY=
 
-# SECRET — your Anthropic API key. Never commit the real value.
-CLAUDE_API_KEY=sk-ant-your-key-here
+# OPTIONAL. Dev-launcher output path. `npm run dev` mirrors Wrangler output here
+# so another process can inspect the active inference trace. Defaults to
+# app-ai-dev.log (already covered by *.log in .gitignore).
+# APP_AI_DEV_LOG_FILE=app-ai-dev.log
 
-# SECRETS — use distinct values containing at least 32 random bytes each.
-# The activation and audit-status keys are shared with limespot.com for separate purposes; the
-# session key stays app-ai-only.
-DEMO_ACTIVATION_SIGNING_SECRET=replace-with-a-random-local-activation-secret
-DEMO_SESSION_SIGNING_SECRET=replace-with-a-distinct-random-local-session-secret
-DEMO_AUDIT_STATUS_SIGNING_SECRET=replace-with-a-distinct-random-local-status-secret
+# ── Sealed tokens and service credentials ────────────────────────────────────
+
+# REQUIRED SECRET. Exactly 32 random bytes encoded as base64. An HKDF root, not
+# a cipher key used directly: derived AES-GCM and HMAC subkeys seal prompt-aware
+# file references, seal tenant/route-bound inference continuations, and key the
+# tenant pseudonym that scopes both.
+# Generate once per environment, for example: openssl rand -base64 32
+TOKEN_ENCRYPTION_SECRET=
+
+# REQUIRED SECRET. Caller-auth token toward Personalizer's integration bridge
+# (the platform toolsets send it as X-Personalizer-Integration-Bridge-Token;
+# src/toolsets/integration-bridge.ts). Must match a token in the local
+# Personalizer's IntegrationBridge caller map.
+PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=
+
+# ── Studio demo (scoped extension sessions) ──────────────────────────────────
+#
+# REQUIRED SECRETS — three DISTINCT values of at least 32 random bytes each. The
+# activation and audit-status keys are shared with limespot.com for separate
+# purposes; the session key stays app-ai-only.
+DEMO_ACTIVATION_SIGNING_SECRET=
+DEMO_SESSION_SIGNING_SECRET=
+DEMO_AUDIT_STATUS_SIGNING_SECRET=
+
+# REQUIRED. Exact website endpoint that receives signed audit-attempt status
+# callbacks. HTTPS except on loopback development hosts.
 DEMO_AUDIT_STATUS_URL=http://127.0.0.1:5173/personalization-audit/api/status
 
-# Scoped Studio demo limits. Production values are declared in wrangler.toml.
+# REQUIRED. Scoped demo limits. Production values are declared in wrangler.toml.
 DEMO_SESSION_TTL_SECONDS=1800
 DEMO_MAX_UPLOADS=40
 DEMO_MAX_MESSAGES=3
@@ -90,11 +161,41 @@ DEMO_MAX_UPLOAD_BYTES=8000000
 DEMO_MAX_TOTAL_UPLOAD_BYTES=64000000
 DEMO_MAX_MESSAGE_BYTES=1000000
 
-# OPTIONAL — Brain-defaults source URL override (src/lib/brain-defaults.ts).
-# When UNSET (the default), the PROPOSE prompts fetch the tenant's canonical Brain
-# default RecommendationsSettings from the authenticated endpoint
+# ── Logging ──────────────────────────────────────────────────────────────────
+
+# REQUIRED. Each level fans out to a comma-separated target list (`console`,
+# `seq`) or `ignore`. Local development mirrors every level to the terminal and
+# private Seq.
+LOG_TARGETS_TRACE=console,seq
+LOG_TARGETS_DEBUG=console,seq
+LOG_TARGETS_INFO=console,seq
+LOG_TARGETS_WARN=console,seq
+LOG_TARGETS_ERROR=console,seq
+LOG_TARGETS_FATAL=console,seq
+
+# REQUIRED. Seq CLEF ingestion endpoint.
+LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
+
+# OPTIONAL SECRET. The shared endpoint accepts anonymous CLEF ingestion; set
+# this only when the endpoint requires a key.
+# LOG_SEQ_API_KEY=
+
+# ── Bindings (wrangler.toml, not .dev.vars) ──────────────────────────────────
+#
+# FILES_KV      — OPTIONAL metadata-only KV namespace for best-effort file
+#                 dedup. Its absence no-ops to a plain direct upload; public
+#                 reference correctness never depends on it.
+# DEMO_SESSIONS — REQUIRED Durable Object namespace backing the demo session
+#                 authority. The scoped demo routes fail closed without it.
+
+# ── Optional overrides ───────────────────────────────────────────────────────
+
+# OPTIONAL. Brain-defaults source URL override (src/lib/brain-defaults.ts).
+# When UNSET (the default), the PROPOSE prompts fetch the tenant's canonical
+# Brain default RecommendationsSettings from the authenticated endpoint
 # ${PERSONALIZER_API_URL}/v1/personalizerConfig?defaultRecommendationsSettings=true
 # (forwarding the merchant context-ID). Set it to point the provider at a
-# versioned/immutable CDN object instead (fetched as-is, without the context-ID).
-# Its absence changes behavior explicitly (documented), so it carries no fallback.
+# versioned/immutable CDN object instead (fetched as-is, without the
+# context-ID). Its absence changes behaviour explicitly, so it carries no
+# fallback.
 # RECOMMENDATIONS_DEFAULTS_URL=https://edge.personalizer.io/defaults/recommendations/v1.json

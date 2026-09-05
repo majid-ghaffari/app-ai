@@ -5,7 +5,7 @@
 #   • Production non-secrets → [vars] below (Cloudflare auto-deploys from main
 #     with this file, so [vars] IS the production configuration).
 #   • Production secrets     → Cloudflare Dashboard encrypted secrets
-#     (CLAUDE_API_KEY — never in this file).
+#     (provider API keys / TOKEN_ENCRYPTION_SECRET — never in this file).
 #   • Local dev              → .dev.vars (gitignored; overrides [vars] under
 #     `wrangler dev`). Every knob is documented in .dev.vars.example.
 # The worker reads all of these ONLY through the typed accessors in
@@ -39,39 +39,91 @@ local_protocol = "http"
 #   Deploy command:                       npm run deploy
 #   Non-production branch deploy command: npm run deploy:preview
 # Both repository launchers inject the exact Git revision consumed by /health.
-# Production SECRETS are set via the Cloudflare Dashboard (encrypted secrets),
-# never in this file:
-#   CLAUDE_API_KEY      — the Anthropic API key (src/lib/anthropic.ts).
-#   PERSONALIZER_INTEGRATION_BRIDGE_TOKEN — the platform toolsets' caller-auth
-#     token toward Personalizer's integration bridge (sent as
-#     X-Personalizer-Integration-Bridge-Token, src/toolsets/integration-bridge.ts);
-#     pairs with the PERSONALIZER_API_URL [vars] value below. Never logged.
-#     Rotation: Personalizer accepts two active tokens per caller (current +
-#     next), so flip this secret after Personalizer has the next value.
-#   LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
-#     by the configured endpoint; set this secret when the endpoint requires one.
-#   DEMO_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
-#   DEMO_SESSION_SIGNING_SECRET — app-ai-only key for exchanged demo sessions.
-#   DEMO_AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
+#
+# [vars] below is grouped by the same concerns, in the same order, as
+# .dev.vars.example: worker identity, model routing, one section per provider,
+# the scoped demo, and logging. Production SECRETS are set via the Cloudflare
+# Dashboard (encrypted secrets), never in this file, and belong to those same
+# sections:
+#
+#   Providers — one key per provider, read only by that provider's wire adapter:
+#     CLAUDE_API_KEY  — the Anthropic API key (src/inference/adapters/anthropic-wire.ts).
+#     OPENAI_API_KEY  — the OpenAI API key, required only while a resolved route uses OpenAI.
+#     GEMINI_API_KEY  — the Google Gemini API key, required only while a resolved route uses Gemini.
+#
+#   Sealed tokens and service credentials:
+#     TOKEN_ENCRYPTION_SECRET — 32 random bytes encoded as base64. An HKDF root, not a
+#       cipher key used directly: AES-GCM and HMAC subkeys derived from it seal opaque
+#       file references, seal inference continuations, and key the tenant pseudonym that
+#       scopes both. Rotation invalidates references (<=15 days) and continuations (<=24 hours).
+#     PERSONALIZER_INTEGRATION_BRIDGE_TOKEN — the platform toolsets' caller-auth
+#       token toward Personalizer's integration bridge (sent as
+#       X-Personalizer-Integration-Bridge-Token, src/toolsets/integration-bridge.ts);
+#       pairs with the PERSONALIZER_API_URL [vars] value below. Never logged.
+#       Rotation: Personalizer accepts two active tokens per caller (current +
+#       next), so flip this secret after Personalizer has the next value.
+#
+#   Studio demo:
+#     DEMO_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
+#     DEMO_SESSION_SIGNING_SECRET — app-ai-only key for exchanged demo sessions.
+#     DEMO_AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
+#
+#   Logging:
+#     LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
+#       by the configured endpoint; set this secret when the endpoint requires one.
 [vars]
+# ── Worker identity ──
 ENVIRONMENT = "production"
 PERSONALIZER_API_URL = "https://personalizer.io"
-ANTHROPIC_API_BASE = "https://api.anthropic.com"
 # Dev origins allowed to send credentialed CORS requests (comma-separated).
 # Every other Origin is echoed WITHOUT credentials — see src/lib/cors.ts.
 CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,http://localhost:3000"
-# CAPABILITY TIERS (provider-agnostic) bound to concrete models — the ONLY place
-# a model id appears. The prompt registry (src/prompt-registry.ts) tags each prompt with a
-# tier (`fast` / `balanced` / `frontier`), never a model id; `resolveModel`
-# (src/config.ts) maps a tier to the binding below. To bump a model version OR
-# switch provider (Claude → OpenAI / Gemini), edit ONLY these three values — the
-# registry and every prompt stay untouched.
+# The subscriber Personalizer reports for the master account. Only that
+# subscriber may read GET /prompts; every other validated merchant is answered
+# as though the route did not exist.
+MASTER_SUBSCRIBER_ID = "1"
+
+# ── Model routing ──
+# CAPABILITY TIERS bound to concrete models. Each prompt group declares a tier;
+# the model id set here decides which provider serves it, over which API family,
+# with which capabilities and direct-file policy, through the family-prefix
+# catalog in src/inference/model-catalog.ts. Pointing a tier at another
+# provider's model is therefore a settings change — the catalog must know the
+# model's family, and the resolved capabilities must satisfy every group on the
+# tier, or the route fails before any provider call.
 #   MODEL_FAST     — latency-sensitive / cheapest one-shot prompts.
 #   MODEL_BALANCED — the multi-modal / JSON reasoners.
 #   MODEL_FRONTIER — the most-capable flagship (the DEFAULT tier).
 MODEL_FAST = "claude-haiku-4-5"
 MODEL_BALANCED = "claude-sonnet-5"
 MODEL_FRONTIER = "claude-opus-4-8"
+# Sparse per-prompt exceptions to the tier bindings above, as a comma-separated
+# promptGroupOrPromptName=modelId list — for example
+# "website-analysis-visual=claude-opus-4-8,probe-style=claude-sonnet-5". A prompt
+# name beats its group, and a group beats its tier binding. Empty means every
+# prompt follows its tier. A key naming no registered prompt or prompt group
+# throws rather than being ignored.
+MODEL_OVERRIDES = ""
+
+# ── Anthropic ──
+ANTHROPIC_API_BASE = "https://api.anthropic.com"
+
+# ── OpenAI ──
+OPENAI_API_BASE = "https://api.openai.com"
+
+# ── Gemini ──
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# ── Studio demo (scoped extension sessions) ──
+DEMO_AUDIT_STATUS_URL = "https://limespot.com/personalization-audit/api/status"
+DEMO_SESSION_TTL_SECONDS = "1800"
+DEMO_MAX_UPLOADS = "40"
+DEMO_MAX_MESSAGES = "3"
+DEMO_MAX_UPLOAD_BYTES = "8000000"
+DEMO_MAX_TOTAL_UPLOAD_BYTES = "64000000"
+DEMO_MAX_MESSAGE_BYTES = "1000000"
+
+# ── Logging ──
 # Logging is level-routed entirely by configuration. Production sends durable QC
 # telemetry plus failures to private Seq and emits no Worker console output.
 LOG_TARGETS_TRACE = "ignore"
@@ -81,13 +133,6 @@ LOG_TARGETS_WARN = "seq"
 LOG_TARGETS_ERROR = "seq"
 LOG_TARGETS_FATAL = "seq"
 LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"
-DEMO_AUDIT_STATUS_URL = "https://limespot.com/personalization-audit/api/status"
-DEMO_SESSION_TTL_SECONDS = "1800"
-DEMO_MAX_UPLOADS = "40"
-DEMO_MAX_MESSAGES = "3"
-DEMO_MAX_UPLOAD_BYTES = "8000000"
-DEMO_MAX_TOTAL_UPLOAD_BYTES = "64000000"
-DEMO_MAX_MESSAGE_BYTES = "1000000"
 
 # Bundle system-prompt .md files as raw text at build time.
 # Workers have no runtime filesystem, so `import x from './prompts/chat.md'`
@@ -102,11 +147,9 @@ type = "Text"
 globs = ["**/*.md"]
 fallthrough = true
 
-# Files API content-hash dedup store (src/lib/file-dedup.ts): maps
-# SHA-256(content) → { fileId, createdAt } so identical HTML/screenshot bytes
-# reuse an existing Anthropic file_id instead of re-uploading (the Files API
-# does not dedup by content). The code no-ops when this binding is absent —
-# the one deliberately OPTIONAL binding (src/config.ts).
+# Metadata-only best-effort file dedup: route-scoped content hashes reuse direct
+# provider uploads. Public reference correctness uses sealed tokens, not KV's
+# eventual consistency. File bytes and reference-route metadata are never stored.
 [[kv_namespaces]]
 binding = "FILES_KV"
 id = "eb048ab9979f46ce93d8b0dfcdb9d58f"

@@ -19,7 +19,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getSystemPrompt, ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
 import blockFixedRules from '../src/prompts/onboarding-shared/_block-fixed-rules.md';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch } from './helpers';
+import { anthropicMessage, ENV, CORS, stubFetch } from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -111,7 +111,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
 
   it('PROCEEDS to Anthropic when the header MATCHES the entry version', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
 
     const res = await handleMessages(
       messagesRequest('onboarding-batch-all', ONBOARDING_RULESET_VERSION),
@@ -125,7 +125,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
 
   it('PROCEEDS (fail-OPEN) when the header is ABSENT — the rollout default', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
 
     const res = await handleMessages(messagesRequest('onboarding-batch-all'), ENV, CORS);
     expect(res.status).toBe(200);
@@ -135,7 +135,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
 
   it('REJECTS a MISMATCH with a 409 RulesetVersionMismatchException naming both versions', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
 
     const res = await handleMessages(
       messagesRequest('onboarding-batch-all', 'limespot-onboarding-playbook-v0'),
@@ -155,7 +155,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
 
   it('IGNORES the header for a non-onboarding prompt (no rulesetVersion → skip)', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
 
     // A mismatching header on a prompt that does not declare a version is a no-op.
     const res = await handleMessages(
@@ -171,7 +171,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
   it('enforces the handshake for every onboarding prompt (mismatch → 409)', async () => {
     for (const name of ONBOARDING_PROMPTS) {
       const fetchMock = stubFetch();
-      fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+      fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
       const res = await handleMessages(messagesRequest(name, 'wrong-version'), ENV, CORS);
       expect(res.status).toBe(409);
       vi.restoreAllMocks();
@@ -181,7 +181,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
   it('enforces the handshake for the three sibling conductors too (mismatch → 409)', async () => {
     for (const name of SIBLING_HANDSHAKE_PROMPTS) {
       const fetchMock = stubFetch();
-      fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+      fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
       const res = await handleMessages(messagesRequest(name, 'wrong-version'), ENV, CORS);
       expect(res.status).toBe(409);
       const body = (await res.json()) as Record<string, unknown>;
@@ -197,7 +197,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
     for (const name of SIBLING_HANDSHAKE_PROMPTS) {
       // Matching header → reaches Anthropic.
       let fetchMock = stubFetch();
-      fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+      fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
       let res = await handleMessages(messagesRequest(name, ONBOARDING_RULESET_VERSION), ENV, CORS);
       expect(res.status).toBe(200);
       expect(
@@ -207,7 +207,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
 
       // Absent header → fail-OPEN rollout default: still proceeds.
       fetchMock = stubFetch();
-      fetchMock.mockImplementation(async () => jsonOk({ content: [] }));
+      fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
       res = await handleMessages(messagesRequest(name), ENV, CORS);
       expect(res.status).toBe(200);
       expect(

@@ -23,7 +23,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -126,7 +134,14 @@ describe('POST /messages — onboarding-review routing', () => {
 
   it('injects the onboarding-review system block + defaults the model to the `balanced` tier', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      ['file_shot_after_desktop', 'file_shot_after_mobile'].map((upstreamFileId) => ({
+        upstreamFileId,
+        mediaType: 'image/png',
+      })),
+      ['onboarding-visual'],
+    );
 
     await handleMessages(
       // Body WITHOUT `model` — the transport omits it so the registry is
@@ -139,8 +154,8 @@ describe('POST /messages — onboarding-review routing', () => {
               role: 'user',
               content: [
                 // TWO after-render screenshots — desktop + mobile — judged together.
-                { type: 'image', source: { type: 'file', file_id: 'shot_after_desktop' } },
-                { type: 'image', source: { type: 'file', file_id: 'shot_after_mobile' } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[1] } },
                 { type: 'text', text: 'page: Product\nplan: { ...applied plan... }' },
               ],
             },
@@ -148,7 +163,7 @@ describe('POST /messages — onboarding-review routing', () => {
         },
         'onboarding-review',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -181,7 +196,7 @@ describe('POST /messages — onboarding-review routing', () => {
       ],
       failureClass: 'styling',
     });
-    stubFetch().mockResolvedValue(jsonOk({ content: [{ type: 'text', text: verdict }] }));
+    stubFetch().mockResolvedValue(jsonOk(anthropicMessage([{ type: 'text', text: verdict }])));
 
     const res = await handleMessages(
       messagesRequest(

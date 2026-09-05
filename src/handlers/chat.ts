@@ -5,8 +5,8 @@
  * a message history, and optional grounding context — including `context.refs`
  * (entity references, cap 5) rendered as the eager Referenced-Entities system
  * block (lib/references.ts) and threaded into the agent loop for the
- * `get_entity_context` tool's analytics dispatch. We run the Anthropic model
- * with the tool-use agent loop:
+ * `get_entity_context` tool's analytics dispatch. We run the resolved model
+ * through the provider-neutral tool-use agent loop:
  *
  *   model → (tool_use?) → execute tool (owning toolset) → tool_result → model → …
  *
@@ -15,7 +15,7 @@
  *   • Accept: text/event-stream  → our SSE protocol (text/tool_call/tool_result/done/error)
  *   • otherwise                  → a single JSON object identical to the `done` payload
  *
- * The Anthropic key never leaves the worker (it lives in the anthropic client).
+ * Provider credentials never leave their adapter.
  * The tool surface comes ONLY from the toolset registry (toolsets/registry.ts):
  * this endpoint composes its tool surface per request from the subscriber's
  * available IntegrationParty set (threaded from the router's validate-context-id
@@ -28,44 +28,55 @@
  * (prompt-registry.ts) — the single source of truth.
  */
 
-import { getSystemPrompt, type SystemPromptEntry } from '../prompt-registry';
+import {
+  getFilePolicy,
+  getModelProfile,
+  getSystemPrompt,
+  isPromptName,
+  type SystemPromptEntry,
+} from '../prompt-registry';
 import { composeToolsets } from '../toolsets/registry';
-import type { ToolsetComposition } from '../toolsets/types';
 import type { IntegrationParty } from '../toolsets/integration-party';
 import {
-  WorkerError,
   errorPayload,
   errorEnvelopeFrom,
   errorResponseFrom,
   type CorsHeaders,
 } from '../lib/responses';
-import { streamMessage, supportsEffort, getFileMetadata } from '../lib/anthropic';
 import type {
-  ContentBlock,
-  Effort,
-  FileBlock,
-  MessageParam,
-  MessagesPayload,
-  TextBlock,
-  ToolDefinition,
-  ToolUseBlock,
-  Usage,
-} from '../lib/anthropic';
-import { EXTENDED_CACHE_CONTROL } from '../lib/cache-control';
-import { applyConversationBreakpoints } from '../lib/agent-cache';
-import {
-  sanitizeRefs,
-  buildReferencedEntitiesBlock,
-  type EntityReference,
-} from '../lib/references';
+  AgentRequest,
+  AgentResult,
+  CacheIntent,
+  CanonicalClientToolDefinition,
+  InferenceContent,
+  InferenceEvent,
+  InferenceMessage,
+  InferenceToolCall,
+  InferenceUsage,
+  FilePolicy,
+  ModelProfile,
+} from '../lib/inference-types';
+import { sanitizeRefs, buildReferencedEntitiesBlock } from '../lib/references';
 import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
 import {
   createDevelopmentInferenceTrace,
-  traceableContent,
-  traceableMessages,
-  traceableSystem,
-  type DevelopmentInferenceTrace,
+  redactInferenceTraceValue,
 } from '../lib/dev-inference-trace';
+import {
+  createInferenceFileService,
+  createInferenceService,
+  isRequiredContinuationMissing,
+  requiresOrdinaryTurnContinuation,
+} from '../inference/factory';
+import { InferenceFailure, inferenceFailureTrace } from '../inference/adapter';
+import {
+  decodeOpaqueContinuation,
+  encodeOpaqueContinuation,
+  preflightContinuationSealing,
+  type ContinuationRoute,
+} from '../inference/continuation';
+import { reconstructCompatibilityProviderState } from '../inference/messages-compatibility';
+import { fileTenantScope, resolveOpaqueFileReference } from '../inference/file-references';
 import type { Env } from '../config';
 
 /** Hard cap on model↔tool iterations (CONTRACTS.md §1). */
@@ -75,7 +86,6 @@ const MAX_ITERATIONS = 8;
 interface ChatRequestBody {
   messages?: unknown;
   context?: ChatContext;
-  model?: string;
   /**
    * Accepted for backward compatibility but IGNORED: the registry is
    * authoritative for a registered prompt's output budget (the resolved entry's
@@ -83,7 +93,8 @@ interface ChatRequestBody {
    */
   max_tokens?: number;
   fileIds?: unknown;
-  effort?: Effort;
+  /** Opaque token returned with a browser-owned tool call and echoed on continuation. */
+  continuation?: unknown;
 }
 
 /** The grounding context the client may send (lib CONTRACTS.md §1). */
@@ -107,7 +118,7 @@ interface DonePayload {
   text: string;
   stopReason: string | null;
   iterations: number;
-  usage: Usage | null;
+  usage: PublicUsage | null;
   /**
    * CLIENT tool-calls the model requested this turn (only for a `clientTools`
    * prompt — e.g. `onboarding-chat`'s `look_at_page`). When present, the worker
@@ -116,6 +127,16 @@ interface DonePayload {
    * continue. Absent for server-tool / no-tool prompts.
    */
   toolCalls?: Array<{ id: string; name: string; input: unknown }>;
+  continuation?: string;
+}
+
+/** The usage shape the public `/chat` payload carries, projected from canonical accounting. */
+interface PublicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  [member: string]: unknown;
 }
 
 /**
@@ -152,18 +173,111 @@ export async function handleChat(
     return badRequest('Invalid JSON body', corsHeaders, wantsStream);
   }
 
-  const { messages, fileBlockCount } = await normalizeMessages(body.messages, body.fileIds, env);
-  if (messages.length === 0) {
-    return badRequest('messages must be a non-empty array', corsHeaders, wantsStream);
+  // The registry is the single source of truth for per-prompt model / token /
+  // tool choices. Unknown selectors retain the compatibility fallback to chat,
+  // while a known prompt with missing configuration fails closed. Every
+  // resolution that can reject the route — an unclaimed model id, a capability
+  // the group requires, an override that moves the prompt off its shared file
+  // route, an absent binding, a provider no adapter serves — happens inside
+  // this one guard, so a rejection reaches the caller in the shape its Accept
+  // header asked for (an SSE `error` event or the JSON envelope) rather than
+  // escaping to the router's Accept-blind catch.
+  let entry: SystemPromptEntry;
+  let profile: ModelProfile;
+  let filePolicy: FilePolicy;
+  let ordinaryTurnContinuationRequired: boolean;
+  try {
+    entry = getSystemPrompt(isPromptName(systemPromptName) ? systemPromptName : 'chat', env);
+    profile = getModelProfile(entry.name, env);
+    filePolicy = getFilePolicy(entry.filePolicy);
+    ordinaryTurnContinuationRequired = requiresOrdinaryTurnContinuation(profile, env);
+  } catch (error) {
+    trace.record('request.failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return earlyError(error, corsHeaders, wantsStream);
   }
 
-  // The registry is the single source of truth for per-prompt model / token /
-  // tool choices. Unknown selectors fall back to the `chat` entry.
-  let entry: SystemPromptEntry;
+  let tenantScope: string | null;
   try {
-    entry = getSystemPrompt(systemPromptName, env);
-  } catch {
-    entry = getSystemPrompt('chat', env);
+    tenantScope = await fileTenantScope(contextId, env);
+  } catch (error) {
+    return earlyError(error, corsHeaders, wantsStream);
+  }
+  const continuationRoute =
+    tenantScope === null
+      ? null
+      : ({
+          tenantScope,
+          promptGroup: entry.group,
+          modelProfile: profile.name,
+        } satisfies ContinuationRoute);
+  if (ordinaryTurnContinuationRequired) {
+    if (!continuationRoute) {
+      return badRequest(
+        'Inference continuation requires a validated tenant',
+        corsHeaders,
+        wantsStream,
+      );
+    }
+    try {
+      await preflightContinuationSealing(env);
+    } catch (error) {
+      return earlyError(error, corsHeaders, wantsStream);
+    }
+  }
+  let continuation: Awaited<ReturnType<typeof decodeOpaqueContinuation>> | undefined;
+  if (body.continuation !== undefined) {
+    if (typeof body.continuation !== 'string') {
+      return badRequest('continuation must be an opaque string', corsHeaders, wantsStream);
+    }
+    try {
+      await preflightContinuationSealing(env);
+    } catch (error) {
+      return earlyError(error, corsHeaders, wantsStream);
+    }
+    try {
+      if (!continuationRoute) throw new Error('Continuation requires a validated tenant');
+      continuation = await decodeOpaqueContinuation(body.continuation, continuationRoute, env);
+    } catch {
+      return badRequest('Invalid inference continuation token', corsHeaders, wantsStream);
+    }
+    if (continuation.backend !== profile.provider) {
+      return badRequest(
+        'Inference continuation does not belong to the selected prompt route',
+        corsHeaders,
+        wantsStream,
+      );
+    }
+  }
+  if (isRequiredContinuationMissing(profile, env, body.messages, continuation)) {
+    return badRequest(
+      'Assistant history requires an inference continuation token',
+      corsHeaders,
+      wantsStream,
+    );
+  }
+  let messages: InferenceMessage[];
+  try {
+    messages = await normalizeMessages(
+      body.messages,
+      body.fileIds,
+      profile,
+      filePolicy,
+      entry.group,
+      tenantScope,
+      env,
+      request.signal,
+    );
+  } catch (error) {
+    trace.record('request.failed', inferenceFailureTrace(error));
+    log.error('Chat request preparation failed', error, {
+      inference: redactInferenceTraceValue(inferenceFailureTrace(error)),
+    });
+    return earlyError(error, corsHeaders, wantsStream);
+  }
+  if (messages.length === 0) {
+    return badRequest('messages must be a non-empty array', corsHeaders, wantsStream);
   }
 
   // Referencing: `context.refs` (EntityReference[], cap 5 — lib CONTRACTS.md §1)
@@ -175,13 +289,11 @@ export async function handleChat(
   const referencedEntitiesBlock =
     refs.length > 0 ? await buildReferencedEntitiesBlock(refs, contextId, env) : null;
 
-  const system = buildSystem(entry, body.context, referencedEntitiesBlock);
-  const model = body.model || entry.model;
+  const systemMessages = buildSystem(body.context, referencedEntitiesBlock);
   // The registry is authoritative for a registered prompt's output budget — an
   // unknown selector already fell back to the `chat` entry above, so `entry` is
   // always a registered entry. Use its `maxTokens` EXACTLY (no client override):
   // changing the registry literal changes the outgoing request one-for-one.
-  const maxTokens = entry.maxTokens;
   // The endpoint's whole tool surface is composed from the subscriber's
   // integration parties and supported-contract AI-tool names. Per-toolset
   // credentials resolve inside the composition — never in the loop.
@@ -191,42 +303,129 @@ export async function handleChat(
   // server toolset) and run the loop in CLIENT-tool mode: on a tool_use the loop
   // returns the calls to the client in `done.toolCalls` and stops — it never
   // executes them here. Otherwise the usual server toolset (when `usesTools`).
-  const clientTools = entry.clientTools;
-  const tools = clientTools ? [...clientTools] : entry.usesTools ? toolsets.definitions : undefined;
-  const clientToolMode = !!clientTools;
-  // Opt-in output effort: registry entry default, client `effort` override.
-  const effort = body.effort || entry.effort;
+  const inference = createInferenceService(env, tenantScope);
+  const runner = (emit: Emit | null) => {
+    const onEvent = async (event: InferenceEvent): Promise<void> => {
+      if (event.type === 'agent-turn-start') {
+        trace.record('request.forwarded', {
+          iteration: event.iteration,
+          group: entry.group,
+          modelProfile: entry.modelProfile,
+          provider: entry.provider,
+          apiFamily: entry.apiFamily,
+          maxTokens: entry.maxTokens,
+          effort: entry.effort,
+          prompt: event.request.prompt,
+          messages: canonicalTraceMessages(event.request.messages),
+        });
+      } else if (event.type === 'text-delta' && emit) {
+        await emit({ type: 'text', data: { delta: event.delta } });
+      } else if (event.type === 'tool-call' && emit) {
+        await emit({
+          type: 'tool_call',
+          data: { id: event.call.id, name: event.call.name, input: event.call.input },
+        });
+      } else if (event.type === 'complete') {
+        logUsageStats(event.result.usage, log);
+        trace.record('response.received', {
+          stopReason: event.result.stopReason,
+          usage: event.result.usage,
+          content: canonicalTraceContent(event.result.content),
+        });
+      }
+    };
 
-  const runner = (emit: Emit | null) =>
-    runAgentLoop(
-      {
-        env,
-        toolsets,
-        model,
-        maxTokens,
-        system,
-        messages,
-        tools,
-        effort,
-        fileBlockCount,
-        refs,
-        clientToolMode,
-        trace,
-        logger: log,
-      },
-      emit,
-    )
+    const common = {
+      prompt: entry.prompt,
+      promptGroup: entry.group,
+      modelProfile: profile,
+      filePolicy,
+      messages: [...systemMessages, ...messages],
+      maxOutputTokens: entry.maxTokens,
+      maxIterations: MAX_ITERATIONS,
+      abortSignal: request.signal,
+      ...(continuation ? { continuation } : {}),
+      ...(entry.effort ? { effort: entry.effort } : {}),
+      onEvent,
+    };
+    let agentRequest: AgentRequest;
+    if (entry.clientTools) {
+      agentRequest = {
+        ...common,
+        mode: 'client',
+        tools: requireClientTools(entry.clientTools),
+      };
+    } else if (entry.usesTools) {
+      agentRequest = {
+        ...common,
+        mode: 'server',
+        tools: toolsets.definitions,
+        async executeTool(call: InferenceToolCall) {
+          const execution = await toolsets.execute(call.name, call.input, { refs });
+          if (!execution.ok) {
+            log.error('Tool execution failed', redactInferenceTraceValue(execution.result), {
+              toolName: call.name,
+              toolInput: redactInferenceTraceValue(call.input),
+              summary: execution.summary,
+            });
+          }
+          trace.record('tool.executed', {
+            name: call.name,
+            input: redactInferenceTraceValue(call.input),
+            ok: execution.ok,
+            summary: execution.summary,
+            result: redactInferenceTraceValue(execution.result),
+          });
+          if (emit) {
+            await emit({
+              type: 'tool_result',
+              data: {
+                id: call.id,
+                name: call.name,
+                ok: execution.ok,
+                summary: execution.summary,
+                ...(execution.ok ? {} : { error: execution.result.error }),
+              },
+            });
+          }
+          return {
+            type: 'tool-result',
+            toolCallId: call.id,
+            content: [{ type: 'text', text: JSON.stringify(execution.result), cache: 'none' }],
+            isError: !execution.ok,
+            cache: 'none',
+          };
+        },
+      };
+    } else {
+      agentRequest = { ...common, mode: 'none', tools: [] };
+    }
+
+    return inference
+      .runAgent(agentRequest)
+      .then((result) => toDonePayload(result, continuationRoute, env))
       .then((done) => {
-        trace.record('request.completed', { ...done });
+        trace.record('request.completed', {
+          ...done,
+          ...(done.toolCalls
+            ? {
+                toolCalls: done.toolCalls.map((call) => ({
+                  ...call,
+                  input: redactInferenceTraceValue(call.input),
+                })),
+              }
+            : {}),
+        });
         return done;
       })
       .catch((error: unknown) => {
-        trace.record('request.failed', {
-          error: error instanceof Error ? error.message : String(error),
+        trace.record('request.failed', inferenceFailureTrace(error));
+        log.error('Chat request failed', error, {
+          inference: redactInferenceTraceValue(inferenceFailureTrace(error)),
         });
-        log.error('Chat request failed', error, { systemPromptName });
         throw error;
       });
+  };
 
   if (wantsStream) {
     return streamResponse(runner, corsHeaders);
@@ -235,24 +434,15 @@ export async function handleChat(
 }
 
 /**
- * Build the `system` array: the selected server-side prompt, plus any grounding
- * context the client supplied (current page, validated candidates, best-practice
- * catalog), plus the prebuilt Referenced-Entities block when `context.refs`
- * survived intake. The base prompt is cached; the volatile context and the
- * Referenced-Entities block are separate UNCACHED blocks, so the cached prefix
- * (tools + base prompt) stays byte-stable and its breakpoint stays valid.
+ * Build canonical volatile system messages from grounding and references. The
+ * stable registry prompt remains `InferenceRequest.prompt`; the adapter realizes
+ * its provider-specific cache breakpoint.
  */
 export function buildSystem(
-  entry: SystemPromptEntry,
   context: ChatContext | undefined,
   referencedEntitiesBlock: string | null = null,
-): TextBlock[] {
-  // The base prompt is a stable, reused prefix → 1h extended cache. The
-  // volatile context block below carries NO cache_control (it changes per call).
-  const blocks: TextBlock[] = [
-    { type: 'text', text: entry.prompt, cache_control: { ...EXTENDED_CACHE_CONTROL } },
-  ];
-
+): InferenceMessage[] {
+  const content: InferenceContent[] = [];
   if (context && typeof context === 'object') {
     const lines: string[] = [];
     if (context.hostPage) lines.push(`Current page: ${context.hostPage}.`);
@@ -265,21 +455,20 @@ export function buildSystem(
       lines.push(JSON.stringify(context.grounding));
     }
     if (lines.length > 0) {
-      blocks.push({ type: 'text', text: lines.join('\n') });
+      content.push({ type: 'text', text: lines.join('\n'), cache: 'none' });
     }
   }
 
   // Referenced-Entities: always the FINAL system block, always uncached (it
   // changes per call — see lib/references.ts for the frozen block format).
   if (referencedEntitiesBlock) {
-    blocks.push({ type: 'text', text: referencedEntitiesBlock });
+    content.push({ type: 'text', text: referencedEntitiesBlock, cache: 'none' });
   }
-
-  return blocks;
+  return content.length > 0 ? [{ role: 'system', content }] : [];
 }
 
 /**
- * Normalize the client message history into Anthropic message params. Optionally
+ * Normalize the client message history into canonical messages. Optionally
  * prepend uploaded file blocks (document/image) to the first user turn — used by
  * the placement flow (screenshot + cleaned HTML uploaded via /files).
  *
@@ -290,12 +479,10 @@ export function buildSystem(
  * 0.1× on the second call. This is the big placement token cost — file blocks
  * dwarf the 370-token system prompt. The breakpoint budget stays ≤4: this file
  * prefix takes 1, the system base block 1, leaving 2 for conversation turns (see
- * `applyConversationBreakpoints` opts in `runAgentLoop`). The file prefix consumes
+ * the canonical allocator in `DefaultInferenceService.runAgent`). The file prefix consumes
  * exactly ONE breakpoint regardless of how many `fileIds` are passed (only the
  * last block is marked), so the ≤4 budget is independent of the file count.
- * Returns the file-block count so the caller can size the conversation breakpoint cap.
- *
- * Each fileId is resolved to the correct content-block type by its mime type:
+ * Each fileId is resolved through the routed file service to the correct content type:
  * images (`image/*`) MUST be `image` blocks — Anthropic rejects an image inside
  * a `document` block ("Only PDF and plaintext documents are supported"), which
  * is exactly the screenshot the placement flow uploads. PDFs/plaintext become
@@ -305,43 +492,62 @@ export function buildSystem(
 async function normalizeMessages(
   raw: unknown,
   fileIds: unknown,
+  profile: ModelProfile,
+  filePolicy: FilePolicy,
+  promptGroup: string,
+  tenantScope: string | null,
   env: Env,
-): Promise<{ messages: MessageParam[]; fileBlockCount: number }> {
-  if (!Array.isArray(raw)) return { messages: [], fileBlockCount: 0 };
-  const messages: MessageParam[] = (raw as Array<{ role?: unknown; content?: unknown }>)
+  abortSignal?: AbortSignal,
+): Promise<InferenceMessage[]> {
+  if (!Array.isArray(raw)) return [];
+  const messages: InferenceMessage[] = (raw as Array<{ role?: unknown; content?: unknown }>)
     .filter(
       (message) =>
         !!message &&
         (message.role === 'user' || message.role === 'assistant') &&
         message.content != null,
     )
-    .map((message) => ({
-      role: message.role as 'user' | 'assistant',
-      content: message.content as string | ContentBlock[],
-    }));
+    .map((message) => {
+      const role = message.role as 'user' | 'assistant';
+      const providerState = reconstructCompatibilityProviderState(
+        role,
+        message.content,
+        profile.provider,
+      );
+      return {
+        role,
+        content: normalizeClientContent(message.content),
+        ...(providerState ? { providerState } : {}),
+      };
+    });
 
-  let fileBlockCount = 0;
   const first = messages[0];
   if (Array.isArray(fileIds) && fileIds.length > 0 && first) {
+    const files = createInferenceFileService(env);
     const fileBlocks = await Promise.all(
-      (fileIds as unknown[]).map((id) => buildFileBlock(String(id), env)),
+      (fileIds as unknown[]).map((id) =>
+        buildFileContent(
+          String(id),
+          profile,
+          filePolicy,
+          promptGroup,
+          files,
+          tenantScope,
+          env,
+          abortSignal,
+        ),
+      ),
     );
     // Cache the stable file prefix: one breakpoint on the last file block caches
     // all file blocks before it (prefix match). 1h TTL — reused across a page's
     // placement calls, which can be minutes apart.
     const lastFileBlock = fileBlocks[fileBlocks.length - 1];
     if (lastFileBlock) {
-      lastFileBlock.cache_control = { ...EXTENDED_CACHE_CONTROL };
+      setCache(lastFileBlock, 'extended');
     }
-    fileBlockCount = fileBlocks.length;
-
-    const existing: ContentBlock[] = Array.isArray(first.content)
-      ? first.content
-      : [{ type: 'text', text: String(first.content) }];
-    first.content = [...fileBlocks, ...existing];
+    messages[0] = { ...first, content: [...fileBlocks, ...first.content] };
   }
-
-  return { messages, fileBlockCount };
+  return messages;
 }
 
 /**
@@ -350,379 +556,324 @@ async function normalizeMessages(
  * `image` blocks; everything else is a `document` block. A metadata-lookup
  * failure falls back to `document`.
  */
-async function buildFileBlock(fileId: string, env: Env): Promise<FileBlock> {
-  let isImage = false;
+async function buildFileContent(
+  fileId: string,
+  profile: ModelProfile,
+  filePolicy: FilePolicy,
+  promptGroup: string,
+  files: ReturnType<typeof createInferenceFileService>,
+  tenantScope: string | null,
+  env: Env,
+  abortSignal?: AbortSignal,
+): Promise<InferenceContent> {
+  const reference = await resolveOpaqueFileReference(
+    { id: fileId, type: 'file' },
+    { promptGroup, modelProfile: profile, filePolicy },
+    env,
+    files,
+    tenantScope,
+  );
+  let mediaType = reference.mediaType;
   try {
-    const response = await getFileMetadata(fileId, env);
-    if (response.ok) {
-      const meta = (await response.json()) as { mime_type?: unknown };
-      isImage = typeof meta.mime_type === 'string' && meta.mime_type.startsWith('image/');
+    if (mediaType === null) {
+      const metadata = await files.getMetadata(profile, reference.upstreamFileId, abortSignal);
+      mediaType = metadata?.mediaType ?? null;
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof InferenceFailure && error.inferenceError.failureClass === 'cancelled') {
+      throw error;
+    }
     // fall back to document
   }
   return {
-    type: isImage ? 'image' : 'document',
-    source: { type: 'file', file_id: fileId },
+    type: mediaType?.startsWith('image/') ? 'image' : 'document',
+    source: { type: 'provider-file', reference },
+    cache: 'none',
   };
 }
 
-interface AgentLoopParams {
-  env: Env;
-  toolsets: ToolsetComposition;
-  model: string;
-  maxTokens: number;
-  system: TextBlock[];
-  messages: MessageParam[];
-  tools: ToolDefinition[] | undefined;
-  effort: Effort | undefined;
-  fileBlockCount?: number;
-  refs?: readonly EntityReference[];
-  /** CLIENT-tool mode (a `clientTools` prompt): on a tool_use, return the calls
-   *  in `done.toolCalls` and stop — the client executes them, never the worker. */
-  clientToolMode?: boolean;
-  /** Structured trace routed by the deployment's TRACE-level sink configuration. */
-  trace: DevelopmentInferenceTrace;
-  logger: Logger;
+function normalizeClientContent(raw: unknown): InferenceContent[] {
+  if (typeof raw === 'string') return [{ type: 'text', text: raw, cache: 'none' }];
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): InferenceContent[] => {
+    if (!item || typeof item !== 'object') return [];
+    const block = item as Record<string, unknown>;
+    const cache: CacheIntent = 'none';
+    if (block.type === 'text') {
+      return [{ type: 'text', text: typeof block.text === 'string' ? block.text : '', cache }];
+    }
+    if (block.type === 'image' || block.type === 'document') {
+      const media = normalizeClientMedia(block.type, block);
+      return media ? [media] : [];
+    }
+    if (block.type === 'tool_use') {
+      return [
+        {
+          type: 'tool-call',
+          id: typeof block.id === 'string' ? block.id : '',
+          name: typeof block.name === 'string' ? block.name : '',
+          input: block.input,
+          cache,
+        },
+      ];
+    }
+    if (block.type === 'tool_result') {
+      return [
+        {
+          type: 'tool-result',
+          toolCallId: typeof block.tool_use_id === 'string' ? block.tool_use_id : '',
+          content: normalizeToolResultContent(block.content),
+          isError: block.is_error === true,
+          cache,
+        },
+      ];
+    }
+    return [];
+  });
 }
 
-/**
- * The core agent loop. `emit` is an async callback receiving our SSE events
- * `{ type, data }`. Returns the terminal `done` payload. Runs the Anthropic
- * model with streaming; on a `tool_use` stop it executes the tool(s) through
- * the composed toolsets and loops, up to MAX_ITERATIONS.
- */
-async function runAgentLoop(
-  {
-    env,
-    toolsets,
-    model,
-    maxTokens,
-    system,
-    messages,
-    tools,
-    effort,
-    fileBlockCount = 0,
-    refs = [],
-    clientToolMode = false,
-    trace,
-    logger,
-  }: AgentLoopParams,
-  emit: Emit | null,
-): Promise<DonePayload> {
-  const conversation: MessageParam[] = [...messages];
-  let fullText = '';
-  let usage: Usage | null = null;
-  let stopReason: string | null = null;
-  let iterations = 0;
-
-  // Breakpoint budget (≤4 total). System base block holds 1. When a placement
-  // file prefix is present it holds 1 more (its own 1h breakpoint, set in
-  // normalizeMessages and reserved across iterations), leaving 2 for the
-  // conversation; otherwise the conversation gets the usual 3.
-  const conversationBreakpoints = fileBlockCount > 0 ? 2 : 3;
-
-  for (iterations = 1; iterations <= MAX_ITERATIONS; iterations++) {
-    // Place cache breakpoints on the growing conversation turns (re-stripped +
-    // re-applied each iteration so they never accumulate past the 4-block cap).
-    // The file prefix's 1h breakpoint is reserved (not stripped, not counted).
-    applyConversationBreakpoints(conversation, {
-      maxBreakpoints: conversationBreakpoints,
-      reservedHeadBlocks: fileBlockCount,
-    });
-
-    const payload: MessagesPayload = {
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages: conversation,
-    };
-    if (tools && tools.length > 0) payload.tools = tools;
-    // Effort is a real token-saving lever, but only valid on models that
-    // support it — attaching it to a model that doesn't (e.g. Haiku 4.5) returns
-    // a 400. Gate on the model's capability so unsupported models simply omit it.
-    if (effort && supportsEffort(model)) payload.output_config = { effort };
-
-    trace.record('request.forwarded', {
-      iteration: iterations,
-      model,
-      maxTokens,
-      outputConfig: payload.output_config,
-      system: traceableSystem(system),
-      messages: traceableMessages(payload),
-      tools: tools?.map((tool) => tool.name),
-    });
-
-    const turn = await streamAnthropicTurn(payload, env, emit);
-    trace.record('response.received', {
-      iteration: iterations,
-      stopReason: turn.stopReason,
-      usage: turn.usage,
-      content: traceableContent(turn.content),
-    });
-    // Observe cache effectiveness per model turn (docs/CACHING): each streamed
-    // turn reports its own usage, so a multi-turn tool loop logs one line per
-    // model call — mirrors the /messages `logUsageStats` format.
-    logUsageStats(turn.usage, logger);
-    usage = turn.usage || usage;
-    stopReason = turn.stopReason;
-    if (turn.text) fullText += (fullText ? '\n' : '') + turn.text;
-
-    // Append the assistant turn (text + any tool_use blocks) to the conversation.
-    conversation.push({ role: 'assistant', content: turn.content });
-
-    if (turn.stopReason !== 'tool_use' || turn.toolUses.length === 0) {
-      break; // natural end (or max_tokens / refusal) — done.
-    }
-
-    // CLIENT-tool mode: the tools execute in the browser (the iframe is the AI's
-    // hands), NOT here. Hand the model's tool-calls to the client in
-    // `done.toolCalls` and stop this turn — the client runs them against the live
-    // store, appends the tool_result turn, and calls /chat again to continue the
-    // loop. The worker never touches the store. (See lib ai/ONBOARDING-CONTRACT.md
-    // + the lib look-at-page executor, which drives this iteration client-side.)
-    if (clientToolMode) {
-      const toolCalls = turn.toolUses.map((toolUse) => ({
-        id: toolUse.id as string,
-        name: toolUse.name as string,
-        input: toolUse.input,
-      }));
-      if (emit) {
-        for (const call of toolCalls) {
-          await emit({ type: 'tool_call', data: call });
-        }
-      }
-      trace.record('client_tools.returned', { iteration: iterations, toolCalls });
-      return { text: fullText, stopReason: 'tool_use', iterations, usage, toolCalls };
-    }
-
-    // Execute every tool the model requested; collect tool_result blocks.
-    const toolResults: ContentBlock[] = [];
-    for (const toolUse of turn.toolUses) {
-      if (emit) {
-        await emit({
-          type: 'tool_call',
-          data: { id: toolUse.id, name: toolUse.name, input: toolUse.input },
-        });
-      }
-      // Anthropic's tool_use blocks always carry a name; the composition
-      // degrades an unknown/absent one to the Unknown-tool shape regardless.
-      const exec = await toolsets.execute(toolUse.name as string, toolUse.input, { refs });
-      if (!exec.ok) {
-        logger.error('Tool execution failed', exec.result, {
-          iteration: iterations,
-          toolName: toolUse.name,
-          toolInput: toolUse.input,
-          summary: exec.summary,
-        });
-      }
-      trace.record('tool.executed', {
-        iteration: iterations,
-        name: toolUse.name,
-        input: toolUse.input,
-        ok: exec.ok,
-        summary: exec.summary,
-        result: exec.result,
-      });
-      if (emit) {
-        await emit({
-          type: 'tool_result',
-          data: {
-            id: toolUse.id,
-            name: toolUse.name,
-            ok: exec.ok,
-            summary: exec.summary,
-            ...(exec.ok ? {} : { error: exec.result.error }),
-          },
-        });
-      }
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: toolUse.id,
-        content: JSON.stringify(exec.result),
-        is_error: !exec.ok,
-      });
-    }
-    conversation.push({ role: 'user', content: toolResults });
-    // loop continues — model sees the tool results next iteration.
-  }
-
-  if (stopReason === 'tool_use') {
-    // Hit the iteration cap mid-tool-loop.
-    stopReason = 'max_iterations';
-  }
-
-  // The `for` increments past the cap on the exit check — report the real count.
-  const ranIterations = Math.min(iterations, MAX_ITERATIONS);
-
-  return { text: fullText, stopReason, iterations: ranIterations, usage };
-}
-
-/**
- * Log token-usage stats with cache-hit/creation markers for one model turn.
- * Same format + logger convention as /messages (`logUsageStats` in
- * messages.ts) so a single tail grep spans both surfaces. Token counts only —
- * no PII, no prompt bodies (docs/TOOLSETS.md → security standards).
- */
-function logUsageStats(usage: Usage | null | undefined, log: Logger): void {
-  if (!usage) {
-    return;
-  }
-  log.info(
-    `Tokens — input: ${usage.input_tokens}, cache_creation: ${usage.cache_creation_input_tokens || 0}, cache_read: ${usage.cache_read_input_tokens || 0}, output: ${usage.output_tokens}`,
+function normalizeToolResultContent(
+  raw: unknown,
+): Array<Extract<InferenceContent, { type: 'text' | 'image' | 'document' }>> {
+  if (typeof raw === 'string') return [{ type: 'text', text: raw, cache: 'none' }];
+  return normalizeClientContent(raw).filter(
+    (content): content is Extract<InferenceContent, { type: 'text' | 'image' | 'document' }> =>
+      content.type === 'text' || content.type === 'image' || content.type === 'document',
   );
 }
 
-/** One accumulated Anthropic turn (finalized content + extracted tool uses). */
-interface AnthropicTurn {
-  content: ContentBlock[];
-  text: string;
-  toolUses: ToolUseBlock[];
-  stopReason: string | null;
-  usage: Usage | null;
+function normalizeClientMedia(
+  type: 'image' | 'document',
+  raw: unknown,
+): Extract<InferenceContent, { type: 'image' | 'document' }> | null {
+  const block = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const source =
+    block.source && typeof block.source === 'object'
+      ? (block.source as Record<string, unknown>)
+      : {};
+  const documentFields =
+    type === 'document'
+      ? {
+          ...(typeof block.title === 'string' ? { title: block.title } : {}),
+          ...(typeof block.context === 'string' ? { context: block.context } : {}),
+          ...(block.citations &&
+          typeof block.citations === 'object' &&
+          (block.citations as Record<string, unknown>).enabled === true
+            ? { citations: { enabled: true } }
+            : {}),
+        }
+      : {};
+  if (source.type === 'file' && typeof source.file_id === 'string') {
+    return {
+      type,
+      source: { type: 'file', reference: { id: source.file_id, type: 'file' } },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  if (
+    source.type === 'base64' &&
+    typeof source.media_type === 'string' &&
+    typeof source.data === 'string'
+  ) {
+    return {
+      type,
+      source: { type: 'base64', mediaType: source.media_type, data: source.data },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  if (source.type === 'url' && typeof source.url === 'string') {
+    return {
+      type,
+      source: { type: 'url', url: source.url },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  if (
+    type === 'document' &&
+    source.type === 'text' &&
+    typeof source.media_type === 'string' &&
+    typeof source.data === 'string'
+  ) {
+    return {
+      type,
+      source: { type: 'text', mediaType: source.media_type, text: source.data },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  if (type === 'document' && source.type === 'content' && typeof source.content === 'string') {
+    return {
+      type,
+      source: { type: 'content', content: source.content },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  if (type === 'document' && source.type === 'content' && Array.isArray(source.content)) {
+    const content = source.content.flatMap(
+      (item): Array<Extract<InferenceContent, { type: 'text' | 'image' }>> => {
+        if (!item || typeof item !== 'object') return [];
+        const nested = item as Record<string, unknown>;
+        if (nested.type === 'image') {
+          const image = normalizeClientMedia('image', nested);
+          return image?.type === 'image' ? [image] : [];
+        }
+        if (nested.type !== 'text' || typeof nested.text !== 'string') return [];
+        return [
+          {
+            type: 'text' as const,
+            text: nested.text,
+            ...(Array.isArray(nested.citations)
+              ? {
+                  citations: nested.citations as readonly Readonly<Record<string, unknown>>[],
+                }
+              : {}),
+            cache: cacheIntentFromWire(nested.cache_control),
+          },
+        ];
+      },
+    );
+    if (content.length !== source.content.length) return null;
+    return {
+      type,
+      source: { type: 'content', content },
+      ...documentFields,
+      cache: 'none',
+    };
+  }
+  return null;
 }
 
-/** The Anthropic streaming events this worker consumes (narrow parse view). */
-interface AnthropicStreamEvent {
-  type?: string;
-  index?: number;
-  content_block?: { type?: string; id?: string; name?: string };
-  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string };
-  usage?: Usage;
-  message?: { usage?: Usage };
-  error?: { message?: string };
+function setCache(content: InferenceContent, cache: CacheIntent): void {
+  (content as { cache: CacheIntent }).cache = cache;
 }
 
-/** Per-index accumulator for one streamed content block. */
-interface PendingBlock {
-  type: string;
-  text?: string;
-  id?: string | undefined;
-  name?: string | undefined;
-  inputJson?: string;
+function cacheIntentFromWire(raw: unknown): CacheIntent {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'none';
+  const control = raw as Record<string, unknown>;
+  if (control.type !== 'ephemeral') return 'none';
+  return control.ttl === '1h' ? 'extended' : 'short';
 }
 
-/**
- * Stream a single Anthropic turn. Parses Anthropic's SSE, re-emits text deltas
- * as our `text` events, and accumulates the assistant content blocks (text +
- * tool_use).
- */
-async function streamAnthropicTurn(
-  payload: MessagesPayload,
+function requireClientTools(
+  tools: NonNullable<SystemPromptEntry['clientTools']>,
+): readonly CanonicalClientToolDefinition[] {
+  if (tools.some((tool) => tool.execution !== 'client')) {
+    throw new Error('Client-tool prompt contains a server tool');
+  }
+  return tools as readonly CanonicalClientToolDefinition[];
+}
+
+/** Serialize the shared agent result into the established public `/chat` terminal payload. */
+export async function toDonePayload(
+  result: AgentResult,
+  route: ContinuationRoute | null,
   env: Env,
-  emit: Emit | null,
-): Promise<AnthropicTurn> {
-  const response = await streamMessage(payload, env);
-
-  if (!response.ok || !response.body) {
-    const errBody = await response.text().catch(() => '');
-    throw new WorkerError(`Anthropic request failed (${response.status})`, {
-      status: response.status,
-      exceptionType: 'AnthropicApiException',
-      ...(errBody ? { messageDetail: errBody } : {}),
-    });
+): Promise<DonePayload> {
+  if (
+    result.providerState &&
+    route === null &&
+    (result.toolCalls.length > 0 || result.providerState.requiredOnNextTurn === true)
+  ) {
+    throw new Error('Inference continuation requires a validated tenant');
   }
-
-  const blocks: PendingBlock[] = [];
-  let stopReason: string | null = null;
-  let usage: Usage | null = null;
-  let text = '';
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  // Anthropic SSE: lines of `event: <type>` then `data: <json>`, blank-separated.
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trimEnd();
-      buffer = buffer.slice(nl + 1);
-      if (!line.startsWith('data:')) continue;
-      const json = line.slice(5).trim();
-      if (!json) continue;
-
-      let evt: AnthropicStreamEvent;
-      try {
-        evt = JSON.parse(json) as AnthropicStreamEvent;
-      } catch {
-        continue;
-      }
-
-      switch (evt.type) {
-        case 'content_block_start': {
-          if (evt.index === undefined) break;
-          const cb = evt.content_block || {};
-          if (cb.type === 'text') {
-            blocks[evt.index] = { type: 'text', text: '' };
-          } else if (cb.type === 'tool_use') {
-            blocks[evt.index] = { type: 'tool_use', id: cb.id, name: cb.name, inputJson: '' };
-          } else {
-            blocks[evt.index] = { type: cb.type || 'unknown' };
-          }
-          break;
+  const toolCalls = result.toolCalls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    input: call.input,
+  }));
+  return {
+    text: result.text,
+    stopReason:
+      result.stopReason === 'max-iterations'
+        ? 'max_iterations'
+        : (result.providerStopReason ?? publicStopReason(result.stopReason)),
+    iterations: result.iterations,
+    usage: publicUsage(result.usage),
+    ...(result.providerState &&
+    route &&
+    (toolCalls.length > 0 || result.providerState.requiredOnNextTurn === true)
+      ? { continuation: await encodeOpaqueContinuation(result.providerState, route, env) }
+      : {}),
+    ...(toolCalls.length > 0
+      ? {
+          toolCalls,
         }
-        case 'content_block_delta': {
-          if (evt.index === undefined) break;
-          const delta = evt.delta || {};
-          const block = blocks[evt.index];
-          if (!block) break;
-          if (delta.type === 'text_delta') {
-            block.text = (block.text || '') + (delta.text ?? '');
-            text += delta.text ?? '';
-            if (emit) await emit({ type: 'text', data: { delta: delta.text } });
-          } else if (delta.type === 'input_json_delta') {
-            block.inputJson = (block.inputJson || '') + (delta.partial_json || '');
-          }
-          break;
-        }
-        case 'message_delta': {
-          if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
-          if (evt.usage) usage = { ...(usage || {}), ...evt.usage };
-          break;
-        }
-        case 'message_start': {
-          if (evt.message && evt.message.usage) usage = { ...evt.message.usage };
-          break;
-        }
-        case 'error': {
-          throw new WorkerError(`Anthropic stream error: ${evt.error?.message || 'unknown'}`, {
-            exceptionType: 'AnthropicApiException',
-          });
-        }
-        default:
-          break;
-      }
-    }
-  }
-
-  // Finalize blocks into Anthropic content + extract tool_use blocks.
-  const content: ContentBlock[] = [];
-  const toolUses: ToolUseBlock[] = [];
-  for (const block of blocks) {
-    if (!block) continue;
-    if (block.type === 'text') {
-      content.push({ type: 'text', text: block.text || '' });
-    } else if (block.type === 'tool_use') {
-      let input: unknown = {};
-      try {
-        input = block.inputJson ? (JSON.parse(block.inputJson) as unknown) : {};
-      } catch {
-        input = {};
-      }
-      content.push({ type: 'tool_use', id: block.id, name: block.name, input });
-      toolUses.push({ type: 'tool_use', id: block.id, name: block.name, input });
-    }
-  }
-
-  return { content, text, toolUses, stopReason, usage };
+      : {}),
+  };
 }
 
-/** Build a streaming SSE Response that drives the agent loop. */
+function publicStopReason(reason: AgentResult['stopReason']): string | null {
+  if (reason === 'completed') return 'end_turn';
+  if (reason === 'max-output-tokens') return 'max_tokens';
+  if (reason === 'tool-call') return 'tool_use';
+  if (reason === 'max-iterations') return 'max_iterations';
+  if (reason === 'content-filter') return 'refusal';
+  if (reason === 'cancelled') return 'cancelled';
+  return reason === 'unknown' ? null : reason;
+}
+
+function publicUsage(usage: InferenceUsage): PublicUsage | null {
+  if (usage.providerDetails) return { ...usage.providerDetails };
+  if (
+    usage.inputTokens === null &&
+    usage.outputTokens === null &&
+    usage.cacheWriteInputTokens === null &&
+    usage.cachedInputTokens === null
+  ) {
+    return null;
+  }
+  return {
+    ...(usage.inputTokens !== null ? { input_tokens: usage.inputTokens } : {}),
+    ...(usage.outputTokens !== null ? { output_tokens: usage.outputTokens } : {}),
+    ...(usage.cacheWriteInputTokens !== null
+      ? { cache_creation_input_tokens: usage.cacheWriteInputTokens }
+      : {}),
+    ...(usage.cachedInputTokens !== null
+      ? { cache_read_input_tokens: usage.cachedInputTokens }
+      : {}),
+  };
+}
+
+function canonicalTraceContent(content: readonly InferenceContent[]): unknown {
+  return content.map((item) => {
+    if (item.type === 'text') return { type: 'text', text: item.text };
+    if (item.type === 'tool-call') {
+      return {
+        type: 'tool-call',
+        name: item.name,
+        input: redactInferenceTraceValue(item.input),
+      };
+    }
+    if (item.type === 'tool-result') {
+      return {
+        type: 'tool-result',
+        isError: item.isError,
+        content: canonicalTraceContent(item.content),
+      };
+    }
+    return { type: item.type, source: item.source.type };
+  });
+}
+
+function canonicalTraceMessages(messages: readonly InferenceMessage[]): unknown {
+  return messages.map((message) => ({
+    role: message.role,
+    content: canonicalTraceContent(message.content),
+  }));
+}
+
+function logUsageStats(usage: InferenceUsage, log: Logger): void {
+  log.info(
+    `Tokens — input: ${usage.inputTokens}, cache_creation: ${usage.cacheWriteInputTokens ?? 0}, cache_read: ${usage.cachedInputTokens ?? 0}, output: ${usage.outputTokens}`,
+  );
+}
+
+/** Build a streaming SSE Response that drives the canonical agent loop. */
+
 function streamResponse(
   runner: (emit: Emit) => Promise<DonePayload>,
   corsHeaders: CorsHeaders,
@@ -790,4 +941,22 @@ function badRequest(message: string, corsHeaders: CorsHeaders, wantsStream: bool
     status: 400,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+/** Early internal failure helper with the same JSON/SSE error-envelope contract. */
+function earlyError(error: unknown, corsHeaders: CorsHeaders, wantsStream: boolean): Response {
+  const payload = errorEnvelopeFrom(error, 'Internal error');
+  if (wantsStream) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      headers: { ...corsHeaders, 'Content-Type': 'text/event-stream; charset=utf-8' },
+    });
+  }
+  return errorResponseFrom(error, corsHeaders, 'Internal error');
 }

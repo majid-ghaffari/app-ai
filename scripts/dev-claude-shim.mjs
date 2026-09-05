@@ -5,7 +5,7 @@
  * inference via Claude Code (the `@anthropic-ai/claude-agent-sdk` `query()`)
  * instead of the paid Anthropic API — so dev NEVER burns Anthropic credits.
  *
- * The worker talks to Anthropic through exactly one seam (`src/lib/anthropic.ts`,
+ * The worker talks to Anthropic through exactly one seam (`src/inference/adapters/anthropic-wire.ts`,
  * every call `fetch(`${ANTHROPIC_API_BASE}/v1/...`)`). Point `ANTHROPIC_API_BASE`
  * at this server (the dev default in `.dev.vars.example`) and every worker
  * inference is fulfilled by Claude Code, free, using the machine's Claude Code
@@ -17,9 +17,9 @@
  *   POST /v1/files, GET/DELETE /v1/files/{id} — local temp store keyed by generated file_id
  *
  * The two response shapes are built to the EXACT specs the worker parses:
- *   - non-stream: `src/handlers/messages.ts` reads `data.error?`, `data.usage`,
+ *   - non-stream: the Anthropic adapter reads `data.error?`, `data.usage`,
  *     and passes the whole body through (probes read `content[0].text`).
- *   - stream: `src/handlers/chat.ts` `streamAnthropicTurn` (~L508-551) consumes
+ *   - stream: `src/inference/adapters/anthropic.ts` consumes
  *     Anthropic stream events: message_start / content_block_start /
  *     content_block_delta{text_delta,input_json_delta} / content_block_stop /
  *     message_delta{stop_reason} / message_stop. We emit exactly those.
@@ -75,6 +75,13 @@ import {
   readCacheEntry,
   writeCacheEntry,
 } from './dev-shim-cache.mjs';
+import {
+  anthropicMessageFromLocalResult,
+  assertLocalInferenceChannel,
+  codexChildEnvironment,
+  fulfillLocalOneShot,
+  localFulfillerName,
+} from './dev-local-fulfillers.mjs';
 
 // ── Config (env, with dev-sane defaults) ─────────────────────────────────────
 //
@@ -113,6 +120,7 @@ const PERSONALIZER_API_URL = envOr('PERSONALIZER_API_URL', 'http://127.0.0.1:500
 const DEV_CONTEXT_ID = envRaw('LS_DEV_CONTEXT_ID');
 /** Default fulfiller model when a request omits `model`. */
 const DEFAULT_MODEL = envOr('SHIM_DEFAULT_MODEL', 'claude-opus-4-8');
+const LOCAL_FULFILLER = localFulfillerName(process.env);
 const DEBUG = /^(1|true|yes)$/i.test(envRaw('SHIM_DEBUG'));
 
 function log(...args) {
@@ -136,17 +144,11 @@ function debug(...args) {
  * test/dev-shim.test.ts.
  */
 function assertDevAiChannel(env) {
-  const base = (env?.ANTHROPIC_API_BASE ?? '').toString();
-  const channel = (env?.AI_CHANNEL ?? '').toString().trim().toLowerCase();
-  const pointsAtRealApi = /(^|\/\/|\.)api\.anthropic\.com(\b|\/|:)/i.test(base);
-  if (pointsAtRealApi && channel !== 'prod') {
-    throw new Error(
-      'Refusing to run: ANTHROPIC_API_BASE points at api.anthropic.com (the PAID API) ' +
-        'in a dev/test run. This would burn Anthropic credits. Use the free dev channel ' +
-        '(ANTHROPIC_API_BASE=http://127.0.0.1:8788 + `npm run dev:shim`), or, only if you ' +
-        'truly intend to hit the real API, set AI_CHANNEL=prod explicitly to opt in.',
-    );
-  }
+  assertLocalInferenceChannel({
+    ANTHROPIC_API_BASE: env?.ANTHROPIC_API_BASE,
+    AI_CHANNEL: env?.AI_CHANNEL,
+  });
+  if (localFulfillerName(env) === 'codex') codexChildEnvironment(env);
 }
 
 // ── In-memory Files store ────────────────────────────────────────────────────
@@ -557,7 +559,7 @@ function buildClientToolMcpServer(body) {
  *
  * @returns {{ options: Record<string, unknown>, clientToolNames: string[] }}
  */
-function buildQueryOptions(body, contextId) {
+function buildQueryOptions(body, contextId, abortController) {
   const model = body.model || DEFAULT_MODEL;
   const systemPrompt = systemToString(body.system);
   /** @type {Record<string, unknown>} */
@@ -586,6 +588,7 @@ function buildQueryOptions(body, contextId) {
     ],
     maxTurns: 12,
   };
+  if (abortController) options.abortController = abortController;
   if (systemPrompt) options.systemPrompt = systemPrompt;
 
   const wantsTools = Array.isArray(body.tools) && body.tools.length > 0;
@@ -793,8 +796,8 @@ function replayStream(entry, res) {
 
 // ── POST /v1/messages — NON-STREAM ───────────────────────────────────────────
 
-async function handleMessagesNonStream(body, contextId, res, cache) {
-  const { options, clientToolNames } = buildQueryOptions(body, contextId);
+async function fulfillWithClaudeCode(body, contextId, abortController) {
+  const { options, clientToolNames } = buildQueryOptions(body, contextId, abortController);
   const clientNameSet = new Set(clientToolNames);
   const q = query({ prompt: buildPromptMessages(body.messages), options });
 
@@ -843,23 +846,13 @@ async function handleMessagesNonStream(body, contextId, res, cache) {
           resultText = m.result;
           stopReason = m.stop_reason || 'end_turn';
         } else {
-          // Error result — surface as an Anthropic error body.
-          return sendAnthropicError(
-            res,
-            502,
-            'api_error',
-            `Claude Code fulfilment error: ${m.subtype}${m.result ? ` — ${m.result}` : ''}`,
-          );
+          throw new Error(`${m.subtype}${m.result ? ` — ${m.result}` : ''}`);
         }
       }
     }
-  } catch (err) {
-    return sendAnthropicError(
-      res,
-      502,
-      'api_error',
-      `Claude Code query failed: ${err?.message || err}`,
-    );
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    throw new Error(`Claude Code query failed: ${error?.message || error}`, { cause: error });
   }
 
   if (clientToolUses.length > 0) {
@@ -878,19 +871,56 @@ async function handleMessagesNonStream(body, contextId, res, cache) {
     contentBlocks.push({ type: 'text', text: finalText });
   }
 
-  // One Anthropic Messages response body (the shape probes/messages.ts read).
-  const responseBody = {
-    id: `msg_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-    type: 'message',
-    role: 'assistant',
+  return {
     model: options.model,
     content: contentBlocks,
-    stop_reason: stopReason,
-    stop_sequence: null,
+    stopReason,
     usage,
   };
-  sendJson(res, 200, responseBody);
-  recordCacheEntry(cache, body, options.model, { response: responseBody });
+}
+
+async function handleMessagesNonStream(body, contextId, res, abortController, dependencies = {}) {
+  const localEnv = dependencies.env || process.env;
+  const selectedFulfiller = localFulfillerName(localEnv);
+  const fulfill = dependencies.fulfill || fulfillLocalOneShot;
+  const cache = dependencies.cache || null;
+  const normalizedBody = {
+    ...body,
+    messages: Array.isArray(body.messages)
+      ? body.messages.map((message) => ({
+          ...message,
+          content: normalizeContent(message?.content),
+        }))
+      : body.messages,
+  };
+  try {
+    const result = await fulfill(normalizedBody, {
+      env: localEnv,
+      abortSignal: abortController.signal,
+      claudeCode: () => fulfillWithClaudeCode(body, contextId, abortController),
+    });
+    const content = result.content.map((block) =>
+      block.type === 'text' && typeof block.text === 'string'
+        ? { ...block, text: stripCodeFence(block.text) }
+        : block,
+    );
+    const responseBody = anthropicMessageFromLocalResult(
+      { ...result, content },
+      `msg_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+    );
+    sendJson(res, 200, responseBody);
+    // Only a SUCCESSFUL fulfilment is recorded, so a transient failure can never
+    // become the permanent answer.
+    recordCacheEntry(cache, body, result.model, { response: responseBody });
+    return;
+  } catch (error) {
+    return sendAnthropicError(
+      res,
+      error?.name === 'AbortError' ? 499 : 502,
+      'api_error',
+      `${selectedFulfiller === 'codex' ? 'Codex' : 'Claude Code'} fulfilment error: ${error?.message || error}`,
+    );
+  }
 }
 
 // ── POST /v1/messages — STREAM (SSE) ─────────────────────────────────────────
@@ -909,7 +939,22 @@ function writeSseHead(res) {
   });
 }
 
-async function handleMessagesStream(body, contextId, res, cache) {
+async function handleMessagesStream(
+  body,
+  contextId,
+  res,
+  abortController,
+  selectedFulfiller = LOCAL_FULFILLER,
+  cache = null,
+) {
+  if (selectedFulfiller === 'codex') {
+    return sendAnthropicError(
+      res,
+      400,
+      'invalid_request_error',
+      'Codex local fulfiller supports one-shot non-streaming requests only',
+    );
+  }
   writeSseHead(res);
 
   // Recorded frames, in emission order, when the cache is on. Only SUCCESSFUL
@@ -924,7 +969,7 @@ async function handleMessagesStream(body, contextId, res, cache) {
   }
 
   const model = body.model || DEFAULT_MODEL;
-  const { options, clientToolNames } = buildQueryOptions(body, contextId);
+  const { options, clientToolNames } = buildQueryOptions(body, contextId, abortController);
   const clientNameSet = new Set(clientToolNames);
   const q = query({ prompt: buildPromptMessages(body.messages), options });
 
@@ -1198,25 +1243,6 @@ function handleFileMetadata(id, res) {
   });
 }
 
-/** GET /v1/files — list. */
-function handleFileList(res) {
-  const data = [...files.values()].map((r) => ({
-    id: r.id,
-    type: 'file',
-    filename: r.filename,
-    mime_type: r.mime_type,
-    size_bytes: r.data.length,
-    created_at: r.created_at,
-    downloadable: false,
-  }));
-  sendJson(res, 200, {
-    data,
-    has_more: false,
-    first_id: data[0]?.id ?? null,
-    last_id: data.at(-1)?.id ?? null,
-  });
-}
-
 /** DELETE /v1/files/{id}. */
 function handleFileDelete(id, res) {
   const existed = files.delete(id);
@@ -1240,11 +1266,21 @@ async function handleHttp(req, res) {
 
   try {
     if (path === '/health' && method === 'GET') {
-      return sendJson(res, 200, { status: 'ok', fulfiller: 'claude-code', cache: cacheHealth() });
+      return sendJson(res, 200, {
+        status: 'ok',
+        fulfiller: LOCAL_FULFILLER,
+        cache: cacheHealth(),
+      });
     }
 
     if (path === '/v1/messages' && method === 'POST') {
       const body = await readJson(req);
+      const controller = new AbortController();
+      if (req.aborted) controller.abort();
+      req.once('aborted', () => controller.abort());
+      res.once('close', () => {
+        if (!res.writableEnded) controller.abort();
+      });
       const transport = body.stream === true ? 'stream' : 'messages';
       debug(
         `/v1/messages model=${body.model || DEFAULT_MODEL} stream=${!!body.stream} tools=${Array.isArray(body.tools) ? body.tools.length : 0}`,
@@ -1261,9 +1297,9 @@ async function handleHttp(req, res) {
         markCacheOutcome(res, 'off');
       }
       if (body.stream === true) {
-        return handleMessagesStream(body, contextId, res, cache);
+        return handleMessagesStream(body, contextId, res, controller, LOCAL_FULFILLER, cache);
       }
-      return handleMessagesNonStream(body, contextId, res, cache);
+      return handleMessagesNonStream(body, contextId, res, controller, { cache });
     }
 
     if (path === '/v1/messages/count_tokens' && method === 'POST') {
@@ -1273,9 +1309,6 @@ async function handleHttp(req, res) {
 
     if (path === '/v1/files' && method === 'POST') {
       return handleFileUpload(req, res);
-    }
-    if (path === '/v1/files' && method === 'GET') {
-      return handleFileList(res);
     }
     const fileMatch = /^\/v1\/files\/([^/]+)$/.exec(path);
     if (fileMatch) {
@@ -1301,14 +1334,19 @@ async function handleHttp(req, res) {
  * module for unit tests does NOT bind the port.
  */
 function startServer() {
+  assertDevAiChannel(process.env);
   if (cacheResetRequested()) {
     clearCacheDirectory(cacheDirectory());
     log(`response cache: reset — cleared ${cacheDirectory()}`);
   }
   const server = createServer(handleHttp);
   server.listen(PORT, HOST, () => {
-    log(`listening on http://${HOST}:${PORT} — fulfilling via Claude Code (no Anthropic credits)`);
-    log(`default model: ${DEFAULT_MODEL}`);
+    log(`listening on http://${HOST}:${PORT} — fulfilling via ${LOCAL_FULFILLER}`);
+    log(
+      LOCAL_FULFILLER === 'codex'
+        ? `default model: ${envOr('CODEX_LOCAL_MODEL', '(required)')}`
+        : `default model: ${DEFAULT_MODEL}`,
+    );
     log(
       DEV_CONTEXT_ID
         ? `tool bridge: enabled (context-ID set, Personalizer=${PERSONALIZER_API_URL})`
@@ -1344,6 +1382,9 @@ export {
   isPersonalizerTool,
   clientToolNamesFrom,
   clientToolShape,
+  buildQueryOptions,
+  handleMessagesNonStream,
+  handleMessagesStream,
   stripCodeFence,
   usageFrom,
   extractFilePart,

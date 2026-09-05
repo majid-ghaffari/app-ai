@@ -5,15 +5,23 @@
  */
 
 import { vi, type Mock } from 'vitest';
+import * as anthropic from '../src/inference/adapters/anthropic-wire';
+import { fileTenantScope, mintOpaqueFileReference } from '../src/inference/file-references';
 import type { Env } from '../src/config';
 
 /** A complete Env fixture — all required config variables set. */
 export const ENV: Env = {
   ENVIRONMENT: 'test',
+  AI_CHANNEL: 'prod',
   CLAUDE_API_KEY: 'test-key',
+  TOKEN_ENCRYPTION_SECRET: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
   PERSONALIZER_INTEGRATION_BRIDGE_TOKEN: 'svc-token-256bit-opaque',
   PERSONALIZER_API_URL: 'https://brain.test',
   ANTHROPIC_API_BASE: 'https://api.anthropic.com',
+  OPENAI_API_BASE: 'https://api.openai.com',
+  OPENAI_API_KEY: 'test-openai-key',
+  GEMINI_API_BASE: 'https://generativelanguage.googleapis.com/v1beta',
+  GEMINI_API_KEY: 'test-gemini-key',
   LOG_TARGETS_TRACE: 'ignore',
   LOG_TARGETS_DEBUG: 'ignore',
   LOG_TARGETS_INFO: 'ignore',
@@ -23,6 +31,7 @@ export const ENV: Env = {
   LOG_SEQ_INGEST_URL: 'https://seq.test/ingest/clef',
   CREDENTIALED_ORIGINS:
     'https://local-app.limespot.com,http://localhost:4200,http://localhost:3000',
+  MASTER_SUBSCRIBER_ID: '1',
   MODEL_FAST: 'claude-haiku-4-5',
   MODEL_BALANCED: 'claude-sonnet-5',
   MODEL_FRONTIER: 'claude-opus-4-8',
@@ -48,9 +57,63 @@ export const AVAILABLE_AI_TOOLS = [
   'get_store_config',
 ] as const;
 
+/** Complete Anthropic success envelope; use overrides for count-token dual fixtures. */
+export function anthropicMessage(
+  content: readonly Record<string, unknown>[] = [],
+  overrides: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    id: 'msg_test',
+    type: 'message',
+    role: 'assistant',
+    model: ENV.MODEL_BALANCED,
+    content,
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    ...overrides,
+  };
+}
+
+/** Complete Anthropic message_start envelope for strict streaming fixtures. */
+export function anthropicMessageStart(
+  usage: Readonly<Record<string, unknown>> = { input_tokens: 1, output_tokens: 0 },
+): Record<string, unknown> {
+  return {
+    type: 'message_start',
+    message: {
+      id: 'msg_stream_test',
+      type: 'message',
+      role: 'assistant',
+      model: ENV.MODEL_BALANCED,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { output_tokens: 0, ...usage },
+    },
+  };
+}
+
 export type FetchMock = Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
 
 /** Create a typed fetch mock and install it as the global `fetch`. */
+/** Complete Anthropic Files API record; the adapter validates every member. */
+export function anthropicFileRecord(
+  id: string,
+  overrides: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    id,
+    type: 'file',
+    filename: `${id}.webp`,
+    mime_type: 'image/webp',
+    size_bytes: 32,
+    created_at: '2026-01-01T00:00:00Z',
+    downloadable: false,
+    ...overrides,
+  };
+}
+
 export function stubFetch(): FetchMock {
   const fetchMock: FetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
@@ -175,10 +238,48 @@ export interface KvMock {
  * carrying it as FILES_KV.
  */
 export function kvMock(storedValue: string | null = null): { kv: KvMock; env: Env } {
+  const stored = new Map<string, string>();
   const kv: KvMock = {
-    get: vi.fn(async () => storedValue),
-    put: vi.fn(async () => {}),
-    delete: vi.fn(async () => {}),
+    get: vi.fn(async (key) => stored.get(key) ?? storedValue),
+    put: vi.fn(async (key, value) => {
+      stored.set(key, value);
+    }),
+    delete: vi.fn(async (key) => {
+      stored.delete(key);
+    }),
   };
   return { kv, env: { ...ENV, FILES_KV: kv as unknown as KVNamespace } };
+}
+
+/** Build metadata-only opaque references for routed file-input integration tests. */
+export async function opaqueFileEnv(
+  files: readonly { upstreamFileId: string; mediaType: string | null }[],
+  compatibleGroups: readonly [string, ...string[]],
+  contextId = 'ctx',
+  baseEnv: Env = ENV,
+): Promise<{ env: Env; ids: string[] }> {
+  const accountScope = await anthropic.fileAccountScope(baseEnv);
+  const tenantScope = await fileTenantScope(contextId, baseEnv);
+  if (!tenantScope) throw new Error('test tenant scope missing');
+  const ids = await Promise.all(
+    files.map(async (file, index) => {
+      const opaque = await mintOpaqueFileReference(
+        {
+          provider: 'anthropic',
+          accountScope,
+          tenantScope,
+          filePolicy: 'anthropic-provider-files',
+          compatibleGroups,
+          upstreamFileId: file.upstreamFileId,
+          contentHash: `test:${index}`,
+          mediaType: file.mediaType,
+          sizeBytes: 1,
+          expiresAt: null,
+        },
+        baseEnv,
+      );
+      return opaque.id;
+    }),
+  );
+  return { env: baseEnv, ids };
 }

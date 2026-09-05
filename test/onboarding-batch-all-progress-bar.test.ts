@@ -28,7 +28,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -100,7 +108,14 @@ describe('POST /messages — onboarding-batch-all routing (progress-bar-aware)',
 
   it('injects the onboarding-batch-all system block + defaults the model to the `balanced` tier', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      ['file_cart_desktop', 'file_cart_mobile'].map((upstreamFileId) => ({
+        upstreamFileId,
+        mediaType: 'image/png',
+      })),
+      ['onboarding-visual'],
+    );
 
     await handleMessages(
       messagesRequest(
@@ -110,8 +125,8 @@ describe('POST /messages — onboarding-batch-all routing (progress-bar-aware)',
             {
               role: 'user',
               content: [
-                { type: 'image', source: { type: 'file', file_id: 'cart_desktop' } },
-                { type: 'image', source: { type: 'file', file_id: 'cart_mobile' } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[1] } },
                 {
                   type: 'text',
                   text: 'PAGE Cart: DESKTOP TILES images 1-1, MOBILE TILES images 2-2, CANDIDATE ANCHORS 1..4',
@@ -122,7 +137,7 @@ describe('POST /messages — onboarding-batch-all routing (progress-bar-aware)',
         },
         'onboarding-batch-all',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -160,7 +175,9 @@ describe('POST /messages — onboarding-batch-all routing (progress-bar-aware)',
     });
     // Fresh Response per call: the propose path also fetches Brain defaults, so a
     // single shared Response would have its body consumed before the Messages read.
-    stubFetch().mockImplementation(async () => jsonOk({ content: [{ type: 'text', text: plan }] }));
+    stubFetch().mockImplementation(async () =>
+      jsonOk(anthropicMessage([{ type: 'text', text: plan }])),
+    );
 
     const res = await handleMessages(
       messagesRequest(

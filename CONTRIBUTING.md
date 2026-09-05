@@ -64,9 +64,10 @@ See [docs/TESTING.md](docs/TESTING.md).
 ## Documentation rule
 
 Any code change MUST update the affected folder's `CLAUDE.md`
-(`src/handlers/CLAUDE.md`, `src/lib/CLAUDE.md`), then propagate up to the root
-[CLAUDE.md](CLAUDE.md). Adding/renaming a handler, lib module, prompt, route, or
-doc updates the relevant sections. Keep the documentation tree valid. Docs are
+(`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`,
+`src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate up to the root
+[CLAUDE.md](CLAUDE.md). Adding/renaming a handler, inference module, lib module, toolset, prompt, route,
+or doc updates the relevant sections. Keep the documentation tree valid. Docs are
 present-state only — describe what the code IS, never what it was (no
 "previously", "now", "refactored from", before→after framing).
 
@@ -78,7 +79,7 @@ present-state only — describe what the code IS, never what it was (no
 - **No Hardcoded Config Values** — URLs and deploy-time tunables live in
   wrangler `[vars]` / `.dev.vars` behind `src/config.ts`; missing config
   throws; no inline fallbacks (fitness-tested).
-- **The Anthropic API key never leaves the worker** — only `lib/anthropic.ts`
+- **The Anthropic API key never leaves the worker** — only `inference/adapters/anthropic-wire.ts`
   reads it, via `claudeApiKey(env)` from `src/config.ts`.
 - **The live surface is a stable external contract.** `/files`, `/messages`
   (image-selection), `/chat`, context validation, CORS, and `cache_control`

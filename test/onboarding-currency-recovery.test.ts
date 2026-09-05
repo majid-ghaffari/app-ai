@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handleMessages } from '../src/handlers/messages';
 import { getSystemPrompt } from '../src/prompt-registry';
-import { CORS, ENV, fetchedUrls, stubFetch } from './helpers';
+import { anthropicMessage, CORS, ENV, fetchedUrls, stubFetch, opaqueFileEnv } from './helpers';
 
 function jsonOk(data: unknown): Response {
   return new Response(JSON.stringify(data), { status: 200 });
@@ -24,14 +24,18 @@ describe('onboarding-currency-recovery', () => {
   it('goes directly to inference without a blocking count_tokens request', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({
-        content: [
+      jsonOk(
+        anthropicMessage([
           {
             type: 'text',
             text: '{"visualActions":[{"action":"setCurrencyFormat","args":{"candidateId":"none"}}]}',
           },
-        ],
-      }),
+        ]),
+      ),
+    );
+    const files = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_price_tile', mediaType: 'image/png' }],
+      ['onboarding-visual'],
     );
     const request = new Request('https://app-ai.test/messages', {
       method: 'POST',
@@ -45,7 +49,7 @@ describe('onboarding-currency-recovery', () => {
           {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'file', file_id: 'price-tile' } },
+              { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
               { type: 'text', text: 'CURRENCY RECOVERY DATA {}' },
             ],
           },
@@ -53,7 +57,7 @@ describe('onboarding-currency-recovery', () => {
       }),
     });
 
-    const response = await handleMessages(request, ENV, CORS);
+    const response = await handleMessages(request, files.env, CORS);
     expect(response.status).toBe(200);
     expect(fetchedUrls(fetchMock)).toEqual(['https://api.anthropic.com/v1/messages']);
   });

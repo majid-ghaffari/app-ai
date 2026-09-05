@@ -1,6 +1,6 @@
 # App AI Service
 
-Cloudflare Worker that provides secure access to Anthropic's Claude API with context validation and system prompt management for LimeSpot applications.
+Cloudflare Worker that provides context-validated, prompt-grouped inference for LimeSpot applications. Production routes currently use Anthropic; OpenAI Responses and Gemini `generateContent` adapters are implemented as dormant candidates pending evaluations.
 
 ## Quick Start
 
@@ -20,8 +20,8 @@ cp .dev.vars.example .dev.vars
 ```
 
 Get your API key from [Anthropic Console](https://console.anthropic.com/) → API Keys.
-`.dev.vars` carries EVERY local configuration value (Personalizer URL, Anthropic origin,
-CORS allowlist, model choices, the key) — the worker throws on a missing variable,
+`.dev.vars` carries every local configuration value (Personalizer/provider origins,
+CORS allowlist, model choices, and provider keys) — the worker throws on a selected missing variable,
 naming it; there are no fallback defaults (see docs/CODE-PATTERNS.md → "No
 Hardcoded Config Values").
 
@@ -30,12 +30,12 @@ Hardcoded Config Values").
 
 ### 3. Start Development Server
 
-Local dev fulfils Anthropic inference through **Claude Code** (free — no Anthropic
-credits), via a local Anthropic-compatible shim. `.dev.vars.example` already
+Local dev fulfils inference through **Claude Code** by default (free — no Anthropic
+API credits), via a local Anthropic-compatible shim. `.dev.vars.example` already
 defaults `ANTHROPIC_API_BASE` to the shim, so the standard flow is two processes:
 
 ```bash
-npm run dev:shim   # free Claude-Code channel on :8788 (uses your Claude Code auth)
+npm run dev:shim   # free local AI channel on :8788 (Claude Code by default)
 npm run dev        # wrangler dev on :8787 → routes Anthropic traffic to the shim
 ```
 
@@ -51,16 +51,27 @@ the gitignored `.dev-cache/claude-shim/` (`SHIM_CACHE_DIR` overrides it); delete
 the directory or use `SHIM_CACHE_RESET=1` to invalidate.
 
 Server runs at `http://localhost:8787`. See [CLAUDE.md](CLAUDE.md) →
-"Local AI dev — the free Claude-Code channel" for how it works, the tool bridge
-(`LS_DEV_CONTEXT_ID`), the response cache's key derivation and its one
-limitation, and the cred-burn guard. Using the real, paid API from
-local requires `ANTHROPIC_API_BASE=https://api.anthropic.com` **and**
-`AI_CHANNEL=prod` (the guard blocks it otherwise) — prod-only by policy.
+"Local AI dev — provider-neutral Claude Code/Codex fulfillers" for how it works, the
+tool bridge (`LS_DEV_CONTEXT_ID`), the response cache's key derivation and its one
+limitation, and the cred-burn guard. Using the real, paid API from local requires the
+relevant official provider base **and** `AI_CHANNEL=prod` (the guard blocks it
+otherwise) — prod-only by policy.
+
+For one-shot visual/structured prompts, set `LOCAL_AI_FULFILLER=codex` and an
+explicit `CODEX_LOCAL_MODEL`, then start the same shim. This runs `codex exec`
+ephemerally with a read-only sandbox, image files, JSON output schema, parseable
+JSONL usage, cancellation, and no inherited user/project instructions or
+configuration. It also disables Codex shell/web/plugin/subagent/app-connector/
+dependency-install tools and exposes only a minimal child environment. Saved
+authentication is forced to ChatGPT by default; using `CODEX_API_KEY` requires
+`AI_CHANNEL=prod`. It rejects streaming and tools; use Claude Code for full
+`/chat` behavior.
 
 Local `LOG_TARGETS_*` values route every level to the terminal and private Seq, and `npm run dev`
 mirrors terminal output to `app-ai-dev.log`. Inference TRACE records include the selected prompt,
-complete model-visible text/tool/file input, assistant output, tool execution, status, usage, and
-elapsed time; file IDs and request context IDs remain available for correlation. Follow
+complete model-visible text/tool input, redacted file-block structure, assistant output, tool
+execution, status, usage, and elapsed time. Opaque file IDs, encoded media, continuation state,
+and request context IDs are removed; request/subscriber IDs remain for private correlation. Follow
 a run with:
 
 ```bash
@@ -91,17 +102,80 @@ Normal protected endpoints require `X-Personalizer-Context-ID`. The extension de
 | ------ | ------------------------ | --------------------------------------- | -------------- |
 | GET    | `/health`                | Health check                            | No             |
 | POST   | `/demo/session/exchange` | Exchange a website activation JWT       | Activation JWT |
-| POST   | `/files`                 | Upload file to Claude                   | Yes            |
-| GET    | `/files`                 | List uploaded files                     | Yes            |
-| DELETE | `/files/{id}`            | Delete file                             | Yes            |
-| POST   | `/messages`              | Send message to Claude (single-shot)    | Yes            |
+| POST   | `/files`                 | Prompt-aware direct provider upload     | Yes            |
+| DELETE | `/files/{id}`            | Delete one opaque file reference        | Yes            |
+| POST   | `/messages`              | Registered prompt completion            | Yes            |
 | POST   | `/chat`                  | Studio AI chat agent loop (SSE + tools) | Yes            |
+| GET    | `/prompts`               | Prompt/model routing diagnostics        | Master only    |
+
+A master context-ID reaches `GET /prompts` through the `X-Personalizer-Context-ID`
+header or a `personalizerContextId` query parameter; every other route reads the
+header only.
 
 Scoped `ls_demo_…` sessions may use only `POST /files` and proposal-only `POST
 /messages`. They are bound to the activated store, atomically quota-controlled
-by an audit-keyed `DemoSessionAuthority`, never call Brain, and cannot list/delete files or use
+by an audit-keyed `DemoSessionAuthority`, never call Brain, and cannot delete files or use
 `/chat`. The exact public/staff entitlement claims, headers, limits, and signed website-status
 callback contract are in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
+
+### `POST /files` — prompt-aware direct upload
+
+Send multipart form data with exactly one `file` part and one or more repeated
+`prompt` string parts. Every prompt must be registered. app-ai resolves all
+prompt-group routes before provider I/O, uploads each unique route directly,
+and retains metadata only—never the uploaded bytes.
+
+Every success returns one shape: `{ "id": "<opaque>", "type": "file",
+"references": { "<prompt>": { "id": "<opaque>", "type": "file" }, … } }`. The
+`references` map is keyed by every declared prompt and the top-level `id`
+belongs to the first prompt. Declared prompts that share a route share one
+reference, so an upload resolving to a single route names them all against the
+same value. Callers must treat every ID as opaque and send the reference the map
+holds for the inference prompt that will consume it.
+
+### `DELETE /files/{id}` — one reference at a time
+
+The reference IS the route. `DELETE /files/{id}` takes an opaque reference
+minted by `POST /files` and reads the provider, tenant, and upstream object id
+out of the token itself; a reference belonging to another tenant is refused with
+403, and one whose route has since been configured onto another provider with 409.
+
+No verb enumerates a provider account. One account holds every tenant's
+uploads, so a listing could only answer with files this caller never uploaded;
+`GET /files` is not a route and falls through to the router's 404
+`RecordNotFoundException`.
+
+### `GET /prompts` — routing diagnostics (master only)
+
+Because a prompt's provider is inferred from the configured model id, what a
+deployment actually routes each prompt to is a property of that deployment. This
+endpoint answers it without running an inference: per registered prompt, its
+group, capability tier, resolved model, provider, API family, file policy,
+declared capability requirements, and whether the resolved model honours inline
+cache breakpoints, plus whether the route validates and why it does not. It also lists the NAMES of required secrets that are still blank —
+never a value, a prefix, or a length.
+
+It validates the context-ID like every other protected route and then requires
+the resolved `SubscriberID` to equal `MASTER_SUBSCRIBER_ID`. Any other validated
+merchant receives the router's unknown-route answer (404
+`RecordNotFoundException`) byte for byte, so the endpoint cannot be confirmed to
+exist. Scoped demo sessions never reach it.
+
+It takes that context-ID from either of two positions, and the master gate is
+identical in both:
+
+```
+curl -H 'X-Personalizer-Context-ID: <master-context-id>' https://<worker>/prompts
+https://<worker>/prompts?personalizerContextId=<master-context-id>
+```
+
+The header wins whenever a request carries both. The query form exists so an
+operator can open the diagnostics in a browser — and a credential in a URL is
+visible to browser history, bookmarks, and any intermediary that records URLs,
+so it is a master-operator convenience, never the form automation uses. app-ai
+strips the value of a credential-bearing query parameter from every log record
+(`src/lib/logger.ts`), which covers this worker's sinks and nothing upstream of
+it.
 
 ### `POST /chat` — Studio AI agent runtime
 
@@ -133,7 +207,11 @@ platform toolsets. The Anthropic key never leaves the worker.
 - **`Accept: text/event-stream`** → SSE (events: `text`, `tool_call`,
   `tool_result`, `done`, `error`). Otherwise → a single JSON object (same shape
   as the `done` payload).
-- Request body: `{ messages, context?, model?, max_tokens?, fileIds? }`.
+- Request body: `{ messages, context?, max_tokens?, fileIds?, continuation? }`.
+  Continuation values are authenticated opaque tokens bound to the validated
+  tenant and resolved prompt route. They accompany browser-tool handoffs and
+  provider-required ordinary turns (Gemini thought signatures); echo them
+  unchanged only on the matching follow-up turn.
   `messages` is the full history the client wants the model to see (the client
   owns history; persistence lives in Personalizer). `context` carries grounding
   (`hostPage`, validated placement `candidates`, best-practice `grounding`,
@@ -174,11 +252,15 @@ curl -X POST http://localhost:8787/messages \
   -H "X-Personalizer-Context-ID: your-context-id" \
   -H "X-Personalizer-System-Prompt: image-selection" \
   -d '{
-    "model": "claude-opus-4-8",
-    "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
+
+Registered selectors take model and output policy from the prompt registry. If
+the response includes an opaque `continuation`, echo it unchanged as the
+top-level `continuation` field on the matching next `/messages` request; Gemini
+routes require this to preserve the assistant's thought signatures. Unknown
+selectors take the bounded Anthropic-wire passthrough body.
 
 ## Development
 
@@ -212,18 +294,28 @@ variable, no fallback defaults.
 **Local Development:**
 
 - Everything in `.dev.vars` (gitignored; overrides `[vars]` under
-  `wrangler dev`). Copy [.dev.vars.example](.dev.vars.example) — it documents
-  every knob, including all `LOG_TARGETS_*` routes and Seq transport settings.
+  `wrangler dev`). Copy [.dev.vars.example](.dev.vars.example) — it lists every
+  binding the worker reads, grouped and marked REQUIRED or OPTIONAL, with every
+  secret left blank for you to fill in. `test/config.test.ts` derives the
+  inventory from the typed `Env`, so a new binding cannot be added without being
+  documented there.
 
 **Production:**
 
 - Public config in `wrangler.toml` `[vars]`: `ENVIRONMENT`, `PERSONALIZER_API_URL`,
-  `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, and the tier→model bindings
-  `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, plus `LOG_TARGETS_*` and
+  the provider origins `ANTHROPIC_API_BASE` / `OPENAI_API_BASE` /
+  `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, `MASTER_SUBSCRIBER_ID`, the
+  tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` and their sparse
+  per-prompt `MODEL_OVERRIDES` exceptions, plus `LOG_TARGETS_*` and
   `LOG_SEQ_INGEST_URL`, plus the `DEMO_*` session/quota limits (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
+  - Add `OPENAI_API_KEY` before configuring an OpenAI model or smoke-testing one
+  - Add `GEMINI_API_KEY` before configuring a model in the Gemini family
+  - Add `TOKEN_ENCRYPTION_SECRET` as encrypted secret (exactly 32 random bytes encoded as base64,
+    the HKDF root for every app-ai-sealed token; rotating it invalidates outstanding opaque file
+    references and continuation tokens)
   - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
     caller-auth token toward Personalizer's integration bridge)
   - Add distinct `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
@@ -239,7 +331,7 @@ maps each name to its text and metadata (`SystemPromptEntry` in that file is the
 the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-The registry holds 19 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
+The registry holds 21 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
 onboarding-chat, placement, proposals, analytics-insights) and `/messages` one-shot JSON prompts
 (image-selection, visual-verify, the four Website-Analysis probes, and the onboarding /
 cart-drawer / optimize propose + review passes). The authoritative inventory — every prompt with
@@ -312,25 +404,30 @@ Cost-reduction is additive and never changes external request/response shapes.
   current images as variable content and sends no pre-customization originals;
   the worker gives that 1h breakpoint priority within the four-slot system/attachment budget,
   removes the internal marker before Anthropic forwarding, and leaves block/file-ID order intact.
-  Conversation turns use the 5-minute default. See `src/lib/cache-control.ts`
-  (`EXTENDED_CACHE_CONTROL`, `STABLE_CACHE_PREFIX_MARKER`).
-- **Agent-loop breakpoints.** `src/lib/agent-cache.ts` re-applies ≤3 conversation breakpoints
-  each iteration (last block + ~every-15-blocks); the system base block holds the 4th, so the
-  total never exceeds Anthropic's 4-block limit.
-- **Files API checksum dedup.** `src/lib/file-dedup.ts` hashes upload bytes (SHA-256) and, when
-  the optional `FILES_KV` namespace is bound, reuses the stored `file_id` instead of
-  re-uploading (the Files API does NOT dedup by content). **Graceful no-op until KV is
-  provisioned** — uploads still work.
+  Conversation turns use the 5-minute default. See `src/inference/cache.ts`;
+  the Anthropic adapter realizes the canonical intents on its wire payload.
+- **Agent-loop breakpoints.** `src/inference/service.ts` invokes the canonical
+  allocator each iteration (last block + ~every-15-blocks); the stable prefix
+  reserves the remaining Anthropic parity budget.
+- **Prompt-aware direct upload + checksum dedup.** `POST /files` carries one `file` and one or
+  more repeated registered `prompt` fields. app-ai resolves every destination route first,
+  uploads unique tenant/provider/account/policy/group routes in parallel, and returns random opaque
+  authenticated encrypted references bound to a keyed pseudonym of the validated context ID.
+  Registered/canonical inference rejects raw provider IDs; the bounded unregistered-selector
+  `/messages` passthrough refuses raw file blocks and resolves its own model route from the registry. `src/lib/file-dedup.ts` hashes bytes so a route
+  can reuse its upstream object and retains validated MIME because OpenAI metadata omits it.
+  `FILES_KV` stores only expiring best-effort dedup metadata, never
+  file bytes, and can no-op without affecting reference correctness. Sealed route metadata is
+  self-contained under `TOKEN_ENCRYPTION_SECRET`, avoiding eventually-consistent read-after-write.
+  Metadata lifetime is capped at 30 days and never outlives upstream expiry.
 - **`count_tokens` pre-flight.** Large `/messages` payloads log a free token estimate (warn-only;
   never gates the request).
-- **Opt-in output effort (model-gated).** A registry entry may set `effort` → handlers add
-  `output_config: { effort }` **only when the resolved model supports it** (`supportsEffort` in
-  `lib/anthropic.ts`: Fable 5, Opus 4.8/4.7/4.6/4.5, Sonnet 4.6). On a model that doesn't support
-  effort (e.g. Haiku 4.5, Sonnet 4.5) the worker omits it — sending it returns a 400. `placement`
-  runs on Haiku 4.5, so it carries no `effort`.
+- **Opt-in output effort (model-gated).** A registry entry may set semantic
+  `effort`; the selected adapter maps or omits it for its concrete model. The
+  Anthropic gate lives in `src/inference/adapters/anthropic-wire.ts`.
 
-`FILES_KV` is bound in `wrangler.toml` (`[[kv_namespaces]]`), so dedup is active in
-production; the code no-ops gracefully to a plain upload if the binding is ever absent.
+`FILES_KV` is bound in `wrangler.toml` (`[[kv_namespaces]]`) for best-effort dedup.
+Opaque route-reference validation is self-contained and authenticated by `TOKEN_ENCRYPTION_SECRET`.
 The 1h cache and placement file-block prefix can be live-measured by the optional
 token-savings diagnostic (`npm run verify:caching` — see [docs/TESTING.md](docs/TESTING.md)).
 
@@ -361,9 +458,10 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
    `wrangler.toml`; its raw defaults bypass the required revision stamp.
 4. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
-   - Add secrets with keys `CLAUDE_API_KEY`, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`,
-     `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
-     `DEMO_AUDIT_STATUS_SIGNING_SECRET`
+   - Add secrets with keys `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+     `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET` (32 random bytes
+     encoded as base64), `DEMO_ACTIVATION_SIGNING_SECRET`,
+     `DEMO_SESSION_SIGNING_SECRET`, and `DEMO_AUDIT_STATUS_SIGNING_SECRET`
 
 Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it
@@ -403,10 +501,11 @@ All configured in [wrangler.toml](wrangler.toml):
   - Auto-deploys from `main` branch
 
 Every environment provides the full variable set — `ENVIRONMENT`,
-`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model
-bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, and the `CLAUDE_API_KEY` +
-`PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` + three demo signing secrets, the exact
-`DEMO_AUDIT_STATUS_URL`, six `LOG_TARGETS_*` routes, and
+`PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`,
+`GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` /
+`MODEL_FRONTIER`, and the provider API keys + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` +
+`TOKEN_ENCRYPTION_SECRET` + three demo signing secrets, the exact `DEMO_AUDIT_STATUS_URL`,
+six `LOG_TARGETS_*` routes, and
 `LOG_SEQ_INGEST_URL` whenever any route selects Seq. `LOG_SEQ_API_KEY` is optional.
 `src/config.ts` throws on malformed or missing required configuration.
 
@@ -496,6 +595,12 @@ kill -9 <PID>
 - Verify API key starts with `sk-ant-api03-`
 - Ensure no extra spaces or quotes in `.dev.vars`
 - Restart dev server after changes
+
+### Opaque file reference configuration
+
+- Set `TOKEN_ENCRYPTION_SECRET` in `.dev.vars` and as a Cloudflare encrypted secret.
+- It must be exactly 32 random bytes encoded as base64 (`openssl rand -base64 32`).
+- Rotating it invalidates outstanding opaque file references; their maximum lifetime is 15 days.
 
 ### CORS errors
 
@@ -587,13 +692,18 @@ wrangler whoami          # Check authentication
   the registered-prompt table
 - [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md) — extension demo claims, entitlement, scope, quotas,
   and the signed website status callback
+- [docs/PROMPT-GROUPS.md](docs/PROMPT-GROUPS.md) —
+  the prompt inventory and evidence-reuse graph
+- [docs/MULTI-PROVIDER-DELIVERY.md](docs/MULTI-PROVIDER-DELIVERY.md)
+  — the delivered multi-provider system and what a production route change must prove
 - [docs/prompts/](docs/prompts/) — per-prompt design/maintenance docs
   (e.g. [image-selection.md](docs/prompts/image-selection.md))
 
 ---
 
 **Platform:** Cloudflare Workers (V8 Isolates)
-**Live surface:** `/files` + `/messages` serve the production smart-image
-feature; `/chat` serves LimeSpot Studio AI.
+**Live surface:** `/files` + `/messages` serve the scoped extension demo sessions in
+production; production Studio carries no app-ai client, and a Studio build that ships
+one reaches `/files`, `/messages`, and `/chat`.
 **Deploy:** pushing `main` deploys to production — an operator action carrying its own deploy
 approval; `main` is read-only to every agent.

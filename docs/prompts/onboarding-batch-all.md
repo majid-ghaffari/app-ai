@@ -141,7 +141,7 @@ Both off-page keys are OPTIONAL and FOCUSED — a small high-value set, never ev
 
 ### Caching notes
 
-The composed system text is the STABLE, shop-independent prefix (`cache_control` 1h breakpoint in [`handlers/messages.ts`](../../src/handlers/messages.ts)), and the per-shop screenshots + whole-store manifest ride AFTER it in the first user message, so repeated per-shop calls HIT the cached prefix. `composePrompt(a, b, c)` === `[a,b,c].map(trim).join('\n\n')`, so the STABLE part order (above) yields a byte-stable prefix — a reordered block busts the cache. NEVER put per-shop VARIABLE data (screenshots, the per-page manifest, a candidate's `outerHTML`, file ids) in any block; that is the "variable data last" expectation (see CACHING in `messages.ts` / `lib/cache-control.ts`). The off-page blocks are equally stable — no per-shop data in segments/discounts either.
+The composed system text is the STABLE, shop-independent prefix (canonical 1h cache intent built by [`handlers/messages.ts`](../../src/handlers/messages.ts) and realized by the selected adapter), and the per-shop screenshots + whole-store manifest ride AFTER it in the first user message, so repeated per-shop calls HIT the cached prefix. `composePrompt(a, b, c)` === `[a,b,c].map(trim).join('\n\n')`, so the STABLE part order (above) yields a byte-stable prefix — a reordered block busts the cache. NEVER put per-shop VARIABLE data (screenshots, the per-page manifest, a candidate's `outerHTML`, file ids) in any block; that is the "variable data last" expectation (see `inference/cache.ts`). The off-page blocks are equally stable — no per-shop data in segments/discounts either.
 
 ### Pinning test
 

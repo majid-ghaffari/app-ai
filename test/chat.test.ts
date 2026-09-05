@@ -11,10 +11,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleChat, buildSystem } from '../src/handlers/chat';
 import { composeToolsets } from '../src/toolsets/registry';
 import { getSystemPrompt } from '../src/prompt-registry';
+import { serializeToolDefinitions } from '../src/inference/adapters/anthropic-wire';
+import { encodeOpaqueContinuation } from '../src/inference/continuation';
+import { fileTenantScope } from '../src/inference/file-references';
 import type { EntityReference } from '../src/lib/references';
 import type { Env } from '../src/config';
 import { createLoggingRuntime } from '../src/lib/logger';
+import { SECRET_CONFIGURATION_PUBLIC_MESSAGE } from '../src/lib/responses';
 import {
+  anthropicMessageStart,
   ENV,
   CORS,
   AVAILABLE_AI_TOOLS,
@@ -25,20 +30,24 @@ import {
   sentBody,
   readWorkerSse,
   eventOf,
+  opaqueFileEnv,
+  kvMock,
   type FetchMock,
 } from './helpers';
 
 // The /chat tool surface, composed through the registry exactly as the handler
 // does for a subscriber with no third-party integration parties — just the
 // always-active personalizer toolset.
-const TOOL_DEFINITIONS = composeToolsets(
-  [],
-  {
-    contextId: 'ctx',
-    env: ENV,
-  },
-  AVAILABLE_AI_TOOLS,
-).definitions;
+const TOOL_DEFINITIONS = serializeToolDefinitions(
+  composeToolsets(
+    [],
+    {
+      contextId: 'ctx',
+      env: ENV,
+    },
+    AVAILABLE_AI_TOOLS,
+  ).definitions,
+);
 
 /** Execute one tool through a fresh per-request composition (the registry path). */
 const executeTool = (
@@ -50,8 +59,10 @@ const executeTool = (
 ) => composeToolsets([], { contextId, env }, AVAILABLE_AI_TOOLS).execute(name, input, { refs });
 
 interface SseBlockSpec {
-  type: 'text' | 'tool_use';
+  type: 'text' | 'tool_use' | 'thinking';
   text?: string;
+  thinking?: string;
+  signature?: string;
   id?: string;
   name?: string;
   input?: unknown;
@@ -61,7 +72,7 @@ interface SseBlockSpec {
 function anthropicSse(
   blocks: SseBlockSpec[],
   stopReason: string,
-  startUsage: Record<string, number> = { input_tokens: 10 },
+  startUsage: Record<string, unknown> = { input_tokens: 10 },
 ): string {
   // Real Anthropic SSE carries `type` inside the data JSON too (not just the
   // event: line). The worker switches on the data's `type`, so include it.
@@ -69,13 +80,15 @@ function anthropicSse(
   const push = (type: string, data: Record<string, unknown>) =>
     lines.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   // Anthropic reports input + cache tokens on message_start; output on message_delta.
-  push('message_start', { message: { usage: startUsage } });
+  lines.push(
+    `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart(startUsage))}\n\n`,
+  );
   blocks.forEach((block, index) => {
     if (block.type === 'text') {
       push('content_block_start', { index, content_block: { type: 'text' } });
       push('content_block_delta', { index, delta: { type: 'text_delta', text: block.text } });
       push('content_block_stop', { index });
-    } else {
+    } else if (block.type === 'tool_use') {
       push('content_block_start', {
         index,
         content_block: { type: 'tool_use', id: block.id, name: block.name },
@@ -83,6 +96,20 @@ function anthropicSse(
       push('content_block_delta', {
         index,
         delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input || {}) },
+      });
+      push('content_block_stop', { index });
+    } else {
+      push('content_block_start', {
+        index,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      });
+      push('content_block_delta', {
+        index,
+        delta: { type: 'thinking_delta', thinking: block.thinking ?? '' },
+      });
+      push('content_block_delta', {
+        index,
+        delta: { type: 'signature_delta', signature: block.signature ?? '' },
       });
       push('content_block_stop', { index });
     }
@@ -102,6 +129,42 @@ function sseResponse(text: string): Response {
     },
   });
   return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+/** The registry route for the client-tool group, resolved onto Gemini. */
+const GEMINI_CHAT_ENV: Env = { ...ENV, MODEL_OVERRIDES: 'studio-visual-agent=gemini-3-pro' };
+
+/** One `generateContent` stream chunk, in the shape the adapter parses. */
+function geminiChunk(
+  parts: readonly Readonly<Record<string, unknown>>[],
+  finishReason: string | null = null,
+): Record<string, unknown> {
+  return {
+    candidates: [
+      {
+        index: 0,
+        content: { role: 'model', parts },
+        ...(finishReason === null ? {} : { finishReason }),
+      },
+    ],
+    usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13 },
+    responseId: 'resp_chat',
+  };
+}
+
+function geminiSse(chunks: readonly Readonly<Record<string, unknown>>[]): Response {
+  return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join(''), {
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
+interface GeminiContent {
+  readonly role: string;
+  readonly parts: readonly Readonly<Record<string, unknown>>[];
+}
+
+function geminiContents(init: RequestInit): GeminiContent[] {
+  return (JSON.parse(String(init.body)) as { contents: GeminiContent[] }).contents;
 }
 
 function chatRequest(body: unknown, headers: Record<string, string> = {}): Request {
@@ -198,7 +261,7 @@ describe('tool definitions', () => {
 
   it('get_entity_context carries the frozen input_schema', () => {
     const tool = TOOL_DEFINITIONS.find((candidate) => candidate.name === 'get_entity_context');
-    if (!tool) throw new Error('get_entity_context definition missing');
+    if (!tool?.input_schema) throw new Error('get_entity_context definition missing');
     expect(tool.input_schema.required).toEqual(['type', 'id']);
     const properties = tool.input_schema.properties as {
       type: { enum: string[] };
@@ -389,6 +452,191 @@ describe('executeTool — get_entity_context dispatch', () => {
 });
 
 describe('handleChat — streaming', () => {
+  it('returns sealing-key configuration failures through the SSE error envelope', async () => {
+    const fetchMock = stubFetch();
+    const { TOKEN_ENCRYPTION_SECRET: _missing, ...missingKeyEnv } = ENV;
+    const response = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'hello' }] }),
+      missingKeyEnv,
+      CORS,
+    );
+    expect(response.headers.get('Content-Type')).toContain('text/event-stream');
+    const events = await readWorkerSse(response);
+    // Generic on the wire: the secret's name and where it is set are for the
+    // log and the master-gated /prompts, never a merchant's error event.
+    const { data } = eventOf(events, 'error');
+    expect(data).toEqual({
+      Message: SECRET_CONFIGURATION_PUBLIC_MESSAGE,
+      ExceptionType: 'Exception',
+    });
+    expect(JSON.stringify(data)).not.toMatch(
+      /TOKEN_ENCRYPTION_SECRET|encrypted secret|\.dev\.vars/,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a route rejected at resolution through the SSE error envelope, never the router catch', async () => {
+    const fetchMock = stubFetch();
+    // A per-prompt override that moves onboarding-chat onto Gemini while its
+    // group's shared file route stays on Anthropic is exactly the configuration
+    // `/prompts` reports as `valid: false`; the same request must answer in the
+    // caller's negotiated shape rather than throwing past the handler.
+    const offRouteEnv: Env = { ...ENV, MODEL_OVERRIDES: 'onboarding-chat=gemini-3-pro' };
+    const response = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'hello' }] },
+        { 'X-Personalizer-System-Prompt': 'onboarding-chat' },
+      ),
+      offRouteEnv,
+      CORS,
+    );
+    expect(response.headers.get('Content-Type')).toContain('text/event-stream');
+    const events = await readWorkerSse(response);
+    expect(eventOf(events, 'error').data).toMatchObject({
+      Message: expect.stringMatching(/onboarding-chat resolves to gemini.*incompatible/),
+      ExceptionType: 'Exception',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // An id no catalog family claims is the other resolution rejection.
+    const unclaimedEnv: Env = { ...ENV, MODEL_FRONTIER: 'mistral-large-3' };
+    const unclaimed = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'hello' }] }),
+      unclaimedEnv,
+      CORS,
+    );
+    expect(unclaimed.headers.get('Content-Type')).toContain('text/event-stream');
+    expect(eventOf(await readWorkerSse(unclaimed), 'error').data).toMatchObject({
+      Message: expect.stringContaining('mistral-large-3'),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns top-level file-reference failures through the SSE error envelope', async () => {
+    const fetchMock = stubFetch();
+    const { env } = kvMock();
+    const response = await handleChat(
+      chatRequest({
+        messages: [{ role: 'user', content: 'inspect this' }],
+        fileIds: ['file_ref_v1_ffffffffffffffffffffffffffffffff'],
+      }),
+      env,
+      CORS,
+    );
+    expect(response.headers.get('Content-Type')).toContain('text/event-stream');
+    const events = await readWorkerSse(response);
+    // Client input that cannot open is Brain's ArgumentException, never a
+    // provider exception: no provider was consulted, and the client must not
+    // classify a correctable request as terminal.
+    expect(eventOf(events, 'error').data).toMatchObject({
+      Message: expect.stringMatching(/missing|expired/i),
+      ExceptionType: 'ArgumentException',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses another tenant's file reference in both response shapes, before provider I/O", async () => {
+    const fetchMock = stubFetch();
+    // chatRequest authenticates as ctx-123; this reference was sealed for a
+    // different store, so holding the token is not authority over the object.
+    const foreign = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_other_tenant_chat', mediaType: 'image/png' }],
+      ['studio-data-agent'],
+      'ctx-a-different-store',
+    );
+    const [reference] = foreign.ids;
+    if (!reference) throw new Error('test reference was not minted');
+
+    const streamed = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'look' }], fileIds: [reference] }),
+      foreign.env,
+      CORS,
+    );
+    expect(streamed.headers.get('Content-Type')).toContain('text/event-stream');
+    expect(eventOf(await readWorkerSse(streamed), 'error').data).toMatchObject({
+      Message: 'File reference does not belong to this tenant',
+      ExceptionType: 'UnauthorizedAccessException',
+    });
+
+    const json = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'look' }], fileIds: [reference] },
+        { Accept: 'application/json' },
+      ),
+      foreign.env,
+      CORS,
+    );
+    expect(json.status).toBe(403);
+    expect((await json.json()) as unknown).toMatchObject({
+      Message: 'File reference does not belong to this tenant',
+      ExceptionType: 'UnauthorizedAccessException',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses another tenant's reference carried inside a message block", async () => {
+    // The nested position resolves on the same seam as the top-level fileIds
+    // list, so a reference smuggled into a tool result is refused identically.
+    const fetchMock = stubFetch();
+    const foreign = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_other_tenant_nested', mediaType: 'image/png' }],
+      ['studio-data-agent'],
+      'ctx-a-different-store',
+    );
+    const [reference] = foreign.ids;
+    if (!reference) throw new Error('test reference was not minted');
+    const response = await handleChat(
+      chatRequest({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'browser_1',
+                content: [{ type: 'image', source: { type: 'file', file_id: reference } }],
+              },
+            ],
+          },
+        ],
+      }),
+      foreign.env,
+      CORS,
+    );
+    expect(eventOf(await readWorkerSse(response), 'error').data).toMatchObject({
+      Message: 'File reference does not belong to this tenant',
+      ExceptionType: 'UnauthorizedAccessException',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a reference sealed under the previous token-encryption secret', async () => {
+    // Rotating the secret derives a different sealing key, so an outstanding
+    // reference stops opening rather than opening under the new one.
+    const fetchMock = stubFetch();
+    const before = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_before_rotation_chat', mediaType: 'image/png' }],
+      ['studio-data-agent'],
+      'ctx-123',
+    );
+    const [reference] = before.ids;
+    if (!reference) throw new Error('test reference was not minted');
+    const rotated: Env = {
+      ...before.env,
+      TOKEN_ENCRYPTION_SECRET: 'cm90YXRlZC1zZWNyZXQtMDEyMzQ1Njc4OWFiY2RlZjA=',
+    };
+    const response = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'look' }], fileIds: [reference] }),
+      rotated,
+      CORS,
+    );
+    expect(eventOf(await readWorkerSse(response), 'error').data).toMatchObject({
+      Message: expect.stringMatching(/invalid|expired/i),
+      ExceptionType: 'ArgumentException',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it('streams a plain text turn then done', async () => {
@@ -410,15 +658,165 @@ describe('handleChat — streaming', () => {
     expect(done.data.iterations).toBe(1);
   });
 
-  it('emits correlated model-turn input/output events when TRACE routes to console', async () => {
+  it('preserves exact multi-block text, provider stop reasons, and extended usage', async () => {
+    stubFetch().mockResolvedValue(
+      sseResponse(
+        anthropicSse(
+          [
+            { type: 'text', text: 'first' },
+            { type: 'text', text: 'second' },
+          ],
+          'pause_turn',
+          {
+            input_tokens: 10,
+            service_tier: 'standard',
+            server_tool_use: { web_search_requests: 1 },
+          },
+        ),
+      ),
+    );
+    const res = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'hi' }] }, { Accept: 'application/json' }),
+      ENV,
+      CORS,
+    );
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.text).toBe('firstsecond');
+    expect(json.stopReason).toBe('pause_turn');
+    expect(json.usage).toEqual({
+      input_tokens: 10,
+      output_tokens: 5,
+      service_tier: 'standard',
+      server_tool_use: { web_search_requests: 1 },
+    });
+  });
+
+  it('preserves canonical media/tool-result inputs and propagates the request abort signal', async () => {
+    const fetchMock = stubFetch().mockResolvedValue(
+      sseResponse(anthropicSse([{ type: 'text', text: 'I can see it' }], 'end_turn')),
+    );
+    const request = chatRequest({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+            },
+            { type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } },
+            {
+              type: 'document',
+              source: { type: 'url', url: 'https://example.test/evidence.pdf' },
+            },
+            {
+              type: 'document',
+              source: { type: 'text', media_type: 'text/plain', data: 'evidence' },
+            },
+            {
+              type: 'document',
+              source: { type: 'content', content: 'inline evidence' },
+            },
+            {
+              type: 'document',
+              source: {
+                type: 'content',
+                content: [
+                  {
+                    type: 'image',
+                    source: { type: 'url', url: 'https://example.test/document-image.png' },
+                  },
+                ],
+              },
+            },
+            {
+              type: 'tool_result',
+              tool_use_id: 'browser_1',
+              content: [
+                { type: 'image', source: { type: 'url', url: 'https://example.test/tool.png' } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const response = await handleChat(request, ENV, CORS);
+    await readWorkerSse(response);
+
+    const call = fetchCall(fetchMock, 0);
+    expect(call.init.signal).toBe(request.signal);
+    expect(sentBody(call.init).messages?.[0]?.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } },
+      { type: 'document', source: { type: 'url', url: 'https://example.test/evidence.pdf' } },
+      {
+        type: 'document',
+        source: { type: 'text', media_type: 'text/plain', data: 'evidence' },
+      },
+      {
+        type: 'document',
+        source: { type: 'content', content: 'inline evidence' },
+      },
+      {
+        type: 'document',
+        source: {
+          type: 'content',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'url', url: 'https://example.test/document-image.png' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'browser_1',
+        is_error: false,
+        cache_control: { type: 'ephemeral' },
+        content: [{ type: 'image', source: { type: 'url', url: 'https://example.test/tool.png' } }],
+      },
+    ]);
+  });
+
+  it('emits correlated, redacted model-turn events when TRACE routes to console', async () => {
     const logSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     stubFetch().mockResolvedValue(
       sseResponse(anthropicSse([{ type: 'text', text: 'CAD is active' }], 'end_turn')),
     );
 
+    const fileReference = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_secret_nested', mediaType: 'image/png' }],
+      ['studio-data-agent'],
+      'ctx-123',
+    );
     const res = await handleChat(
-      chatRequest({ messages: [{ role: 'user', content: 'check CAD' }] }),
-      ENV,
+      chatRequest({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'check CAD' },
+              {
+                type: 'tool_result',
+                tool_use_id: 'browser_1',
+                content: [
+                  {
+                    type: 'image',
+                    source: { type: 'file', file_id: fileReference.ids[0] },
+                  },
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/png', data: 'secret-base64' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+      fileReference.env,
       CORS,
       [],
       [],
@@ -436,6 +834,8 @@ describe('handleChat — streaming', () => {
     ]);
     expect(JSON.stringify(traceEvents[0])).toContain('check CAD');
     expect(JSON.stringify(traceEvents[1])).toContain('CAD is active');
+    expect(JSON.stringify(traceEvents)).not.toContain('file_secret_nested');
+    expect(JSON.stringify(traceEvents)).not.toContain('secret-base64');
     expect(new Set(traceEvents.map((event) => event.traceId)).size).toBe(1);
   });
 
@@ -471,6 +871,7 @@ describe('handleChat — streaming', () => {
   });
 
   it('runs the tool-use loop: tool_call → Brain → tool_result → final text', async () => {
+    const traceLog = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const anthropicTurn1 = anthropicSse(
       [{ type: 'tool_use', id: 'tu_1', name: 'get_store_analytics', input: {} }],
       'tool_use',
@@ -504,6 +905,7 @@ describe('handleChat — streaming', () => {
       CORS,
       [],
       AVAILABLE_AI_TOOLS,
+      createLoggingRuntime({ ...ENV, LOG_TARGETS_TRACE: 'console' }),
     );
     const events = await readWorkerSse(res);
 
@@ -518,6 +920,13 @@ describe('handleChat — streaming', () => {
     expect(brainCallIndex).toBeGreaterThanOrEqual(0);
     const { init } = fetchCall(fetchMock, brainCallIndex);
     expect(headerOf(init, 'X-Personalizer-Context-ID')).toBe('ctx-123');
+    const traceEvents = traceLog.mock.calls
+      .filter((call) => call[0] === '[InferenceTrace]')
+      .map((call) => call[2] as Record<string, unknown>);
+    expect(traceEvents.filter((event) => event.event === 'request.forwarded')).toHaveLength(2);
+    expect(traceEvents.find((event) => event.event === 'request.forwarded')?.prompt).toBe(
+      getSystemPrompt('chat', ENV).prompt,
+    );
   });
 
   it('caps the loop at MAX_ITERATIONS when the model keeps calling tools', async () => {
@@ -638,6 +1047,300 @@ describe('handleChat — streaming', () => {
     expect(sentTools?.map((t) => t.name)).toEqual(['look_at_page']);
   });
 
+  it('round-trips opaque continuation state across browser-owned tool execution', async () => {
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        sseResponse(
+          anthropicSse(
+            [
+              { type: 'thinking', thinking: 'private', signature: 'signed-state' },
+              {
+                type: 'tool_use',
+                id: 'tu_look',
+                name: 'look_at_page',
+                input: { page: 'Home' },
+              },
+            ],
+            'tool_use',
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(
+        sseResponse(anthropicSse([{ type: 'text', text: 'Looks good' }], 'end_turn')),
+      );
+
+    const first = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'inspect Home' }] },
+        {
+          Accept: 'application/json',
+          'X-Personalizer-System-Prompt': 'onboarding-chat',
+        },
+      ),
+      ENV,
+      CORS,
+    );
+    const firstDone = (await first.json()) as {
+      continuation?: string;
+      toolCalls?: Array<{ id: string; name: string; input: unknown }>;
+    };
+    expect(firstDone.continuation).toMatch(/^continuation_v2_/);
+
+    const second = await handleChat(
+      chatRequest(
+        {
+          continuation: firstDone.continuation,
+          messages: [
+            { role: 'user', content: 'inspect Home' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'tu_look',
+                  name: 'look_at_page',
+                  input: { page: 'Home' },
+                },
+              ],
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_look',
+                  content: 'captured',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          Accept: 'application/json',
+          'X-Personalizer-System-Prompt': 'onboarding-chat',
+        },
+      ),
+      ENV,
+      CORS,
+    );
+    expect((await second.json()) as unknown).toMatchObject({ text: 'Looks good' });
+    const continued = sentBody(fetchCall(fetchMock, 1).init);
+    expect(continued.messages?.[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'private', signature: 'signed-state' },
+        {
+          type: 'tool_use',
+          id: 'tu_look',
+          name: 'look_at_page',
+          input: { page: 'Home' },
+        },
+      ],
+    });
+  });
+
+  it("answers the deployed app client's billing-assistant request exactly as sent", async () => {
+    // The Studio activation page's AppAiService posts precisely this: a plain
+    // messages array whose assistant history is string content, a context
+    // object, no continuation field, under Accept: text/event-stream.
+    const fetchMock = stubFetch().mockResolvedValue(
+      sseResponse(anthropicSse([{ type: 'text', text: 'Your trial runs 14 days.' }], 'end_turn')),
+    );
+    const response = await handleChat(
+      new Request('https://app-ai.test/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          'X-Personalizer-Context-ID': 'ctx-123',
+          'X-Personalizer-System-Prompt': 'billing-assistant',
+        },
+        body: JSON.stringify({
+          messages: [
+            { role: 'user', content: 'How is the plan priced?' },
+            { role: 'assistant', content: 'It is priced on your monthly revenue.' },
+            { role: 'user', content: 'What happens after the trial?' },
+          ],
+          context: {
+            hostPage: 'Studio subscription activation',
+            grounding: { plan: { title: 'Studio', currency: 'USD', trialDays: 14 } },
+          },
+        }),
+      }),
+      ENV,
+      CORS,
+    );
+    expect(response.headers.get('Content-Type')).toContain('text/event-stream');
+    const events = await readWorkerSse(response);
+    expect(
+      events
+        .filter((event) => event.type === 'text')
+        .map((event) => event.data.delta)
+        .join(''),
+    ).toBe('Your trial runs 14 days.');
+    const done = eventOf(events, 'done');
+    // The client reads text, stopReason and iterations off the done payload.
+    expect(done.data.text).toBe('Your trial runs 14 days.');
+    expect(done.data.stopReason).toBe('end_turn');
+    expect(typeof done.data.iterations).toBe('number');
+    expect(done.data.continuation).toBeUndefined();
+
+    const sent = sentBody(fetchCall(fetchMock, 0).init);
+    expect(fetchedUrls(fetchMock)[0]).toBe('https://api.anthropic.com/v1/messages');
+    expect(sent.model).toBe(ENV.MODEL_BALANCED);
+    // A no-tool surface: nothing is advertised and no Brain call is made.
+    expect(sent.tools).toBeUndefined();
+    expect(fetchedUrls(fetchMock).some((url) => url.includes('/v2/ai-tools/'))).toBe(false);
+    expect(sent.messages?.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(JSON.stringify(sent.system)).toContain('Studio subscription activation');
+    expect(JSON.stringify(sent.system)).toContain('trialDays');
+  });
+
+  it('round-trips a Gemini thought signature across a two-request client-tool turn', async () => {
+    // The same handler seam as the Anthropic round trip above, on a route the
+    // registry resolves to Gemini: the second request's outbound body must
+    // carry the signature the first turn sealed, or Gemini refuses the turn.
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        geminiSse([
+          geminiChunk([{ text: 'Checking.' }]),
+          geminiChunk(
+            [
+              {
+                functionCall: { id: 'fc_look', name: 'look_at_page', args: { page: 'Home' } },
+                thoughtSignature: 'sig-visual',
+              },
+            ],
+            'STOP',
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(geminiSse([geminiChunk([{ text: 'Looks good' }], 'STOP')]));
+
+    const first = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'inspect Home' }] },
+        { Accept: 'application/json', 'X-Personalizer-System-Prompt': 'onboarding-chat' },
+      ),
+      GEMINI_CHAT_ENV,
+      CORS,
+    );
+    expect(first.status).toBe(200);
+    const firstDone = (await first.json()) as {
+      continuation?: string;
+      toolCalls?: Array<{ id: string; name: string; input: unknown }>;
+    };
+    expect(firstDone.toolCalls).toEqual([
+      { id: 'fc_look', name: 'look_at_page', input: { page: 'Home' } },
+    ]);
+    expect(firstDone.continuation).toMatch(/^continuation_v2_/);
+
+    const second = await handleChat(
+      chatRequest(
+        {
+          continuation: firstDone.continuation,
+          messages: [
+            { role: 'user', content: 'inspect Home' },
+            {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: 'Checking.' },
+                {
+                  type: 'tool_use',
+                  id: 'fc_look',
+                  name: 'look_at_page',
+                  input: { page: 'Home' },
+                },
+              ],
+            },
+            {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'fc_look', content: 'captured' }],
+            },
+          ],
+        },
+        { Accept: 'application/json', 'X-Personalizer-System-Prompt': 'onboarding-chat' },
+      ),
+      GEMINI_CHAT_ENV,
+      CORS,
+    );
+    expect((await second.json()) as unknown).toMatchObject({ text: 'Looks good' });
+    const replayed = geminiContents(fetchCall(fetchMock, 1).init);
+    expect(replayed[1]).toEqual({
+      role: 'model',
+      parts: [
+        { text: 'Checking.' },
+        {
+          functionCall: { id: 'fc_look', name: 'look_at_page', args: { page: 'Home' } },
+          thoughtSignature: 'sig-visual',
+        },
+      ],
+    });
+  });
+
+  it('rejects continuation state owned by another provider before provider I/O', async () => {
+    const fetchMock = stubFetch();
+    const tenantScope = await fileTenantScope('ctx-123', ENV);
+    if (!tenantScope) throw new Error('missing test tenant');
+    const continuation = await encodeOpaqueContinuation(
+      { backend: 'openai', value: { previousResponseId: 'resp_other' } },
+      {
+        tenantScope,
+        promptGroup: 'studio-visual-agent',
+        modelProfile: 'claude-opus',
+      },
+      ENV,
+    );
+    const response = await handleChat(
+      chatRequest(
+        {
+          continuation,
+          messages: [{ role: 'user', content: 'continue' }],
+        },
+        {
+          Accept: 'application/json',
+          'X-Personalizer-System-Prompt': 'onboarding-chat',
+        },
+      ),
+      ENV,
+      CORS,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      Message: expect.stringContaining('selected prompt route'),
+      ExceptionType: 'ArgumentException',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a valid continuation replayed under another tenant or prompt group', async () => {
+    const fetchMock = stubFetch();
+    const tenantScope = await fileTenantScope('ctx-other', ENV);
+    if (!tenantScope) throw new Error('missing test tenant');
+    const continuation = await encodeOpaqueContinuation(
+      { backend: 'anthropic', value: { contentBlocks: [] } },
+      {
+        tenantScope,
+        promptGroup: 'studio-visual-agent',
+        modelProfile: 'claude-opus',
+      },
+      ENV,
+    );
+    const response = await handleChat(
+      chatRequest(
+        { continuation, messages: [{ role: 'user', content: 'continue' }] },
+        {
+          Accept: 'application/json',
+          'X-Personalizer-System-Prompt': 'onboarding-chat',
+        },
+      ),
+      ENV,
+      CORS,
+    );
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('emits a Brain-shaped error event when Anthropic fails', async () => {
     stubFetch().mockResolvedValue(new Response('nope', { status: 500 }));
     const res = await handleChat(
@@ -653,6 +1356,24 @@ describe('handleChat — streaming', () => {
     expect(err.data.ExceptionType).toBe('AnthropicApiException');
     expect(err.data.MessageDetail).toBe('nope');
     expect(err.data.message).toBeUndefined();
+  });
+
+  it('preserves the legacy public message for an Anthropic in-stream error', async () => {
+    stubFetch().mockResolvedValue(
+      sseResponse(
+        'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+      ),
+    );
+    const res = await handleChat(
+      chatRequest({ messages: [{ role: 'user', content: 'hi' }] }),
+      ENV,
+      CORS,
+    );
+    const error = eventOf(await readWorkerSse(res), 'error');
+    expect(error.data).toEqual({
+      Message: 'Anthropic stream error: busy',
+      ExceptionType: 'AnthropicApiException',
+    });
   });
 
   it('rejects an empty message list with a Brain-shaped ArgumentException error event', async () => {
@@ -696,6 +1417,44 @@ describe('handleChat — non-streaming JSON', () => {
     expect(json.ExceptionType).toBe('AnthropicApiException');
     expect(json.MessageDetail).toBe('overloaded');
     expect(json.error).toBeUndefined();
+  });
+
+  it('fails closed instead of changing prompt route when a registered binding is missing', async () => {
+    const fetchMock = stubFetch();
+    const { MODEL_FAST: _modelFast, ...missingFastModelEnv } = ENV;
+    const req = chatRequest(
+      { messages: [{ role: 'user', content: 'place this' }] },
+      {
+        Accept: 'application/json',
+        'X-Personalizer-System-Prompt': 'placement',
+      },
+    );
+    const res = await handleChat(req, missingFastModelEnv, CORS);
+    expect(res.status).toBe(500);
+    expect((await res.json()) as unknown).toMatchObject({
+      Message: expect.stringContaining('MODEL_FAST'),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a route rejected at resolution as the 500 JSON envelope', async () => {
+    const fetchMock = stubFetch();
+    const offRouteEnv: Env = { ...ENV, MODEL_OVERRIDES: 'onboarding-chat=gemini-3-pro' };
+    const res = await handleChat(
+      chatRequest(
+        { messages: [{ role: 'user', content: 'hello' }] },
+        { Accept: 'application/json', 'X-Personalizer-System-Prompt': 'onboarding-chat' },
+      ),
+      offRouteEnv,
+      CORS,
+    );
+    expect(res.status).toBe(500);
+    expect(res.headers.get('Content-Type')).toBe('application/json');
+    expect((await res.json()) as unknown).toMatchObject({
+      Message: expect.stringMatching(/onboarding-chat resolves to gemini.*incompatible/),
+      ExceptionType: 'Exception',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects a bad body with a 400 Brain-shaped ArgumentException', async () => {
@@ -838,9 +1597,17 @@ describe('handleChat — context.refs (Referenced Entities)', () => {
 
     expect(brainCalls(fetchMock, 'brain.test')).toHaveLength(0);
     const sent = anthropicBody(fetchMock);
-    expect(JSON.stringify(sent.system)).toBe(
-      JSON.stringify(buildSystem(getSystemPrompt('chat', ENV), context)),
-    );
+    const canonicalContext = buildSystem(context)[0]?.content[0];
+    expect(sent.system?.[0]).toMatchObject({
+      text: getSystemPrompt('chat', ENV).prompt,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+    expect(sent.system?.[1]).toMatchObject({
+      text:
+        canonicalContext?.type === 'text'
+          ? canonicalContext.text
+          : expect.stringContaining('Current page'),
+    });
   });
 
   it('caps intake at 5 refs — only the first five are prefetched', async () => {

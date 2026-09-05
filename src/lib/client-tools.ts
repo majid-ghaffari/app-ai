@@ -1,7 +1,7 @@
 /**
  * CLIENT-executed tool definitions (the `clientTools` capability seam).
  *
- * A CLIENT tool is a `ToolDefinition` whose execution happens in the merchant's
+ * A CLIENT tool is a `CanonicalToolDefinition` whose execution happens in the merchant's
  * BROWSER (the store iframe is the AI's hands), not in the worker. A prompt that
  * lists client tools runs the /chat loop in CLIENT-tool mode: on a `tool_use` the
  * handler returns the calls in `done.toolCalls` and STOPS — it never executes
@@ -20,7 +20,7 @@
  * module owns ONLY the wire schema the model sees.
  */
 
-import type { ToolDefinition } from './anthropic';
+import type { CanonicalClientToolDefinition } from './inference-types';
 
 /**
  * `look_at_page` — ask the browser to capture (or serve a cached) full-page
@@ -28,15 +28,16 @@ import type { ToolDefinition } from './anthropic';
  * Input: an OPTIONAL `page` name hint; omitted = the merchant's current page.
  * Executed CLIENT-side (the store iframe), never in the worker.
  */
-export const LOOK_AT_PAGE_TOOL: ToolDefinition = {
+export const LOOK_AT_PAGE_TOOL: CanonicalClientToolDefinition = {
   name: 'look_at_page',
+  execution: 'client',
   description:
     "Look at a page of the merchant's live store: capture (or serve a cached) full-page " +
     'screenshot so you can SEE what actually rendered before you answer or refine a box. ' +
     'Use it whenever you need to verify placement, styling, or how a change looks on the ' +
     'real page. `page` is an optional page-name hint (e.g. "Home", "Product", "Collection", ' +
     '"Cart"); omit it to look at the page the merchant is currently viewing.',
-  input_schema: {
+  inputSchema: {
     type: 'object',
     properties: {
       page: {

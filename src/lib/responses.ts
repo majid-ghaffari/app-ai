@@ -16,6 +16,17 @@
 /** CORS headers built by lib/cors.ts and spread onto every `Response`. */
 export type CorsHeaders = Record<string, string>;
 
+import { InferenceFailure } from '../inference/adapter';
+import { SecretConfigurationError } from '../config';
+
+/**
+ * What a merchant route says when a required secret is absent or unusable. The
+ * name of the secret and where it is set stay in the thrown error and the logs;
+ * an operator reads them from `GET /prompts`, never from a client-facing body.
+ */
+export const SECRET_CONFIGURATION_PUBLIC_MESSAGE =
+  'App AI is missing required service configuration.';
+
 /**
  * Brain's wire error envelope — mirrors `HttpError` as serialized by Brain's
  * `GlobalExceptionHandlerMiddleware` (flat PascalCase, field order
@@ -92,28 +103,6 @@ export function errorResponse(
   return jsonResponse(errorPayload(message, exceptionType, messageDetail), corsHeaders, status);
 }
 
-/** Anthropic's own error body shape (`{ error: { type, message } }`). */
-interface AnthropicErrorBody {
-  error?: { type?: string; message?: string };
-}
-
-/**
- * Build the Brain-shaped error `Response` for a non-ok Anthropic response:
- * Anthropic's status is kept, `Message` comes from Anthropic's
- * `error.message`, `ExceptionType` is `AnthropicApiException`, and the raw
- * upstream body rides in `MessageDetail`.
- */
-export function anthropicErrorResponse(
-  data: unknown,
-  status: number,
-  fallbackMessage: string,
-  corsHeaders: CorsHeaders,
-): Response {
-  const upstreamMessage = (data as AnthropicErrorBody | null)?.error?.message;
-  const message = upstreamMessage || fallbackMessage;
-  return errorResponse(message, corsHeaders, status, 'AnthropicApiException', JSON.stringify(data));
-}
-
 /**
  * The Brain-envelope fields extracted from any caught value: a `WorkerError`
  * supplies its own `ExceptionType` / `MessageDetail`; a plain `Error` supplies
@@ -122,6 +111,16 @@ export function anthropicErrorResponse(
  * (handlers/chat.ts) so both carry the identical payload.
  */
 export function errorEnvelopeFrom(error: unknown, fallbackMessage: string): BrainErrorEnvelope {
+  if (error instanceof SecretConfigurationError) {
+    return errorPayload(SECRET_CONFIGURATION_PUBLIC_MESSAGE);
+  }
+  if (error instanceof InferenceFailure) {
+    return errorPayload(
+      error.inferenceError.message || fallbackMessage,
+      inferenceExceptionType(error.inferenceError.backend),
+      error.inferenceError.detail,
+    );
+  }
   if (error instanceof WorkerError) {
     return errorPayload(error.message || fallbackMessage, error.exceptionType, error.messageDetail);
   }
@@ -146,6 +145,18 @@ export function errorResponseFrom(
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
-  const status = error instanceof WorkerError ? error.status : 500;
+  const status =
+    error instanceof WorkerError
+      ? error.status
+      : error instanceof InferenceFailure
+        ? (error.inferenceError.status ?? 500)
+        : 500;
   return jsonResponse(errorEnvelopeFrom(error, fallbackMessage), corsHeaders, status);
+}
+
+function inferenceExceptionType(backend: string): string {
+  if (backend === 'anthropic' || backend === 'claude-code') return 'AnthropicApiException';
+  if (backend === 'openai' || backend === 'codex') return 'OpenAIApiException';
+  if (backend === 'gemini') return 'GeminiApiException';
+  return 'InferenceApiException';
 }

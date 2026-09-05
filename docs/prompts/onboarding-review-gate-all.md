@@ -6,7 +6,9 @@ pages together on the registry's `fast` tier and returns compact per-page pass/f
 ## Contract
 
 - Endpoint: `POST /messages` with `X-Personalizer-System-Prompt: onboarding-review-gate-all`.
-- Model tier: `fast`; concrete model comes from `MODEL_FAST`.
+- Prompt group: `onboarding-qc-gate`, whose model profile resolves to `MODEL_FAST`. The group
+  borrows the `onboarding-visual` provider file route, so the gate and the detailed reviewer read
+  one uploaded evidence set.
 - Budget: 1536 output tokens; no tools and no effort setting.
 - Input: a DATA manifest plus at most first/middle/last current-render tiles per width and page,
   including deterministic render evidence when available.

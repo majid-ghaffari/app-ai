@@ -13,9 +13,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import packageManifest from '../package.json';
 import ciWorkflow from '../.github/workflows/ci.yml?raw';
 import deploymentDocs from '../README.md?raw';
-// @ts-expect-error — .mjs sibling has no .d.ts; the launcher's pure helpers are exercised structurally.
 import { composeWranglerArgs, resolveDevLogPath, resolveShortRev } from '../scripts/dev.mjs';
-// @ts-expect-error — .mjs sibling has no .d.ts; the pure deploy argv helper is structural.
 import * as deployLauncher from '../scripts/deploy.mjs';
 import { isAttributableBuildRevision } from '../src/build-rev';
 

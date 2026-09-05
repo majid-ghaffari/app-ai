@@ -1,12 +1,12 @@
 /**
  * The toolset layer's shared contracts (docs/TOOLSETS.md): the descriptor every
  * toolset exports, the degrade-safe execution-result shape, and the composition
- * the registry hands to handlers. The Anthropic tool-definition schema itself
- * lives with the Anthropic client types (lib/anthropic.ts → `ToolDefinition`).
+ * the registry hands to handlers. Tool definitions use the provider-neutral
+ * canonical schema; adapters own vendor serialization.
  */
 
 import type { Env } from '../config';
-import type { ToolDefinition } from '../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../lib/inference-types';
 import type { Logger } from '../lib/logger';
 import type { EntityReference } from '../lib/references';
 import type { IntegrationParty } from './integration-party';
@@ -70,7 +70,7 @@ export interface ToolExecutionContext extends ToolCallExtras {
  *                        Empty = always-active (no gate, e.g. personalizer);
  *                        otherwise the toolset is composed iff the subscriber
  *                        has one of these parties available (registry.ts).
- *   definitions        — Anthropic custom-tool schemas, stable order, frozen
+ *   definitions        — canonical server-tool schemas, stable order, frozen
  *                        model-visible contract (lib CONTRACTS.md §2).
  *   selectDefinitions  — optional per-request capability filter over the
  *                        descriptor's definitions.
@@ -82,8 +82,8 @@ export interface ToolExecutionContext extends ToolCallExtras {
 export interface ToolsetDescriptor {
   readonly name: string;
   readonly integrationParties: readonly IntegrationParty[];
-  readonly definitions: readonly ToolDefinition[];
-  selectDefinitions?(availableAiTools: readonly string[]): readonly ToolDefinition[];
+  readonly definitions: readonly CanonicalServerToolDefinition[];
+  selectDefinitions?(availableAiTools: readonly string[]): readonly CanonicalServerToolDefinition[];
   resolveCredentials(authContext: ToolAuthContext): unknown;
   execute(
     name: string,
@@ -95,6 +95,6 @@ export interface ToolsetDescriptor {
 /** The per-request tool surface `composeToolsets` returns to an endpoint. */
 export interface ToolsetComposition {
   names: string[];
-  definitions: ToolDefinition[];
+  definitions: CanonicalServerToolDefinition[];
   execute(name: string, input: unknown, extras?: ToolCallExtras): Promise<ToolExecutionResult>;
 }

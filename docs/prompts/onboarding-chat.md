@@ -12,7 +12,7 @@ The Studio UI — not this prompt — drives the onboarding steps (welcome → a
 
 ## Model
 
-The default `frontier` tier — the same agent-loop model as `chat`, resolved at deploy time via `resolveModel(env, tier)` from the `MODEL_FRONTIER` env var (see [`src/config.ts`](../../src/config.ts)). It is a deploy-time configuration choice, not a hardcoded id. `maxTokens: 4096`. No `effort` override (defaults to `high`).
+The `studio-visual-agent` group runs on the `frontier` tier, whose model resolves from `MODEL_FRONTIER` through [`src/config.ts`](../../src/config.ts). `maxTokens: 4096`. The registry entry omits effort, so the provider default applies. Its group is distinct from `chat` because browser-owned visual tool continuation is a separate capability contract.
 
 ## Tools
 

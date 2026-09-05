@@ -60,8 +60,6 @@ import {
   cacheContextFor,
   CACHE_HEADER,
   _filesStore,
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore — .mjs sibling, no .d.ts; the shapes are exercised structurally.
 } from '../scripts/dev-claude-shim.mjs';
 import {
   CACHE_FORMAT_VERSION,
@@ -73,8 +71,6 @@ import {
   normalizeRequestBody,
   readCacheEntry,
   writeCacheEntry,
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore — .mjs sibling, no .d.ts; the shapes are exercised structurally.
 } from '../scripts/dev-shim-cache.mjs';
 
 // Node's Buffer / process, reached through globalThis with minimal structural
@@ -101,6 +97,11 @@ function fakeRequest(method: string, url: string, body: string, headers: Record<
     method,
     url,
     headers,
+    aborted: false,
+    // The router subscribes to caller cancellation; nothing cancels in these cases.
+    once() {
+      return this;
+    },
     async *[Symbol.asyncIterator]() {
       yield NodeBuffer.from(body);
     },
@@ -114,7 +115,9 @@ interface CapturedResponse {
   /** Headers set BEFORE the head was written, which `writeHead` then merges. */
   preset: Record<string, string>;
   headersSent: boolean;
+  writableEnded: boolean;
   readonly body: string;
+  once(event: string, listener: () => void): CapturedResponse;
   setHeader(name: string, value: string): void;
   writeHead(status: number, headers: Record<string, string>): void;
   write(chunk: string): boolean;
@@ -128,8 +131,13 @@ function fakeResponse(): CapturedResponse {
     headers: {},
     preset: {},
     headersSent: false,
+    writableEnded: false,
     get body() {
       return chunks.join('');
+    },
+    // The router subscribes to a closed connection; these cases end normally.
+    once() {
+      return this;
     },
     setHeader(name, value) {
       this.preset[name] = value;
@@ -148,6 +156,7 @@ function fakeResponse(): CapturedResponse {
     },
     end(chunk) {
       if (chunk !== undefined) chunks.push(String(chunk));
+      this.writableEnded = true;
     },
   };
 }
@@ -267,7 +276,7 @@ describe('shim cache: non-stream record → replay', () => {
       transport: 'messages',
     });
     const entry = readCacheEntry(CACHE_DIRECTORY, key, 'messages');
-    expect(entry, 'the miss wrote an entry').toBeTruthy();
+    if (!entry) throw new Error('the miss wrote no cache entry to read back');
     expect(entry.transport).toBe('messages');
     expect(entry.model).toBe('claude-opus-4-8');
     expect(entry.label).toBe('what is my conversion rate?');
@@ -690,6 +699,19 @@ describe('shim cache: what the shim itself feeds the key derivation', () => {
     };
   }
 
+  /** These cases run with the cache enabled, so a null context is a defect, not a skip. */
+  function cacheKeyFor(
+    body: Readonly<Record<string, unknown>>,
+    contextId: string,
+    transport: string,
+  ): string {
+    const context = cacheContextFor(body, contextId, transport);
+    if (!context) {
+      throw new Error('the shim cache must be enabled for this case, but it resolved no context');
+    }
+    return context.key;
+  }
+
   it('returns no context at all once the cache is opted out of', () => {
     nodeProcess.env.SHIM_CACHE = '0';
     expect(cacheContextFor(messagesBody('anything'), '', 'messages')).toBeNull();
@@ -697,17 +719,17 @@ describe('shim cache: what the shim itself feeds the key derivation', () => {
 
   it('fills in the shim default model when the request omits one', () => {
     const withoutModel = { max_tokens: 256, messages: [{ role: 'user', content: 'hello' }] };
-    const defaulted = cacheContextFor(withoutModel, '', 'messages').key;
+    const defaulted = cacheKeyFor(withoutModel, '', 'messages');
 
     // Same body, same default: same key.
-    expect(cacheContextFor(withoutModel, '', 'messages').key).toBe(defaulted);
+    expect(cacheKeyFor(withoutModel, '', 'messages')).toBe(defaulted);
     // A request that names a model other than the default keys differently, so
     // the default can never be silently served for an explicit choice.
     expect(
-      cacheContextFor({ ...withoutModel, model: 'not-the-shim-default-model' }, '', 'messages').key,
+      cacheKeyFor({ ...withoutModel, model: 'not-the-shim-default-model' }, '', 'messages'),
     ).not.toBe(defaulted);
     // The context-ID the router resolved is part of the key.
-    expect(cacheContextFor(withoutModel, 'ctx-9', 'messages').key).not.toBe(defaulted);
+    expect(cacheKeyFor(withoutModel, 'ctx-9', 'messages')).not.toBe(defaulted);
   });
 
   it('resolves uploaded file bytes out of the shim Files store under the strict rule', () => {
@@ -724,9 +746,9 @@ describe('shim cache: what the shim itself feeds the key derivation', () => {
     stored('file_dev_second', 'BBBB');
     stored('file_dev_third', 'AAAA');
     try {
-      const first = cacheContextFor(uploadedImageBody('file_dev_first'), '', 'messages').key;
-      const second = cacheContextFor(uploadedImageBody('file_dev_second'), '', 'messages').key;
-      const third = cacheContextFor(uploadedImageBody('file_dev_third'), '', 'messages').key;
+      const first = cacheKeyFor(uploadedImageBody('file_dev_first'), '', 'messages');
+      const second = cacheKeyFor(uploadedImageBody('file_dev_second'), '', 'messages');
+      const third = cacheKeyFor(uploadedImageBody('file_dev_third'), '', 'messages');
       expect(second, 'different bytes are a different question').not.toBe(first);
       expect(third, 'the same bytes under a re-minted id are the same question').toBe(first);
     } finally {

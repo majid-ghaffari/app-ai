@@ -27,7 +27,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
 import type { Logger, LoggingRuntime } from '../src/lib/logger';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -143,7 +151,13 @@ describe('POST /messages — onboarding-review-all routing', () => {
 
   it('injects the onboarding-review-all system block + defaults the model to the `balanced` tier', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      ['file_home_desktop', 'file_home_mobile', 'file_product_desktop', 'file_product_mobile'].map(
+        (upstreamFileId) => ({ upstreamFileId, mediaType: 'image/png' }),
+      ),
+      ['onboarding-visual'],
+    );
 
     await handleMessages(
       // Body WITHOUT `model` — the transport omits it so the registry is authoritative
@@ -156,10 +170,10 @@ describe('POST /messages — onboarding-review-all routing', () => {
               role: 'user',
               content: [
                 // Every page's after-render tiles (desktop + mobile), concatenated.
-                { type: 'image', source: { type: 'file', file_id: 'home_desktop' } },
-                { type: 'image', source: { type: 'file', file_id: 'home_mobile' } },
-                { type: 'image', source: { type: 'file', file_id: 'product_desktop' } },
-                { type: 'image', source: { type: 'file', file_id: 'product_mobile' } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[1] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[2] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[3] } },
                 {
                   type: 'text',
                   text:
@@ -173,7 +187,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
         },
         'onboarding-review-all',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -232,17 +246,18 @@ describe('POST /messages — onboarding-review-all routing', () => {
       runBackground: (_scope, _operation, task) => void task,
     };
     stubFetch().mockResolvedValue(
-      jsonOk({
-        model: 'registry-owned-model',
-        stop_reason: 'max_tokens',
-        usage: {
-          input_tokens: 120,
-          output_tokens: 64,
-          cache_creation_input_tokens: 10,
-          cache_read_input_tokens: 90,
-        },
-        content: [{ type: 'text', text: 'SENSITIVE MODEL EVIDENCE' }],
-      }),
+      jsonOk(
+        anthropicMessage([{ type: 'text', text: 'SENSITIVE MODEL EVIDENCE' }], {
+          model: 'registry-owned-model',
+          stop_reason: 'max_tokens',
+          usage: {
+            input_tokens: 120,
+            output_tokens: 64,
+            cache_creation_input_tokens: 10,
+            cache_read_input_tokens: 90,
+          },
+        }),
+      ),
     );
 
     await handleMessages(
@@ -272,7 +287,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
         model: ENV.MODEL_BALANCED,
         maxTokens: 8192,
         effort: 'low',
-        stopReason: 'max_tokens',
+        stopReason: 'max-output-tokens',
         usage: {
           inputTokens: 120,
           outputTokens: 64,
@@ -322,7 +337,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
         },
       },
     });
-    stubFetch().mockResolvedValue(jsonOk({ content: [{ type: 'text', text: verdict }] }));
+    stubFetch().mockResolvedValue(jsonOk(anthropicMessage([{ type: 'text', text: verdict }])));
 
     const res = await handleMessages(
       messagesRequest(

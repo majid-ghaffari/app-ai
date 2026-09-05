@@ -19,6 +19,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { composeToolsets } from '../src/toolsets/registry';
 import { personalizerToolset } from '../src/toolsets/personalizer/index';
 import { silentLogger } from '../src/lib/logger';
+import { serializeToolDefinitions } from '../src/inference/adapters/anthropic-wire';
 import type { EntityReference } from '../src/lib/references';
 import { AVAILABLE_AI_TOOLS, ENV, stubFetch, fetchCall, headerOf } from './helpers';
 
@@ -282,8 +283,8 @@ describe('frozen model-visible tool contract', () => {
       AUTH,
       AVAILABLE_AI_TOOLS,
     );
-    await expect(JSON.stringify(definitions, null, 2)).toMatchFileSnapshot(
-      './__snapshots__/tool-definitions.contract.json',
-    );
+    await expect(
+      JSON.stringify(serializeToolDefinitions(definitions), null, 2),
+    ).toMatchFileSnapshot('./__snapshots__/tool-definitions.contract.json');
   });
 });

@@ -16,7 +16,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName, PROBE_PREFIX, PROBE_SCHEMAS } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -183,7 +191,7 @@ describe('POST /messages — probe-cart-wiring + probe-style routing', () => {
       ['probe-style', /style probe/i],
     ] as const) {
       const fetchMock = stubFetch();
-      fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+      fetchMock.mockResolvedValue(jsonOk(anthropicMessage()));
 
       await handleMessages(
         // Body WITHOUT `model` — the probe transport omits it so the registry is
@@ -220,7 +228,14 @@ describe('POST /messages — probe-industry routing', () => {
 
   it('injects the industry probe system block for the probe-industry header', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
+    const files = await opaqueFileEnv(
+      [
+        { upstreamFileId: 'file_html_1', mediaType: 'text/plain' },
+        { upstreamFileId: 'file_shot_1', mediaType: 'image/png' },
+      ],
+      ['website-industry'],
+    );
 
     await handleMessages(
       messagesRequest(
@@ -231,15 +246,15 @@ describe('POST /messages — probe-industry routing', () => {
             {
               role: 'user',
               content: [
-                { type: 'document', source: { type: 'file', file_id: 'html_1' } },
-                { type: 'image', source: { type: 'file', file_id: 'shot_1' } },
+                { type: 'document', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[1] } },
               ],
             },
           ],
         },
         'probe-industry',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -266,7 +281,7 @@ describe('POST /messages — probe-industry routing', () => {
 
   it('defaults `model` to the registry entry (the `frontier` tier) when the body omits it', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+    fetchMock.mockResolvedValue(jsonOk(anthropicMessage()));
 
     await handleMessages(
       // Body WITHOUT `model` — the probe transport omits it so the server's
@@ -285,13 +300,11 @@ describe('POST /messages — probe-industry routing', () => {
     expect(sent.model).toBe(ENV.MODEL_FRONTIER);
   });
 
-  it('preserves a caller-supplied `model` (image-selection is unaffected)', async () => {
+  it('overrides a caller-supplied model with the registered prompt route', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+    fetchMock.mockResolvedValue(jsonOk(anthropicMessage()));
 
     await handleMessages(
-      // A caller that sends its own model (e.g. image-selection sends Haiku)
-      // OWNS it — the registry-model default must not override it.
       messagesRequest(
         { model: 'claude-haiku-4-5', max_tokens: 1, messages: [{ role: 'user', content: 'go' }] },
         'probe-industry',
@@ -303,7 +316,7 @@ describe('POST /messages — probe-industry routing', () => {
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     const messagesCallIndex = urls.findIndex((url) => url.endsWith('/v1/messages'));
     const sent = sentBody(fetchCall(fetchMock, messagesCallIndex).init);
-    expect(sent.model).toBe('claude-haiku-4-5');
+    expect(sent.model).toBe(ENV.MODEL_FRONTIER);
   });
 
   it('returns the Anthropic envelope with the assistant JSON text unchanged', async () => {
@@ -312,7 +325,9 @@ describe('POST /messages — probe-industry routing', () => {
       confidence: 0.9,
       findings: ['Navigation lists Men, Women, Accessories.'],
     });
-    stubFetch().mockResolvedValue(jsonOk({ content: [{ type: 'text', text: assistantText }] }));
+    stubFetch().mockResolvedValue(
+      jsonOk(anthropicMessage([{ type: 'text', text: assistantText }])),
+    );
 
     const res = await handleMessages(
       messagesRequest(
@@ -467,7 +482,11 @@ describe('POST /messages — probe-currency routing (no tools, balanced default)
 
   it('injects the probe system block, defaults the model, and sends no tools', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      [{ upstreamFileId: 'file_shot_prices', mediaType: 'image/png' }],
+      ['onboarding-visual'],
+    );
 
     await handleMessages(
       messagesRequest({
@@ -478,7 +497,7 @@ describe('POST /messages — probe-currency routing (no tools, balanced default)
           {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'file', file_id: 'shot_prices' } },
+              { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
               {
                 type: 'text',
                 text: JSON.stringify({
@@ -508,7 +527,7 @@ describe('POST /messages — probe-currency routing (no tools, balanced default)
           },
         ],
       }),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -527,7 +546,7 @@ describe('POST /messages — probe-currency routing (no tools, balanced default)
       confidence: 0.92,
       reasoning: 'Product cards show $1,299.00 — matches this candidate.',
     });
-    stubFetch().mockResolvedValue(jsonOk({ content: [{ type: 'text', text: pick }] }));
+    stubFetch().mockResolvedValue(jsonOk(anthropicMessage([{ type: 'text', text: pick }])));
 
     const res = await handleMessages(
       messagesRequest({ max_tokens: 1, messages: [{ role: 'user', content: 'go' }] }),

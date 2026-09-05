@@ -2,12 +2,10 @@
 
 **Parent:** [app-ai/CLAUDE.md](../../CLAUDE.md)
 
-Shared library modules consumed by the handlers and the router. The Anthropic API
-key is read only inside `anthropic.ts` (via `claudeApiKey(env)` from
-`../config.ts` — the single typed-Env binding reader) and never leaves the
-worker. `anthropic.ts` also owns the shared Anthropic Messages wire types
-(content blocks, payloads, `CacheControl`) consumed across handlers and the
-cache modules.
+Shared provider-neutral modules consumed by handlers, the router, toolsets, and
+the inference runtime. `inference-types.ts` owns the canonical contracts;
+provider HTTP, credentials, wire types, and serialization live only under
+`../inference/adapters/`.
 
 `auth.ts` mirrors the consumed members of Brain's validate-context-id response,
 including `AiToolsContractVersion`, `AvailableAiTools`, and
@@ -22,5 +20,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Every exported function and type carries a doc comment (TSDoc; types are in the signatures).
 - Cache/effort/dedup levers are **additive** — they never change external
   request/response shapes (see the token-saving section in the root CLAUDE.md).
-- Beta flags live only in `anthropic.ts`: Files calls send `files-api-2025-04-14`;
-  Messages calls send `prompt-caching-2024-07-31,files-api-2025-04-14`.
+- Provider wire fields, beta flags, authentication, and HTTP calls live only in
+  `../inference/adapters/`; shared lib must not import provider modules.
+- `logger.ts` sanitizes every string on its way into a record — opaque provider
+  handles and the value of any credential-bearing query parameter — so a URL
+  quoted in a message, detail, or stack cannot carry a credential into a sink.
+- Continuation values stay opaque. An adapter may set `requiredOnNextTurn` when
+  its state must be echoed after an ordinary terminal assistant turn; handlers
+  only seal/carry the value and never interpret the provider payload.

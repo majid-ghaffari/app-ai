@@ -2,7 +2,7 @@
  * Toolset registry — composes the active toolsets for one request.
  *
  * A TOOLSET is a named module under `src/toolsets/<name>/` that encapsulates
- * every AI tool sharing one backend: its Anthropic tool definitions, its
+ * every AI tool sharing one backend: its canonical tool definitions, its
  * dispatch/executors, its result normalizers, and its degrade conventions.
  * The descriptor contract (name / integrationParties / definitions /
  * resolveCredentials / execute) lives in ./types.ts; the standards in
@@ -51,7 +51,7 @@ import { bigcommerceToolset } from './bigcommerce/index';
 import { klaviyoToolset } from './klaviyo/index';
 import { googleAdsToolset } from './google-ads/index';
 import { silentLogger, type Logger } from '../lib/logger';
-import type { ToolDefinition } from '../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../lib/inference-types';
 import type { IntegrationParty } from './integration-party';
 import type {
   ToolAuthContext,
@@ -72,7 +72,7 @@ const TOOLSETS: readonly ToolsetDescriptor[] = [
 /** One active toolset in a composition + the subscriber party its executor targets. */
 interface ActiveToolset {
   descriptor: ToolsetDescriptor;
-  definitions: readonly ToolDefinition[];
+  definitions: readonly CanonicalServerToolDefinition[];
   /** The single matched party, or null for an always-active (ungated) toolset. */
   matchedParty: IntegrationParty | null;
 }

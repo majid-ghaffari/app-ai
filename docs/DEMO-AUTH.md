@@ -146,7 +146,7 @@ A demo session can call only:
   session-owned Files API references.
 
 Inference remains proposal-only: review is an accepted upload destination but
-not an allowed `/messages` selector. The demo path cannot list/delete files, call `/chat`, select another prompt,
+not an allowed `/messages` selector. The demo path cannot delete files, call `/chat`, select another prompt,
 send inline base64 files, provide tools, choose a model, raise output effort, or
 fetch Brain defaults. `messages.ts` keeps the validated evidence message and
 forces the registry's prompt, model, output budget, and effort.

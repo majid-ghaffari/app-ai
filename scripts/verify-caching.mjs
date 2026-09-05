@@ -115,10 +115,17 @@ async function chat(target, contextId, promptName, body) {
   return parsed;
 }
 
-/** Upload bytes to /files and return the file_id. */
-async function uploadFile(target, contextId, bytes, mimeType, filename) {
+/**
+ * Upload bytes to /files for the named destination prompts and return the
+ * opaque reference minted for the FIRST of them. The worker names every
+ * destination by registered prompt (one `file` part plus repeated `prompt`
+ * parts) and answers with a `references` map keyed by prompt, so the reference
+ * is read from that map rather than from a bare top-level id.
+ */
+async function uploadFile(target, contextId, bytes, mimeType, filename, prompts) {
   const form = new FormData();
   form.append('file', new Blob([bytes], { type: mimeType }), filename);
+  for (const prompt of prompts) form.append('prompt', prompt);
   const response = await fetch(`${target}/files`, {
     method: 'POST',
     headers: { 'X-Personalizer-Context-ID': contextId },
@@ -130,10 +137,13 @@ async function uploadFile(target, contextId, bytes, mimeType, filename) {
     throw new Error(`POST /files → HTTP ${response.status}: ${text.slice(0, 400)}`);
   }
   const parsed = JSON.parse(text);
-  if (!parsed.id) {
-    throw new Error(`POST /files returned no file_id: ${text.slice(0, 200)}`);
+  const reference = parsed.references?.[prompts[0]]?.id;
+  if (typeof reference !== 'string' || reference.length === 0) {
+    throw new Error(
+      `POST /files returned no reference for ${prompts[0]} in references: ${text.slice(0, 200)}`,
+    );
   }
-  return parsed.id;
+  return reference;
 }
 
 const cacheRead = (usage) => (usage && usage.cache_read_input_tokens) || 0;
@@ -196,6 +206,7 @@ async function main() {
     new TextEncoder().encode(buildHtmlFixture()),
     'text/plain',
     'caching-check.html',
+    ['placement'],
   );
   console.log(`  uploaded fixture → ${fileId}`);
   const placementBody = {

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import type { ContextValidation } from '../src/lib/auth';
 import {
+  anthropicMessageStart,
   ENV,
   fetchCall,
   fetchedUrls,
@@ -273,7 +274,9 @@ function sseResponse(blocks: SseBlockSpec[], stopReason: string): Response {
   const lines: string[] = [];
   const push = (type: string, data: Record<string, unknown>) =>
     lines.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-  push('message_start', { message: { usage: { input_tokens: 10 } } });
+  lines.push(
+    `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart({ input_tokens: 10 }))}\n\n`,
+  );
   blocks.forEach((block, index) => {
     if (block.type === 'text') {
       push('content_block_start', { index, content_block: { type: 'text' } });

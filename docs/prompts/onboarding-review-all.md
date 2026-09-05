@@ -72,7 +72,7 @@ The lib parses this reply with `brain/batch-output.ts::sanitizeMultiPageReviewRe
 
 ### Adaptive recovery
 
-`reviewAllPages` calls `onboarding-review-all` once at low effort. It retries the same schema at medium effort with a lean payload when coverage, parsing, truncation, uncertainty, or invariants require recovery, then uses bounded two-page chunks only for pages still missing. Verdicts replace by page key, so retries never append duplicate corrections. `advanced-css-required` pages enter `onboarding-css-review`; common-path visual actions are discarded.
+`reviewAllPages` calls `onboarding-review-all` once at low effort. It retries the same schema at medium effort with a lean payload when coverage, parsing, truncation, uncertainty, or invariants require recovery, then uses bounded two-page chunks only for pages still missing. Verdicts replace by page key, so retries never append duplicate corrections. `advanced-css-required` pages enter `onboarding-css-review`; common-path visual actions are discarded. Every recovery shape keeps the `onboarding-review-all` prompt contract and reuses the uploaded references already minted on the `onboarding-visual` file route.
 
 ### Request/response contract (frozen)
 

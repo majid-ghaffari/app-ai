@@ -3,21 +3,43 @@
 **Parent:** [../CLAUDE.md](../CLAUDE.md)
 
 The worker has four required offline test layers in the default `vitest run`
-set. An optional live integration diagnostic can measure deployed prompt-cache
-behavior when an operator explicitly chooses to run it.
+set. Optional live diagnostics can measure deployed prompt caching or explicitly
+exercise paid OpenAI or Gemini candidate models when an operator chooses to run
+them.
 
 ## Layers
 
-| Layer                    | Files                                                                                                                                                               | Network       | Catches                                                                                                                                                                                                                     |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                     | `test/token-saving.test.ts` (pure-fn cases)                                                                                                                         | Mocked        | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                                            |
-| Integration (handler)    | `test/chat.test.ts`, `test/ai-tool-capabilities.test.ts`, `test/proxy.test.ts`, `test/demo-auth.test.ts`, `test/toolsets.test.ts`, `test/platform-toolsets.test.ts` | Mocked        | Handler wiring: agent loop, capability gating, sanitized Brain failures, demo exchange/scope/concurrent Durable Object ownership/quotas, prompt selection, dedup KV, toolset composition and integration-bridge wire shapes |
-| Contract                 | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts`                                                     | Mocked        | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                                         |
-| Fitness (architecture)   | `test/architecture.test.ts`, `test/config.test.ts`, `test/logger.test.ts`                                                                                           | Static/mocked | Invariant erosion: an endpoint bypassing toolset composition, secrets reaching logs/model context, direct Worker console calls, malformed log routes, a bespoke error envelope, hardcoded config, production `[vars]` drift |
-| Token-savings diagnostic | `scripts/verify-caching.mjs`                                                                                                                                        | LIVE          | Prompt caching silently failing to engage against the deployed worker                                                                                                                                                       |
+| Layer                    | Files                                                                                                                                                               | Network       | Catches                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                     | `test/token-saving.test.ts` (pure-fn cases)                                                                                                                         | Mocked        | Logic bugs in lib functions: `sha256Hex`, breakpoint placement, `supportsEffort`                                                                                                                                                                                                                                                                                                |
+| Adapter/runtime          | `test/anthropic-adapter.test.ts`, `test/openai-adapter.test.ts`, `test/gemini-adapter.test.ts`, `test/continuation.test.ts`                                         | Mocked        | Canonical↔Anthropic media/tools/cache/effort/service-tier/structured-output mapping, including strict custom and provider-hosted tools; path-aware continuation cache cleanup; complete/stream/malformed-envelope/error/timeout/cancellation normalization; modern usage/reasoning fields; file lifecycle; server/client tool behavior                                          |
+| Integration (handler)    | `test/chat.test.ts`, `test/ai-tool-capabilities.test.ts`, `test/proxy.test.ts`, `test/demo-auth.test.ts`, `test/toolsets.test.ts`, `test/platform-toolsets.test.ts` | Mocked        | Handler wiring: agent loop, capability gating, prompt-aware routed uploads, sanitized Brain failures, demo exchange/scope/concurrent Durable Object ownership/quotas, prompt selection, dedup KV, toolset composition and integration-bridge wire shapes                                                                                                                        |
+| Contract                 | the SSE/tool-shape assertions in `test/chat.test.ts` + the tool-definitions snapshot in `test/toolsets.test.ts`                                                     | Mocked        | Drift between the worker's wire shapes and lib `ai/CONTRACTS.md` (§1 SSE, §2 tools)                                                                                                                                                                                                                                                                                             |
+| Fitness (architecture)   | `test/architecture.test.ts`, `test/config.test.ts`, `test/logger.test.ts`, `test/prompt-groups.test.ts`                                                             | Static/mocked | Invariant erosion: prompt/group/profile/file-policy drift, destination validation before upload, incompatible fallback reuse, provider authority leaking into callers, an endpoint bypassing toolset composition, secrets reaching logs/model context, direct Worker console calls, malformed log routes, a bespoke error envelope, hardcoded config, production `[vars]` drift |
+| Token-savings diagnostic | `scripts/verify-caching.mjs`                                                                                                                                        | LIVE          | Prompt caching silently failing to engage against the deployed worker                                                                                                                                                                                                                                                                                                           |
+| OpenAI candidate smoke   | `scripts/verify-openai.mjs`                                                                                                                                         | LIVE, PAID    | Explicit candidate models rejecting the current Responses structured/reasoning contract                                                                                                                                                                                                                                                                                         |
+| Gemini probe matrix      | `scripts/verify-gemini.mjs`                                                                                                                                         | LIVE, PAID    | The documented Gemini unknowns: whether the catalog serves the configured smoke model, structured-output shape, SSE framing and terminal sentinel, error envelope, single-shot upload protocol, snake_case media aliases, the thinking control and what it spends of the shared output budget, and the mandatory thought signature on a function call                           |
 
 The unit / integration / contract layers mock `fetch` and `env` — no real
 network, no credentials. They run on every push and PR (`.github/workflows/ci.yml`).
+
+## OpenAI Responses adapter coverage inventory
+
+Every executable OpenAI seam is paired with deterministic offline coverage:
+
+| Changed seam                                                                                                      | Direct coverage                                                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Responses request/media/cache/tool/structured/reasoning translation and strict complete/SSE lifecycle             | `test/openai-adapter.test.ts`                                                            |
+| Stored-response continuation, public AES-GCM sealing, route ownership, tamper/expiry, large and over-limit states | `test/openai-adapter.test.ts`, `test/continuation.test.ts`, `test/chat.test.ts`          |
+| OpenAI Files transport, account scoping, success-envelope validation, MIME-preserving dedup                       | `test/openai-adapter.test.ts`, `test/token-saving.test.ts`                               |
+| Adapter factory selection and dormant-route capability/policy fitness                                             | `test/openai-adapter.test.ts`, `test/prompt-groups.test.ts`, `test/architecture.test.ts` |
+| Existing `/messages` compatibility serialization for canonical non-Anthropic results                              | `test/openai-adapter.test.ts`                                                            |
+| OpenAI config/secrets, production non-secret vars, dependency-free/provider-boundary rules                        | `test/config.test.ts`, `test/architecture.test.ts`, TypeScript typecheck                 |
+| Paid smoke double opt-in, required config, multi-model request, structured result, usage validation               | `test/openai-live-guard.test.ts`                                                         |
+
+Declaration shims added for executable scripts contain no runtime behavior and are
+covered by the repository typecheck plus the architecture ban on TypeScript
+suppression directives. No live provider credit is required by this inventory.
 
 ## Test-layer doctrine
 
@@ -26,13 +48,17 @@ Pick the lowest layer that captures the bug:
 1. **Unit first** — is it a pure function (a hash, a breakpoint calc, a model
    capability check)? Add a case to the relevant `describe` in
    `test/token-saving.test.ts`. Fastest, no handler plumbing.
-2. **Integration next** — does it involve a handler driving the Anthropic client
+2. **Adapter/runtime next** — does it translate canonical content, streams,
+   tools, continuation, usage, errors, cancellation, or files? Add a deterministic
+   fixture to the owning provider suite (`test/anthropic-adapter.test.ts`,
+   `test/openai-adapter.test.ts`, or `test/gemini-adapter.test.ts`).
+3. **Integration next** — does it involve a handler driving the inference service
    or Personalizer dispatch (the agent loop, SSE framing, demo authorization,
    attachment injection,
    cache-control distribution)? Add to `test/chat.test.ts` (the `/chat` agent
    loop) or `test/proxy.test.ts` (the `/files` + `/messages` + auth/CORS surface).
    Mock `fetch` to return the Anthropic SSE / JSON the case needs.
-3. **Contract** — does the bug involve an SSE event name, a tool definition, or a
+4. **Contract** — does the bug involve an SSE event name, a tool definition, or a
    request/response field that must agree with the lib client? Assert the wire
    shape against `packages/storefront/src/admin/ai/CONTRACTS.md` (§1 SSE protocol,
    §2 tool definitions) — the worker is the server side of that frozen contract.
@@ -40,12 +66,12 @@ Pick the lowest layer that captures the bug:
    file snapshot in `test/toolsets.test.ts`
    (`test/__snapshots__/tool-definitions.contract.json`) — regenerating it is a
    deliberate contract change.
-4. **Fitness** — is the bug a violated standing invariant (a rule from
+5. **Fitness** — is the bug a violated standing invariant (a rule from
    CODE-PATTERNS.md / TOOLSETS.md rather than a behavior)? Extend the static
    scans in `test/architecture.test.ts` (or the config/production-value pins in
    `test/config.test.ts`) so the whole CLASS of regression is caught, not the
    one instance.
-5. **Optional token-savings diagnostic** — if investigating real Anthropic
+6. **Optional token-savings diagnostic** — if investigating real Anthropic
    caching behavior, use the live diagnostic below. This is useful operational
    evidence, not part of the release gate set.
 
@@ -53,6 +79,12 @@ Pick the lowest layer that captures the bug:
 
 One entry per spec file — the map, read on demand. It names what a spec asserts, never the assertions themselves; the spec is the source of truth for those.
 
+- `test/anthropic-adapter.test.ts` — the canonical↔Anthropic adapter: media/tool/cache/effort/service-tier/structured-output mapping, strict complete and streaming envelope validation, path-aware continuation cache cleanup, normalized failures for malformed envelopes/timeouts/cancellations, modern usage and reasoning fields, and the provider file lifecycle.
+- `test/openai-adapter.test.ts` + `test/openai-live-guard.test.ts` — the dormant OpenAI Responses candidate: dependency-free Responses/Files translation, strict complete/SSE validation, multimodal/structured/reasoning/tool/continuation/usage/error fixtures, and the offline guard that keeps the paid smoke matrix behind its explicit opt-ins.
+- `test/gemini-adapter.test.ts` — the dormant Gemini `generateContent` candidate: the documented request contract and `x-goog-api-key` header, stable-prefix emission ahead of the volatile conversation tail, canonical system messages joined into `systemInstruction`, the shared thinking/answer budget split, rejection of every undocumented canonical control before provider I/O, camelCase `inlineData` and full `fileData` uris with undocumented media and foreign references refused, response translation (visible text, dropped thought parts, usage, a `functionCall` as a tool-call stop whatever `finishReason` says, a function call missing its thought signature, a thinking-starved or otherwise empty terminal turn, a prompt-level block as a content filter), sentinel-free streaming that completes on a clean close and fails on a truncated or in-band error frame, part-level thought-signature replay across the client-tool round trip and server-executed iterations, sealed capped tool results, fail-closed lost/foreign/mismatched continuation state, the two-call resumable Files upload with its `PROCESSING` poll and fail-closed endpoint/uri checks, stable non-secret account scope on read/delete, the `countTokens` wrapper, normalized cancellation/transport/invalid-JSON failures, and selection only through the provider-neutral factory.
+- `test/gemini-live-guard.test.ts` — the offline guard on the paid Gemini probe matrix (`scripts/verify-gemini.mjs`): both explicit opt-ins required, a missing precondition throwing before any provider call, every documented unknown recorded and asserted against the shipped contract, a thinking-starved turn reported as its own outcome rather than a contract failure, a broken required probe failing loudly, an aliased smoke model accepted as the numbered snapshot it resolves to, and every generating probe budgeting thinking alongside its answer.
+- `test/continuation.test.ts` — the authenticated encrypted continuation transport: tenant/prompt-group/model-profile binding, expiry, and tamper rejection before any adapter state is recovered.
+- `test/prompt-groups.test.ts` — the registry's group contracts: the approved prompt inventory and group map, group→tier→configured-model→provider and file-policy resolution, capability fitness, the file-reusing fallback edges and the shared provider file route behind the QC cascade, orphan validation, dormant candidate-route rejection, and the frozen prompt-aware `/files` fixture (`test/__snapshots__/prompt-aware-files.contract.json`).
 - `test/chat.test.ts` — the `/chat` agent loop, SSE protocol, tool-use loop, MAX_ITERATIONS, placement no-tools path, non-streaming JSON, prompt selection, `get_entity_context` dispatch through the registry composition (record → per-record Personalizer routes/header + normalized result, analytics → refs, error degrade), and the `context.refs` handler flow (prefetch-per-ref, uncached final block, no-refs byte-identical system, 5-ref cap + one shared subscriber lookup, failure degrade, refs threaded into the loop).
 - `test/ai-tool-capabilities.test.ts` — the real Worker `/chat` route through context validation, Anthropic tool-use, registry dispatch, and the mocked Brain boundary: contract-version fail-closed behavior, exact-name definition filtering, zero-call execution for unadvertised tools, required response-member validation, and raw Brain error bodies remaining operationally logged but absent from model-visible tool results.
 - `test/toolsets.test.ts` — `src/toolsets/registry.ts`: composition (stable definition order, no-parties case, a party no toolset declares, per-request independence), party gating (a tool outside the composition degrades with zero backend calls), the credential seam (contextId resolved per composition and forwarded as the Personalizer header, never in the model-visible definitions, per-call `refs` extras), and the FROZEN model-visible tool contract (byte-for-byte file snapshot of the composed definitions, `test/__snapshots__/tool-definitions.contract.json`). It also drives `personalizerToolset.execute` directly, past the registry's owners map, to cover that toolset's OWN capability guard: an unadvertised name degrades with zero Brain calls, an advertised one reaches its `/v2/ai-tools/*` route, and `get_entity_context` stays available under an empty capability set.
@@ -64,13 +96,16 @@ One entry per spec file — the map, read on demand. It names what a spec assert
 - `test/demo-audit-status.test.ts` — exact callback JSON, timestamp and HMAC header contract plus retryable delivery failure.
 - `test/probes.test.ts` — the Website-Analysis probe mechanism: the registry resolves `probe-industry` (text/metadata/model), resolves the Sonnet probes `probe-cart-wiring` + `probe-style` on the `balanced` tier (≠ the default `frontier` tier, `usesTools: false`, no attachments) with their selector/style-descriptor prompt contracts, the `probe-<id>` convention (`PROBE_PREFIX` / `isProbeName`) + the `PROBE_SCHEMAS` index ↔ registry coherence, `/messages` routing the `probe-industry` / `probe-cart-wiring` / `probe-style` headers (system block injected, no attachments, model defaulted to the registry entry, caller blocks pass through), and the frozen `{ industry, confidence, findings }` output contract (schema/parse checks: well-formed, `Unknown`/empty-findings sink, rejects missing keys / out-of-range confidence / non-string findings).
 - `test/proposals.test.ts` — the TOOL-CAPABLE per-store SETUP PROPOSALS prompt: the registry resolves `proposals` on the `balanced` tier (Sonnet, ≠ the default `frontier` tier) + `usesTools: true`, the prompt reasons over page evidence (screenshots + cleaned HTML) AND instructs the model to pull real store data via the personalizer tools (AOV-derived progress-bar threshold), and `POST /chat` with the `proposals` header sends the personalizer tool surface + the page-evidence file blocks and drives the tool loop (tool_call → Brain `v2/ai-tools` → tool_result → final JSON proposal).
-- `test/config.test.ts` — `src/config.ts`: the no-fallback contract (every accessor throws on a missing/empty variable, naming it and where to set it), the `resolveModel(env, tier)` tier→model mapping (each tier → its bound var, throws named when absent), and the PRODUCTION `[vars]` pins, which the spec reads out of `wrangler.toml` itself rather than restating: the Personalizer and Anthropic origins, the three tier→model bindings, the credentialed-origin allowlist, and the absence of any secret in that file.
-- `test/architecture.test.ts` — fitness scans over `src/` + `scripts/` enforcing the standing invariants: party- and AI-capability-driven toolset composition, the exact version-1 router gate, credentials never in logs or the model-visible system builder, degraded tool results structurally unable to carry raw bodies, one error shape (no bespoke `{ error: { message } }` envelopes), and No Hardcoded Config Values (no absolute URL literals in src or scripts, no inline `||`/`??` fallbacks on `env`/`process.env` reads, required worker vars read only through `src/config.ts`). The dev Claude-Code shim (`scripts/dev-claude-shim.mjs`) is carved out of the no-URL-literal scan only — it is standalone local tooling with overridable dev-default endpoints, outside the worker's fail-fast config contract (never bundled); it still passes the env-fallback scan (it reads config via `envOr(name, fallback)` bracket access, not inline `||`/`??`).
+- `test/config.test.ts` — `src/config.ts`: the no-fallback contract (every accessor throws on a missing/empty variable, naming it and where to set it), the `resolveModel(env, tier)` tier→model mapping (each tier → its bound var, throws named when absent), the PRODUCTION `[vars]` pins, which the spec reads out of `wrangler.toml` itself rather than restating (the Personalizer and provider origins, the three tier→model bindings, the empty `MODEL_OVERRIDES`, the master subscriber, the credentialed-origin allowlist), and the reconciliation between the two configuration files and the typed `Env`: every declared binding is documented in `.dev.vars.example`, every declared secret is blank there, and no declared secret appears in `[vars]` — all three derived from `src/config.ts` rather than retyped, so a new binding or secret cannot slip past them.
+- `test/model-catalog.test.ts` — `src/inference/model-catalog.ts` and the configured-model routing over it: the catalog's own consistency contract (unique prefixes and profiles, each family on a file policy its provider and API family own), family-prefix matching so an unreleased version inherits its family, provider inference for non-Anthropic ids, capabilities stated as model facts, the unrecognised-id throw naming the id and the supplying variable, a tier routed to another provider from configuration alone, the capability-mismatch rejection naming the group and the missing capability, and `MODEL_OVERRIDES` (empty by default, group and prompt precedence, unknown-key throw listing the valid keys, malformed and repeated entries, and the rejection of an override that would move one prompt off its shared provider file route).
+- `test/prompts-route.test.ts` — `GET /prompts` driven through the real router: the master subscriber receives every registered prompt's resolved route, a validated non-master merchant and a validation payload without a `SubscriberID` receive the unknown-route answer byte for byte, a missing context-ID is refused before any Personalizer call, an unroutable prompt is reported with its reason rather than throwing, blank required secrets are named without leaking a value or prefix, and `/health` stays unauthenticated with its exact shape. The `personalizerContextId` query parameter is covered on the same path: the master context-ID is accepted from the URL, the header wins when a request carries both, a non-master URL credential gets the unknown-route answer byte for byte, no other route or method reads the parameter, and a request carrying the credential in the URL produces no log record containing it.
+- `test/architecture.test.ts` — fitness scans over `src/` + `scripts/` enforcing the standing invariants: party- and AI-capability-driven toolset composition, the exact version-1 router gate, credentials never in logs or the model-visible system builder, degraded tool results structurally unable to carry raw bodies, one error shape (no bespoke `{ error: { message } }` envelopes), query-string credentials confined to the master-gated `GET /prompts` diagnostics (one module naming the parameter, one guarded router call, no other `searchParams` read, and the logger sanitizer every logged string passes through), and No Hardcoded Config Values (no absolute URL literals in src or scripts, no inline `||`/`??` fallbacks on `env`/`process.env` reads, required worker vars read only through `src/config.ts`). The dev Claude-Code shim (`scripts/dev-claude-shim.mjs`) is carved out of the no-URL-literal scan only — it is standalone local tooling with overridable dev-default endpoints, outside the worker's fail-fast config contract (never bundled); it still passes the env-fallback scan (it reads config via `envOr(name, fallback)` bracket access, not inline `||`/`??`).
 - `test/dev-shim.test.ts` — the free dev Claude-Code channel (`scripts/dev-claude-shim.mjs`): the pure Anthropic⇄Claude-Code translation layer (`systemToString`, `rehydrateBlock` file→inline base64 image/document + tool_result flatten + unknown-file degrade, `normalizeContent`, `buildPromptMessages` user turn + assistant-history preamble, `estimateTokens` char/4, `bareToolName` mcp-prefix strip, `stripCodeFence`, `usageFrom`, `extractFilePart` multipart), plus the **cred-burn GUARD** (`assertDevAiChannel`: throws when a dev/test run points `ANTHROPIC_API_BASE` at `api.anthropic.com` without `AI_CHANNEL=prod`; allows the local shim; opt-in with `AI_CHANNEL=prod`) and a check that `.dev.vars.example` ships the free-shim default.
 - `test/dev-shim-cache.test.ts` — the shim's record/replay response cache (`scripts/dev-shim-cache.mjs`). The request path is driven through the shim's REAL router (`handleHttp`) with the Claude Code SDK mocked, because record/replay is only true end to end: a miss reaches the fulfiller and writes an entry, the repeat reproduces the same bytes without reaching it again (the mock's call count is the proof a hit costs no model time), a changed prompt records its own entry instead of reusing the neighbour, the SSE path replays the frame SEQUENCE event by event, a stream recording is never served to a non-stream request, `SHIM_CACHE` is an opt-OUT (on unless a falsy spelling turns it off), and the `cache HIT` / `cache MISS` / `cache RECORD` log lines are asserted verbatim. The loudness that pays for that default is covered as its own concern: every served response carries `x-dev-shim-cache: hit|miss|off` on both transports (a replay is byte-identical to the fresh answer EXCEPT for that marker, which the replay test pins), and `GET /health` reports the cache state plus hit/miss/record counts that advance per call. The key derivation is covered directly: everything that can change the answer changes the key (model, context-ID, transport, prompt, system block, token budget, tool schema, tool-result CONTENT, and adding or removing an attachment), while the values minted fresh per run do not — a per-upload `file_id`, `tool_use` ids with their LINKAGE still counted, and whether two attachment positions came from one deduped upload or two, which is the run-to-run difference that kept the onboarding whole-store call from matching its own recording. The documented limitation is pinned in both directions: differing image bytes share a key by default and stop sharing it under `SHIM_CACHE_ATTACHMENT_BYTES=1`.
-- `test/dev-inference-trace.test.ts` + `test/logger.test.ts` — correlated inference events, complete diagnostic text/tool/file decisions, per-level multi-sink routing, context/error detail, secret-field redaction, optional Seq authentication, fail-open delivery, and background rejection capture.
+- `test/dev-local-fulfillers.test.ts` — the Claude Code/Codex local fulfiller boundary (`scripts/dev-local-fulfillers.mjs`): Claude Code by default and Codex by explicit selection, loopback provider endpoints without the paid opt-in, the API-key opt-in with an allowlisted child environment, the ephemeral read-only explicit-model/image/schema `codex exec` invocation, the bounded transcript and final JSONL usage normalization, one structured visual turn through an injected process with temp-artifact cleanup, both fulfillers dispatched through one canonical local result contract and serialized into the exact shim response envelope, malformed-result rejection before serialization, child termination on cancellation and no spawn for an already-cancelled request, normalized successful/nonzero/spawn-error/stdin-error outcomes, artifact removal on failure, and rejection of a missing model, streaming, and tools before spawn.
+- `test/dev-inference-trace.test.ts` + `test/logger.test.ts` — correlated inference events, complete diagnostic text/tool/file decisions, per-level multi-sink routing, context/error detail, secret-field and URL-credential redaction, optional Seq authentication, fail-open delivery, and background rejection capture.
 - `test/helpers.ts` — shared typed fixtures: the complete `Env` fixture, fetch-mock accessors, the worker-SSE parser, and the KV mock.
-- `test/token-saving.test.ts` — the cost-reduction levers: 1h-TTL placement (system/context/kept user blocks), `applyConversationBreakpoints` (last-block, ~15-block intervals, cap + `reservedHeadBlocks`, stale-strip), `file-dedup` (sha256Hex vector, KV hit + stale-id verify/re-upload + miss + no-op, 30d TTL), `fileIds` document/image block typing + 1h file-prefix breakpoint + ≤4-breakpoint-with-file-prefix invariant, `countTokens` body/header, model+effort routing, and an end-to-end agent-loop breakpoint-count ≤4 assertion.
+- `test/token-saving.test.ts` — the cost-reduction levers: 1h-TTL placement (system/context/kept user blocks), `applyCanonicalConversationBreakpoints` (`inference/cache.ts` — last-block, ~15-block intervals, cap, stale-strip, only the last extended file-prefix intent kept), `file-dedup` (sha256Hex vector, KV hit + stale-id verify/re-upload + miss + no-op, 30d TTL), `fileIds` document/image block typing + 1h file-prefix breakpoint + ≤4-breakpoint-with-file-prefix invariant, `countTokens` body/header, model+effort routing, and an end-to-end agent-loop breakpoint-count ≤4 assertion.
 
 ## No silent skips
 
@@ -96,14 +131,87 @@ npm run format-check    # Prettier check (whole repo; exclusions + rationale in 
 npm run deploy:dry-run  # build the revision-stamped bundle (verifies imports + the .md Text rule)
 ```
 
-## Local AI dev channel + cred-burn guard
+## Local AI dev channels + cred-burn guard
 
-Local dev fulfils Anthropic inference through **Claude Code**, not the paid API, so dev never burns credits (see the root `CLAUDE.md` → "Local AI dev — the free Claude-Code channel"). Two pieces are covered offline in `test/dev-shim.test.ts`, and the shim's record/replay response cache in `test/dev-shim-cache.test.ts` (above):
+Local dev fulfils inference through the local shim, with **Claude Code** as the
+default and Codex as an explicit one-shot option (see the root `CLAUDE.md` →
+"Local AI dev — provider-neutral Claude Code/Codex fulfillers"), so dev never
+burns credits. Four pieces are covered offline:
 
 - **Translation layer** — the pure Anthropic⇄Claude-Code mapping helpers exported by `scripts/dev-claude-shim.mjs` (system/message/file-block translation, token estimate, code-fence strip, multipart parse, usage mapping). These are the risk surface: the shim's HTTP behavior is only correct if these map the wire shapes the worker's `chat.ts` / `messages.ts` parsers expect.
 - **Cred-burn GUARD** (`assertDevAiChannel`) — FAILS a dev/test config that points `ANTHROPIC_API_BASE` at `api.anthropic.com` without an explicit `AI_CHANNEL=prod` opt-in, and asserts `.dev.vars.example` ships the free-shim default (`http://127.0.0.1:8788`). This makes accidental credit-burn impossible: plain `wrangler dev` uses the free shim, and the paid API requires saying so out loud.
 
+- **Record/replay response cache** — `test/dev-shim-cache.test.ts` drives the shim's REAL router (`handleHttp`) so a recorded fulfilment is replayed byte-identically on both transports, an opted-out cache records and replays nothing, every served response carries its `x-dev-shim-cache` outcome, and `GET /health` reports the running counters.
+- **Local fulfiller selection** — `test/dev-local-fulfillers.test.ts` freezes the Claude Code/Codex boundary described below.
+
 Importing the shim for these tests is side-effect free — the HTTP server only binds its port when the file is run directly (`npm run dev:shim`), never on import.
+
+`test/dev-local-fulfillers.test.ts` freezes the selectable Claude Code/Codex
+boundary and exact Anthropic-compatible result envelope. Codex coverage asserts
+an explicit model and reasoning effort,
+ephemeral/read-only execution, zero-byte inherited AGENTS/project instructions,
+image and output-schema arguments, JSONL usage,
+request-abort child termination, temp-file cleanup, and rejection of unsupported
+streaming, tools, media, and structured-output shapes before spawn.
+It also freezes the exact secret-minimized child environment, ChatGPT-vs-API
+authentication mode, API-key opt-in, shell/web/plugin/subagent/app-connector/dependency-install disablement, strict
+terminal JSONL usage (including cached input), delayed SIGTERM/SIGKILL lifecycle,
+process failures, and the real shim non-stream/error/stream-rejection handlers.
+The worker config suite proves every non-loopback Anthropic, OpenAI, and Gemini
+origin requires `AI_CHANNEL=prod` outside production.
+
+## Optional paid OpenAI smoke matrix
+
+`npm run verify:openai` calls the configured OpenAI Responses endpoint directly
+for every comma-separated `OPENAI_SMOKE_MODELS` candidate. It requests a strict
+structured result with low reasoning effort, verifies the response served the
+requested model — accepting the dated or numbered snapshot an alias resolves to,
+and reporting which one served — parses the schema-conformant `{ ok: true }`
+result, validates terminal usage, and records latency.
+It is outside CI and the default gates. The script refuses to make any call
+unless both credit acknowledgements are present:
+
+```bash
+OPENAI_LIVE_SMOKE=1 \
+AI_CHANNEL=prod \
+OPENAI_API_BASE=https://api.openai.com \
+OPENAI_API_KEY=<paid-key> \
+OPENAI_SMOKE_MODELS=<candidate-model-1>,<candidate-model-2> \
+  npm run verify:openai
+```
+
+`test/openai-live-guard.test.ts` proves the two-key guard and multi-model
+matrix offline. Running the smoke does not authorize production prompt routing;
+prompt-level evaluations and a separate registry change remain required.
+
+## Optional paid Gemini probe matrix
+
+`npm run verify:gemini` calls the configured Gemini `generateContent` endpoint
+for the single `GEMINI_SMOKE_MODEL` candidate. It closes the seams the official
+pages leave open or contradict: the structured-output request shape, SSE framing
+and the absent terminal sentinel, the error envelope's `code`/`status` spelling,
+single-shot multipart upload, snake_case media aliases, `countTokens` wrapping,
+`x-goog-api-key` authentication, and the authoritative `GET /models` id and
+context-window list. That catalog probe runs FIRST and fails by name when the
+configured model is not served for `generateContent`, so a well-formed id that
+does not exist costs no inference; an id the catalog publishes only as a dated or
+numbered snapshot resolves. `maxOutputTokens` covers thinking and the answer
+together, so every probe budgets both, and a turn that still spends the whole
+budget on thoughts is reported as the `starved` outcome rather than as a contract
+failure. It is outside CI/default gates and requires both explicit credit
+acknowledgements:
+
+```bash
+GEMINI_LIVE_SMOKE=1 \
+AI_CHANNEL=prod \
+GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta \
+GEMINI_API_KEY=<paid-key> \
+GEMINI_SMOKE_MODEL=gemini-3.5-flash \
+  npm run verify:gemini
+```
+
+`test/gemini-live-guard.test.ts` proves the guard and probe selection offline.
+Running it neither activates a production route nor authorizes deployment.
 
 ## Optional token-savings diagnostic
 

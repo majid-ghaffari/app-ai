@@ -18,7 +18,6 @@ import {
 export type BackgroundTaskScheduler = (task: Promise<unknown>) => void;
 
 export interface LogContext extends Record<string, unknown> {
-  contextId?: string | null;
   subscriberId?: number;
   requestId?: string;
   route?: string;
@@ -138,7 +137,7 @@ export function createLoggingRuntime(
         timestamp: new Date().toISOString(),
         level,
         scope,
-        message,
+        message: sanitizeLogText(message),
         context: sanitizeContext(context),
         ...(details === undefined ? {} : { details: toLogValue(details) }),
         ...(exception === undefined ? {} : { exception: toLogValue(exception) }),
@@ -182,10 +181,10 @@ export function toLogValue(
   propertyName?: string,
 ): unknown {
   if (propertyName && isSecretProperty(propertyName)) return '[REDACTED]';
+  if (propertyName && isOpaqueInferenceProperty(propertyName)) return '[REDACTED]';
   if (value === null || value === undefined) return value;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
+  if (typeof value === 'string') return sanitizeLogText(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'function' || typeof value === 'symbol') return String(value);
   if (value instanceof Error) {
@@ -193,8 +192,8 @@ export function toLogValue(
     seen.add(value);
     const record: Record<string, unknown> = {
       name: value.name,
-      message: value.message,
-      stack: value.stack,
+      message: sanitizeLogText(value.message),
+      stack: value.stack ? sanitizeLogText(value.stack) : value.stack,
     };
     if ('cause' in value && value.cause !== undefined) {
       record.cause = toLogValue(value.cause, seen, 'cause');
@@ -212,14 +211,49 @@ export function toLogValue(
   if (typeof value === 'object') {
     if (seen.has(value)) return '[Circular]';
     seen.add(value);
+    const source = value as Record<string, unknown>;
+    if (source.type === 'base64') {
+      return Object.fromEntries(
+        Object.entries(source)
+          .filter(([key]) => key !== 'data')
+          .map(([key, entry]) => [key, toLogValue(entry, seen, key)]),
+      );
+    }
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-        key,
-        toLogValue(entry, seen, key),
-      ]),
+      Object.entries(source).map(([key, entry]) => [key, toLogValue(entry, seen, key)]),
     );
   }
   return String(value);
+}
+
+/** Opaque inference handles and provider state never enter an operational sink. */
+function isOpaqueInferenceProperty(propertyName: string): boolean {
+  const compact = propertyName.replaceAll('-', '').replaceAll('_', '').toLowerCase();
+  return ['fileid', 'upstreamfileid', 'continuation', 'providerstate'].includes(compact);
+}
+
+function redactOpaqueFileIds(value: string): string {
+  return value.replace(/\bfile[-_][A-Za-z0-9_-]{6,}\b/g, '[opaque-file]');
+}
+
+/**
+ * Strip the value of every credential-bearing query parameter. A context-ID may
+ * travel in a URL (the master-gated `GET /prompts` diagnostics), and a URL
+ * reaches a sink through any message, detail, or error stack that happens to
+ * quote it — so the credential is removed on the way into the sink rather than
+ * on the assumption that nothing quotes a URL.
+ */
+function redactCredentialQueryParameters(value: string): string {
+  return value.replace(
+    /([?&])([A-Za-z0-9_.-]+)=[^&\s"'<>]*/g,
+    (match, separator: string, parameter: string) =>
+      isSecretProperty(parameter) ? `${separator}${parameter}=[REDACTED]` : match,
+  );
+}
+
+/** Every string entering a sink passes here: opaque handles and URL credentials out. */
+function sanitizeLogText(value: string): string {
+  return redactCredentialQueryParameters(redactOpaqueFileIds(value));
 }
 
 function sanitizeContext(context: LogContext): LogContext {
@@ -228,7 +262,7 @@ function sanitizeContext(context: LogContext): LogContext {
   );
 }
 
-/** Redact credential-bearing fields while retaining operational ids such as contextId. */
+/** Redact credential-bearing fields, including the Personalizer context credential. */
 function isSecretProperty(propertyName: string): boolean {
   const normalized = propertyName.replaceAll('-', '_').toLowerCase();
   const compact = normalized.replaceAll('_', '');
@@ -242,6 +276,7 @@ function isSecretProperty(propertyName: string): boolean {
     normalized.endsWith('_secret') ||
     compact === 'token' ||
     compact.endsWith('token') ||
+    compact.endsWith('contextid') ||
     compact === 'apikey' ||
     compact.endsWith('apikey') ||
     normalized === 'x_api_key' ||

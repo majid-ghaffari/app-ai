@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe('environment-routed logger', () => {
-  it('fans one record to console and Seq and preserves request context', async () => {
+  it('fans one record to console and Seq with redacted credential context', async () => {
     const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -33,7 +33,7 @@ describe('environment-routed logger', () => {
       Scope: 'Messages',
       Message: 'Forwarded',
       requestId: 'request-9',
-      contextId: 'context-9',
+      contextId: '[REDACTED]',
       subscriberId: 42,
       Detail: { model: 'sonnet' },
     });
@@ -64,22 +64,63 @@ describe('environment-routed logger', () => {
     });
   });
 
-  it('keeps rich errors and context ids while redacting actual secret fields', () => {
+  it('keeps rich errors while redacting credentials and opaque inference data', () => {
     const cause = new Error('database unavailable');
-    const error = new Error('provider failed', { cause });
-    Object.assign(error, { status: 502, apiKey: 'secret', contextId: 'ctx-visible' });
+    const error = new Error('provider rejected file_secret_failure', { cause });
+    Object.assign(error, {
+      status: 502,
+      apiKey: 'secret',
+      contextId: 'ctx-visible',
+      inferenceError: {
+        detail: 'upstream mentioned file_secret_detail',
+        providerState: { responseId: 'response-secret' },
+      },
+    });
     expect(toLogValue(error)).toMatchObject({
       name: 'Error',
-      message: 'provider failed',
+      message: 'provider rejected [opaque-file]',
       stack: expect.any(String),
       cause: { message: 'database unavailable', stack: expect.any(String) },
       status: 502,
       apiKey: '[REDACTED]',
-      contextId: 'ctx-visible',
+      contextId: '[REDACTED]',
+      inferenceError: {
+        detail: 'upstream mentioned [opaque-file]',
+        providerState: '[REDACTED]',
+      },
     });
     expect(
-      toLogValue({ authorization: 'Bearer x', password: 'p', fileId: 'file-visible' }),
-    ).toEqual({ authorization: '[REDACTED]', password: '[REDACTED]', fileId: 'file-visible' });
+      toLogValue({
+        authorization: 'Bearer x',
+        password: 'p',
+        fileId: 'file-visible',
+        screenshot: { type: 'base64', media_type: 'image/png', data: 'encoded-secret' },
+      }),
+    ).toEqual({
+      authorization: '[REDACTED]',
+      password: '[REDACTED]',
+      fileId: '[REDACTED]',
+      screenshot: { type: 'base64', media_type: 'image/png' },
+    });
+  });
+
+  it('redacts a credential carried in a URL query string, in text and in stacks', () => {
+    const requested = 'https://app-ai.test/prompts?personalizerContextId=ctx-master&verbose=1';
+    expect(
+      toLogValue({
+        requested,
+        upstream: 'https://brain.test/v1/subscriberSegment?guid=1234&apiKey=leaked',
+        failure: new Error(`GET ${requested} failed`),
+      }),
+    ).toMatchObject({
+      // The credential goes; an ordinary parameter beside it stays readable.
+      requested: 'https://app-ai.test/prompts?personalizerContextId=[REDACTED]&verbose=1',
+      upstream: 'https://brain.test/v1/subscriberSegment?guid=1234&apiKey=[REDACTED]',
+      failure: {
+        message:
+          'GET https://app-ai.test/prompts?personalizerContextId=[REDACTED]&verbose=1 failed',
+      },
+    });
   });
 
   it('redacts secret fields in request context before sink delivery', async () => {
@@ -97,8 +138,16 @@ describe('environment-routed logger', () => {
       string,
       unknown
     >;
-    expect(body.contextId).toBe('ctx-visible');
+    expect(body.contextId).toBe('[REDACTED]');
     expect(body.serviceToken).toBe('[REDACTED]');
+  });
+
+  it('redacts opaque file handles in the top-level log message', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    createLoggingRuntime({ ...ENV, LOG_TARGETS_INFO: 'console' })
+      .logger('Files')
+      .info('Upload file_secret_message completed');
+    expect(info).toHaveBeenCalledWith('[Files]', 'Upload [opaque-file] completed');
   });
 
   it('routes production error/fatal only to Seq without Worker console output', async () => {

@@ -4,7 +4,15 @@ import worker from '../src/index';
 import { DemoSessionAuthority } from '../src/lib/demo-session-authority';
 import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
 import type { Env } from '../src/config';
-import { ENV, stubFetch, fetchedUrls, fetchCall, sentBody } from './helpers';
+import {
+  anthropicFileRecord,
+  anthropicMessage,
+  ENV,
+  stubFetch,
+  fetchedUrls,
+  fetchCall,
+  sentBody,
+} from './helpers';
 
 const STORE_ORIGIN = 'https://lsdev.myshopline.com';
 
@@ -466,6 +474,18 @@ describe('demo session authorization', () => {
     );
     expect(list.status).toBe(403);
 
+    // The demo scope is POST /files + POST /messages and nothing else, so the
+    // master-only routing diagnostics are refused at the scope check — the
+    // handler, and the master comparison inside it, are never reached.
+    const diagnostics = await worker.fetch(
+      new Request('https://app-ai.test/prompts', {
+        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+      }),
+      env,
+    );
+    expect(diagnostics.status).toBe(403);
+    expect(await diagnostics.json()).toMatchObject({ ExceptionType: 'DemoScopeException' });
+
     const wrongPrompt = await worker.fetch(
       new Request('https://app-ai.test/messages', {
         method: 'POST',
@@ -532,12 +552,12 @@ describe('demo session authorization', () => {
       if (url.endsWith('/v1/files')) {
         uploadSequence += 1;
         await Promise.resolve();
-        return new Response(JSON.stringify({ id: `file-${uploadSequence}` }), {
+        return new Response(JSON.stringify(anthropicFileRecord(`file-${uploadSequence}`)), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -568,7 +588,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(
       async () =>
-        new Response(JSON.stringify({ id: crypto.randomUUID() }), {
+        new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -596,19 +616,19 @@ describe('demo session authorization', () => {
       const url = String(input);
       if (url === ENV.DEMO_AUDIT_STATUS_URL) return new Response(null, { status: 204 });
       if (url.endsWith('/v1/files')) {
-        return new Response(JSON.stringify({ id: 'file-owned' }), {
+        return new Response(JSON.stringify(anthropicFileRecord('file-owned')), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     });
-    expect((await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env)).status).toBe(
-      200,
-    );
+    const owned = await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env);
+    expect(owned.status).toBe(200);
+    const ownedReference = ((await owned.json()) as { id: string }).id;
 
     const foreign = await worker.fetch(messageRequest(session.accessToken, ['file-foreign']), env);
     expect(foreign.status).toBe(403);
@@ -630,13 +650,86 @@ describe('demo session authorization', () => {
     );
     expect(inline.status).toBe(403);
 
-    const allowed = await worker.fetch(messageRequest(session.accessToken, ['file-owned']), env);
+    const allowed = await worker.fetch(messageRequest(session.accessToken, [ownedReference]), env);
     expect(allowed.status).toBe(200);
     const messageCall = fetchedUrls(fetchMock).findIndex((url) => url.endsWith('/v1/messages'));
     const forwarded = sentBody(fetchCall(fetchMock, messageCall).init);
     expect(forwarded.model).toBe(ENV.MODEL_BALANCED);
     expect(forwarded.tools).toBeUndefined();
     expect(forwarded.output_config).toEqual({ effort: 'medium' });
+  });
+
+  it('seals demo uploads into a session namespace no merchant or other session can open', async () => {
+    // The router keys a demo session's file tenant scope off the session
+    // identifier, so a demo upload lives in a namespace of its own: it carries
+    // no context-ID, and a merchant tenant is not the tenant that made it.
+    const env = durableEnv();
+    const session = await exchange(env);
+    const otherSession = await exchange(env);
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) return new Response(null, { status: 204 });
+      if (url.includes('/v2/administrator-authentication/validate-context-id')) {
+        return new Response(JSON.stringify({ SubscriberID: 42, SubscriberTitle: 'Store' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord('file-demo-owned')), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const uploaded = await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env);
+    expect(uploaded.status).toBe(200);
+    const demoReference = ((await uploaded.json()) as { id: string }).id;
+
+    const merchant = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Personalizer-Context-ID': 'ctx-merchant',
+          'X-Personalizer-System-Prompt': 'onboarding-batch-all',
+          'X-Personalizer-Ruleset-Version': ONBOARDING_RULESET_VERSION,
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'image', source: { type: 'file', file_id: demoReference } }],
+            },
+          ],
+        }),
+      }),
+      env,
+    );
+    expect(merchant.status).toBe(403);
+    expect((await merchant.json()) as unknown).toMatchObject({
+      Message: 'File reference does not belong to this tenant',
+      ExceptionType: 'UnauthorizedAccessException',
+    });
+
+    // A second demo session is a second namespace, so the reference is not
+    // reachable from it either.
+    const foreignSession = await worker.fetch(
+      messageRequest(otherSession.accessToken, [demoReference]),
+      env,
+    );
+    expect(foreignSession.status).toBe(403);
+
+    // The owning session still runs, so the refusals are the tenant boundary
+    // rather than a reference that never worked.
+    expect(
+      (await worker.fetch(messageRequest(session.accessToken, [demoReference]), env)).status,
+    ).toBe(200);
   });
 
   it('atomically enforces upload quotas and releases reservations after upstream failure', async () => {
@@ -651,7 +744,7 @@ describe('demo session authorization', () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: 'file-retry' }), {
+        new Response(JSON.stringify(anthropicFileRecord('file-retry')), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -673,7 +766,7 @@ describe('demo session authorization', () => {
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock.mockRejectedValueOnce(new Error('network socket closed')).mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: 'file-after-throw' }), {
+      new Response(JSON.stringify(anthropicFileRecord('file-after-throw')), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -684,6 +777,69 @@ describe('demo session authorization', () => {
     const retried = await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env);
     expect(retried.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases an inference reservation when the tenant sealing key is rejected before dispatch', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    // The same authority namespace, served by a worker whose sealing key is absent.
+    const { TOKEN_ENCRYPTION_SECRET: _absent, ...missingSecretEnv } = env;
+    const callbacks: Array<Record<string, unknown>> = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+        callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const failed = await worker.fetch(messageRequest(session.accessToken, []), missingSecretEnv);
+    expect(failed.status).toBe(500);
+    expect((await failed.json()) as unknown).toMatchObject({ ExceptionType: 'Exception' });
+    expect(fetchedUrls(fetchMock).filter((url) => url.endsWith('/v1/messages'))).toEqual([]);
+    // The reservation the authorization took is released, so the attempt is
+    // reported failed and the next inference after the key is configured is
+    // served instead of answering 409 until the session expires.
+    expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
+      ['started', 1],
+      ['failed', 1],
+    ]);
+    const retried = await worker.fetch(messageRequest(session.accessToken, []), env);
+    expect(retried.status).toBe(200);
+    expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('releases an upload reservation when the tenant sealing key is rejected before dispatch', async () => {
+    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const session = await exchange(env);
+    const { TOKEN_ENCRYPTION_SECRET: _absent, ...missingSecretEnv } = env;
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(anthropicFileRecord('file-after-key')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const failed = await worker.fetch(
+      uploadRequest(session.accessToken, 'no-key.webp'),
+      missingSecretEnv,
+    );
+    expect(failed.status).toBe(500);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const retried = await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env);
+    expect(retried.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('allows exactly two successful public proposal attempts and reports ordered completion status', async () => {
@@ -707,29 +863,29 @@ describe('demo session authorization', () => {
         return new Response(null, { status: 204 });
       }
       if (url.endsWith('/v1/files')) {
-        return new Response(JSON.stringify({ id: 'file-attempts' }), {
+        return new Response(JSON.stringify(anthropicFileRecord('file-attempts')), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     });
 
-    expect(
-      (await worker.fetch(uploadRequest(session.accessToken, 'attempts.webp'), env)).status,
-    ).toBe(200);
-    expect(
-      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
-    ).toBe(200);
-    expect(
-      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
-    ).toBe(200);
-    expect(
-      (await worker.fetch(messageRequest(session.accessToken, ['file-attempts']), env)).status,
-    ).toBe(429);
+    const uploaded = await worker.fetch(uploadRequest(session.accessToken, 'attempts.webp'), env);
+    expect(uploaded.status).toBe(200);
+    const reference = ((await uploaded.json()) as { id: string }).id;
+    expect((await worker.fetch(messageRequest(session.accessToken, [reference]), env)).status).toBe(
+      200,
+    );
+    expect((await worker.fetch(messageRequest(session.accessToken, [reference]), env)).status).toBe(
+      200,
+    );
+    expect((await worker.fetch(messageRequest(session.accessToken, [reference]), env)).status).toBe(
+      429,
+    );
 
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
@@ -753,7 +909,7 @@ describe('demo session authorization', () => {
         return new Response(null, { status: 204 });
       }
       if (url.endsWith('/v1/files')) {
-        return new Response(JSON.stringify({ id: 'file-retry' }), {
+        return new Response(JSON.stringify(anthropicFileRecord('file-retry')), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -765,20 +921,20 @@ describe('demo session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     });
 
-    expect((await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env)).status).toBe(
-      200,
-    );
+    const retryUpload = await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env);
+    expect(retryUpload.status).toBe(200);
+    const retryReference = ((await retryUpload.json()) as { id: string }).id;
     expect(
-      (await worker.fetch(messageRequest(session.accessToken, ['file-retry']), env)).status,
+      (await worker.fetch(messageRequest(session.accessToken, [retryReference]), env)).status,
     ).toBe(503);
     expect(
-      (await worker.fetch(messageRequest(session.accessToken, ['file-retry']), env)).status,
+      (await worker.fetch(messageRequest(session.accessToken, [retryReference]), env)).status,
     ).toBe(200);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
@@ -810,7 +966,7 @@ describe('demo session authorization', () => {
         callbackBodies.push(String(init?.body));
         return new Response(null, { status: callbackAvailable ? 204 : 503 });
       }
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), {
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

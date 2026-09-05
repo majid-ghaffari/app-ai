@@ -45,6 +45,19 @@ export interface ContextValidation {
 }
 
 /**
+ * The answer a request carrying no context-ID gets — Brain's exact analog. It is
+ * also what the router answers a `GET /prompts` whose only credential arrived in
+ * the URL and did not authenticate as the master, so that form of the route
+ * stays indistinguishable from a path that reads no credential from a URL.
+ */
+export function missingContextIdError(): WorkerError {
+  return new WorkerError('Missing Context ID.', {
+    status: 401,
+    exceptionType: 'MissingContextIDException',
+  });
+}
+
+/**
  * Validate a context-ID against Personalizer. Resolves with Personalizer's validation
  * payload on success; throws a `WorkerError` when the context-ID is missing or
  * Personalizer rejects it.
@@ -55,10 +68,7 @@ export async function validateContextId(
   log: Logger = silentLogger,
 ): Promise<ContextValidation> {
   if (!contextId) {
-    throw new WorkerError('Missing Context ID.', {
-      status: 401,
-      exceptionType: 'MissingContextIDException',
-    });
+    throw missingContextIdError();
   }
 
   const validateUrl = `${personalizerApiUrl(env)}/v2/administrator-authentication/validate-context-id`;

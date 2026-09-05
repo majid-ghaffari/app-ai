@@ -29,20 +29,21 @@
 import { fetchEntityContext } from './entity-context';
 import { refCategoryPath, type EntityReference } from '../../lib/references';
 import { personalizerApiUrl, type Env } from '../../config';
-import type { ToolDefinition } from '../../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../../lib/inference-types';
 import type { Logger } from '../../lib/logger';
 import type { ToolExecutionResult, ToolsetDescriptor } from '../types';
 
 /**
- * Anthropic tool definitions (sent in the `tools` array). Kept deterministic
+ * Canonical server-tool definitions. Kept deterministic
  * (stable order, no per-request data) so the prompt prefix caches well.
  */
-const TOOL_DEFINITIONS: ToolDefinition[] = [
+const TOOL_DEFINITIONS: CanonicalServerToolDefinition[] = [
   {
     name: 'get_store_analytics',
+    execution: 'server',
     description:
       "Get the merchant's store performance over a date window: order count, total revenue, average order value (AOV), and conversion rate. Call this when the merchant asks about sales, revenue, AOV, or when you need the AOV to recommend a progress-bar threshold.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         fromDate: {
@@ -58,9 +59,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'list_segments',
+    execution: 'server',
     description:
       "List the merchant's existing audience segments and their status. Call this before recommending which segments to activate so you don't suggest ones that already exist or are already active.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         status: {
@@ -77,9 +79,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'list_campaigns',
+    execution: 'server',
     description:
       "List the merchant's existing campaigns (discount, progress bar, HTML, image) and their status. Call this before recommending a new campaign so you reflect what's already set up.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         kind: {
@@ -96,18 +99,20 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'get_store_config',
+    execution: 'server',
     description:
       "Get the merchant's store configuration: platform, industry, currency, and the recommendation-box types currently configured per page. Call this to understand the store's setup and industry before tailoring recommendations.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {},
     },
   },
   {
     name: 'get_entity_context',
+    execution: 'server',
     description:
       'Fetch full detail for a referenced entity by type and id. Use it for deeper detail on a referenced campaign, segment, progress bar, or bundle, or to re-read an analytics reference already attached to this conversation.',
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         type: {

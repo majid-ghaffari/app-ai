@@ -17,7 +17,7 @@
  *     who wants the real API must say so out loud.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // The shim runs under Node (Buffer available); this test file is typed with the
 // worker lib (no @types/node). Reach Node's Buffer through globalThis with a
@@ -39,14 +39,134 @@ import {
   bareToolName,
   clientToolNamesFrom,
   clientToolShape,
+  buildQueryOptions,
   stripCodeFence,
   usageFrom,
   extractFilePart,
   assertDevAiChannel,
+  handleMessagesNonStream,
+  handleMessagesStream,
   _filesStore,
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore — .mjs sibling, no .d.ts; the shapes are exercised structurally.
 } from '../scripts/dev-claude-shim.mjs';
+
+describe('shim canonical local cancellation', () => {
+  it('passes the request AbortController to the Claude Code SDK query options', () => {
+    const controller = new AbortController();
+    const { options } = buildQueryOptions({ model: 'claude-local', tools: [] }, '', controller);
+    expect(options.abortController).toBe(controller);
+  });
+});
+
+function responseRecorder() {
+  let status = 0;
+  let payload = '';
+  return {
+    response: {
+      writeHead: vi.fn((nextStatus: number) => {
+        status = nextStatus;
+      }),
+      write: vi.fn((value: string) => {
+        payload += value;
+      }),
+      end: vi.fn((value?: string) => {
+        if (value) payload += value;
+      }),
+    },
+    status: () => status,
+    json: () => JSON.parse(payload) as unknown,
+  };
+}
+
+describe('shim canonical local HTTP wiring', () => {
+  it('routes a Codex result through the actual non-stream handler envelope', async () => {
+    const recorder = responseRecorder();
+    const fulfill = vi.fn(async () => ({
+      fulfiller: 'codex',
+      model: 'gpt-codex-test',
+      content: [{ type: 'text', text: '```json\n{"ok":true}\n```' }],
+      stopReason: 'end_turn',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    }));
+    await handleMessagesNonStream(
+      { messages: [{ role: 'user', content: 'inspect' }] },
+      '',
+      recorder.response,
+      new AbortController(),
+      {
+        env: { LOCAL_AI_FULFILLER: 'codex', CODEX_LOCAL_MODEL: 'gpt-codex-test' },
+        fulfill,
+      },
+    );
+    expect(recorder.status()).toBe(200);
+    expect(recorder.json()).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      model: 'gpt-codex-test',
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      stop_reason: 'end_turn',
+    });
+    expect(fulfill).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, 'not-an-array', null])(
+    'preserves malformed messages for fail-closed fulfiller validation: %j',
+    async (messages) => {
+      const recorder = responseRecorder();
+      const fulfill = vi.fn(async (body: unknown) => {
+        expect(body).toMatchObject({ messages });
+        throw new Error('Codex local fulfiller requires a non-empty messages array');
+      });
+      await handleMessagesNonStream({ messages }, '', recorder.response, new AbortController(), {
+        env: { LOCAL_AI_FULFILLER: 'codex', CODEX_LOCAL_MODEL: 'gpt-codex-test' },
+        fulfill,
+      });
+      expect(recorder.status()).toBe(502);
+      expect(recorder.json()).toMatchObject({
+        type: 'error',
+        error: { message: expect.stringContaining('non-empty messages array') },
+      });
+      expect(fulfill).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('normalizes local cancellation and rejects Codex streaming in the actual handlers', async () => {
+    const cancelled = responseRecorder();
+    await handleMessagesNonStream({}, '', cancelled.response, new AbortController(), {
+      env: { LOCAL_AI_FULFILLER: 'codex', CODEX_LOCAL_MODEL: 'gpt-codex-test' },
+      fulfill: async () => {
+        throw new DOMException('cancelled', 'AbortError');
+      },
+    });
+    expect(cancelled.status()).toBe(499);
+    expect(cancelled.json()).toMatchObject({ type: 'error', error: { type: 'api_error' } });
+
+    const failed = responseRecorder();
+    await handleMessagesNonStream({}, '', failed.response, new AbortController(), {
+      env: { LOCAL_AI_FULFILLER: 'codex', CODEX_LOCAL_MODEL: 'gpt-codex-test' },
+      fulfill: async () => {
+        throw new Error('process failed');
+      },
+    });
+    expect(failed.status()).toBe(502);
+    expect(failed.json()).toMatchObject({
+      type: 'error',
+      error: { type: 'api_error', message: expect.stringContaining('process failed') },
+    });
+
+    const streaming = responseRecorder();
+    await handleMessagesStream({}, '', streaming.response, new AbortController(), 'codex');
+    expect(streaming.status()).toBe(400);
+    expect(streaming.json()).toMatchObject({
+      type: 'error',
+      error: { type: 'invalid_request_error' },
+    });
+  });
+});
 
 // The `look_at_page` client tool's wire schema, as the worker sends it in
 // `body.tools`. The shim must treat it as a CLIENT tool: register it so Claude Code
@@ -207,7 +327,7 @@ describe('shim client-tool bridge: look_at_page', () => {
     const shape = clientToolShape(LOOK_AT_PAGE_TOOL_DEF.input_schema);
     expect(Object.keys(shape)).toEqual(['page']);
     // Each declared property becomes an optional Zod schema (parses when absent).
-    expect(shape.page.isOptional()).toBe(true);
+    expect(shape.page?.isOptional()).toBe(true);
   });
 
   it('the bridged tool_use is surfaced with the BARE name (mcp prefix stripped)', () => {
@@ -300,6 +420,24 @@ describe('shim GUARD: assertDevAiChannel (no accidental credit-burn)', () => {
   it('allows the real API when AI_CHANNEL=prod is set explicitly', () => {
     expect(() =>
       assertDevAiChannel({ ANTHROPIC_API_BASE: 'https://api.anthropic.com', AI_CHANNEL: 'prod' }),
+    ).not.toThrow();
+  });
+
+  it('requires explicit opt-in when selected Codex would inherit an API key', () => {
+    expect(() =>
+      assertDevAiChannel({
+        LOCAL_AI_FULFILLER: 'codex',
+        ANTHROPIC_API_BASE: 'http://127.0.0.1:8788',
+        CODEX_API_KEY: 'paid-key',
+      }),
+    ).toThrow(/AI_CHANNEL=prod/);
+    expect(() =>
+      assertDevAiChannel({
+        LOCAL_AI_FULFILLER: 'codex',
+        ANTHROPIC_API_BASE: 'http://127.0.0.1:8788',
+        CODEX_API_KEY: 'paid-key',
+        AI_CHANNEL: 'prod',
+      }),
     ).not.toThrow();
   });
 

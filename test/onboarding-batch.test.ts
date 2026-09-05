@@ -24,7 +24,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -167,7 +175,14 @@ describe('POST /messages — onboarding-batch routing', () => {
 
   it('injects the onboarding-batch system block + defaults the model to the `balanced` tier', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      ['file_shot_home_desktop', 'file_shot_home_mobile'].map((upstreamFileId) => ({
+        upstreamFileId,
+        mediaType: 'image/png',
+      })),
+      ['onboarding-visual'],
+    );
 
     await handleMessages(
       // Body WITHOUT `model` — the batch transport omits it so the registry is
@@ -181,8 +196,8 @@ describe('POST /messages — onboarding-batch routing', () => {
               content: [
                 // TWO widths of the page — desktop + mobile — each a translucent
                 // marked screenshot with the SHARED numbered overlay.
-                { type: 'image', source: { type: 'file', file_id: 'shot_home_desktop' } },
-                { type: 'image', source: { type: 'file', file_id: 'shot_home_mobile' } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[1] } },
                 // Only a bare marker range — no label/description legend.
                 { type: 'text', text: 'page: Home\nvalid marker range: 1..5' },
               ],
@@ -191,7 +206,7 @@ describe('POST /messages — onboarding-batch routing', () => {
         },
         'onboarding-batch',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -225,7 +240,9 @@ describe('POST /messages — onboarding-batch routing', () => {
     });
     // Fresh Response per call: the propose path also fetches Brain defaults, so a
     // single shared Response would have its body consumed before the Messages read.
-    stubFetch().mockImplementation(async () => jsonOk({ content: [{ type: 'text', text: plan }] }));
+    stubFetch().mockImplementation(async () =>
+      jsonOk(anthropicMessage([{ type: 'text', text: plan }])),
+    );
 
     const res = await handleMessages(
       messagesRequest(

@@ -2,14 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  createDevelopmentInferenceTrace,
-  traceableContent,
-  traceableMessages,
-  traceableSystem,
-} from '../src/lib/dev-inference-trace';
+import { createDevelopmentInferenceTrace } from '../src/lib/dev-inference-trace';
 import { createLoggingRuntime } from '../src/lib/logger';
-import type { ClientMessagesPayload } from '../src/lib/anthropic';
+import type { ClientMessagesPayload } from '../src/inference/adapters/anthropic-wire';
 import { ENV } from './helpers';
 
 afterEach(() => {
@@ -44,7 +39,7 @@ describe('inference trace', () => {
       '@l': 'Verbose',
       Scope: 'InferenceTrace',
       Message: 'inference.response.received',
-      contextId: 'context-live-123',
+      contextId: '[REDACTED]',
       requestId: 'request-1',
     });
     expect(JSON.stringify(event.Detail)).toContain('CAD');
@@ -62,7 +57,13 @@ describe('inference trace', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('retains diagnostic text, tool decisions, and file references', () => {
+  it('retains diagnostic text and tool decisions while redacting file references', () => {
+    const consoleLog = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const trace = createDevelopmentInferenceTrace(
+      createLoggingRuntime({ ...ENV, LOG_TARGETS_TRACE: 'console' }).logger('InferenceTrace'),
+      'chat',
+      'placement',
+    );
     const payload: ClientMessagesPayload = {
       messages: [
         {
@@ -70,31 +71,55 @@ describe('inference trace', () => {
           content: [
             { type: 'text', text: 'activeCurrency: CAD' },
             { type: 'image', source: { type: 'file', file_id: 'file-secret-handle' } },
-            { type: 'tool_use', name: 'look_at_page', input: { page: 'Product' } },
+            {
+              type: 'tool_use',
+              name: 'look_at_page',
+              input: {
+                page: 'Product',
+                fileId: 'file-secret-tool-input',
+                screenshot: { type: 'base64', media_type: 'image/png', data: 'secret-base64' },
+              },
+            },
           ],
         },
       ],
     };
 
-    const serialized = JSON.stringify(traceableMessages(payload));
+    trace.record('request.forwarded', { messages: payload.messages });
+
+    const serialized = JSON.stringify(consoleLog.mock.calls[0]);
     expect(serialized).toContain('activeCurrency: CAD');
     expect(serialized).toContain('look_at_page');
-    expect(serialized).toContain('file-secret-handle');
-    expect(serialized).toContain('"source":{"type":"file"');
+    expect(serialized).not.toContain('file-secret-handle');
+    expect(serialized).not.toContain('file-secret-tool-input');
+    expect(serialized).not.toContain('secret-base64');
+    expect(serialized).toContain('"source":{"type":"file"}');
   });
 
-  it('preserves stable system text and assistant response text', () => {
-    expect(
-      traceableSystem([
-        { type: 'text', text: 'abc' },
-        { type: 'text', text: '12345' },
-      ]),
-    ).toEqual([
-      { type: 'text', text: 'abc' },
-      { type: 'text', text: '12345' },
-    ]);
-    expect(traceableContent([{ type: 'text', text: '{"candidateId":"CAD:money"}' }])).toEqual([
-      { type: 'text', text: '{"candidateId":"CAD:money"}' },
-    ]);
+  it('redacts arbitrary failure/tool fields centrally at the trace sink', () => {
+    const consoleLog = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const trace = createDevelopmentInferenceTrace(
+      createLoggingRuntime({ ...ENV, LOG_TARGETS_TRACE: 'console' }).logger('InferenceTrace'),
+      'chat',
+      'onboarding-chat',
+    );
+    trace.record('request.failed', {
+      message: 'provider rejected file_secret_failure',
+      continuation: 'v1.provider-state-secret',
+      providerState: { raw: 'secret' },
+      tool: {
+        input: { file_id: 'file_secret_input' },
+        result: {
+          fileId: 'file_secret_result',
+          screenshot: { type: 'base64', mediaType: 'image/png', data: 'encoded-secret' },
+        },
+      },
+    });
+    const serialized = JSON.stringify(consoleLog.mock.calls[0]);
+    expect(serialized).toContain('[opaque-file]');
+    expect(serialized).not.toContain('file_secret');
+    expect(serialized).not.toContain('provider-state-secret');
+    expect(serialized).not.toContain('encoded-secret');
+    expect(serialized).not.toContain('providerState');
   });
 });

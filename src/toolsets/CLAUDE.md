@@ -12,7 +12,7 @@ whole tool surface. Composition is data-driven off each descriptor's
 `integrationParties` gate and optional `selectDefinitions` capability filter.
 
 This registry is SERVER-executed tools only (the worker dispatches each
-`tool_use` against a backend). The handler also has a CLIENT-tool mode
+canonical tool call against a backend). The handler also has a CLIENT-tool mode
 (a prompt registry entry's `clientTools`; first consumer = the `onboarding-chat`
 prompt with `look_at_page` — see the top-level CLAUDE.md → CLIENT-tool mode)
 whose tools execute in the client, not the worker. Such client tools are NOT
@@ -55,7 +55,7 @@ The per-module map — what each toolset file owns — is [docs/ARCHITECTURE-MAP
   malformed payloads and non-success bodies are logged operationally and
   reduced to generic model-visible failures.
 - **Credentials:** resolved per request via `resolveCredentials` and never model-visible. The
-  context-ID is retained only as private request-log correlation; service tokens are redacted and
+  context-ID is never logged; request/subscriber IDs provide correlation, service tokens are redacted, and
   never logged. Endpoints expose a
   toolset only when the subscriber's available parties satisfy its
   `integrationParties` gate (the five standards in docs/TOOLSETS.md).

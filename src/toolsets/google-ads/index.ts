@@ -24,16 +24,17 @@ import {
   unknownToolResult,
   type BridgeChannel,
 } from '../integration-bridge';
-import type { ToolDefinition } from '../../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../../lib/inference-types';
 import type { ToolsetDescriptor } from '../types';
 
 /** Frozen contract shape — pinned by the contract snapshot. */
-const TOOL_DEFINITIONS: ToolDefinition[] = [
+const TOOL_DEFINITIONS: CanonicalServerToolDefinition[] = [
   {
     name: 'google_ads_gaql_query',
+    execution: 'server',
     description:
       "Run a GAQL (Google Ads Query Language) SELECT query against the merchant's linked Google Ads account. GAQL is read-only. When the response carries a non-empty NextPageToken there are more rows: call again with the SAME query and that value as pageToken to fetch the next page.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'A GAQL SELECT statement.' },

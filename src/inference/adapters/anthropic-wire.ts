@@ -8,7 +8,7 @@
  * never leaves the worker.
  *
  * Surface:
- *   - uploadFile / listFiles / getFileMetadata / deleteFile → Files API (/v1/files)
+ *   - uploadFile / getFileMetadata / deleteFile → Files API (/v1/files)
  *   - createMessage                        → Messages API, non-streaming
  *   - streamMessage                        → Messages API, streaming (returns the raw Response)
  *   - countTokens                          → free pre-flight estimate
@@ -24,7 +24,8 @@
  * blocks, payloads) consumed by the handlers and the cache modules.
  */
 
-import { anthropicApiBase, claudeApiKey, type Env } from '../config';
+import { anthropicApiBase, claudeApiKey, type Env } from '../../config';
+import type { CanonicalToolDefinition } from '../../lib/inference-types';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const FILES_BETA = 'files-api-2025-04-14';
@@ -52,10 +53,11 @@ export interface CacheableBlock {
 export interface TextBlock {
   type: 'text';
   text: string;
+  citations?: readonly Record<string, unknown>[];
   cache_control?: CacheControl;
 }
 
-export interface ToolUseBlock {
+interface ToolUseBlock {
   type: 'tool_use';
   id: string | undefined;
   name: string | undefined;
@@ -63,37 +65,92 @@ export interface ToolUseBlock {
   cache_control?: CacheControl;
 }
 
-export interface ToolResultBlock {
+interface ToolResultBlock {
   type: 'tool_result';
   tool_use_id: string | undefined;
-  content: string;
+  content: string | Array<TextBlock | FileBlock>;
   is_error: boolean;
   cache_control?: CacheControl;
 }
 
 /** An uploaded file referenced as a content block (`image` for `image/*` mimes). */
-export interface FileBlock {
+interface FileBlock {
   type: 'image' | 'document';
-  source: { type: 'file'; file_id: string };
+  source:
+    | { type: 'file'; file_id: string }
+    | { type: 'base64'; media_type: string; data: string }
+    | { type: 'url'; url: string }
+    | { type: 'text'; media_type: string; data: string }
+    | { type: 'content'; content: string | Array<TextBlock | FileBlock> };
+  title?: string;
+  context?: string;
+  citations?: { enabled: boolean };
   cache_control?: CacheControl;
 }
 
 export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | FileBlock;
+export type AnyContentBlock = ContentBlock | CacheableBlock;
 
 export interface MessageParam {
   role: 'user' | 'assistant';
-  content: string | ContentBlock[];
+  content: string | AnyContentBlock[];
 }
 
 /** Anthropic custom-tool schema (sent in the `tools` array). */
-export interface ToolDefinition {
+interface ToolDefinition {
   name: string;
-  description: string;
-  input_schema: {
+  description?: string;
+  input_schema?: Record<string, unknown> & {
     type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
+    properties?: Record<string, unknown>;
+    required?: readonly string[];
   };
+  [member: string]: unknown;
+}
+
+/** Serialize canonical tool definitions to Anthropic's `input_schema` wire shape. */
+export function serializeToolDefinitions(
+  definitions: readonly CanonicalToolDefinition[],
+): ToolDefinition[] {
+  return definitions.map((definition) => {
+    if (definition.execution === 'provider') {
+      if (definition.providerState.backend !== 'anthropic') {
+        throw new Error(
+          `Anthropic cannot serialize ${definition.providerState.backend} hosted tool state`,
+        );
+      }
+      const value = definition.providerState.value;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Anthropic hosted tool state was malformed');
+      }
+      const wire = { ...(value as Record<string, unknown>) } as ToolDefinition;
+      delete wire.cache_control;
+      return wire;
+    }
+    return {
+      ...(definition.kind ? { type: definition.kind } : {}),
+      name: definition.name,
+      description: definition.description,
+      input_schema: {
+        ...definition.inputSchema,
+        ...(definition.inputSchema.properties
+          ? { properties: { ...definition.inputSchema.properties } }
+          : {}),
+        ...(definition.inputSchema.required
+          ? { required: [...definition.inputSchema.required] }
+          : {}),
+      },
+      ...(definition.strict !== undefined ? { strict: definition.strict } : {}),
+      ...(definition.allowedCallers ? { allowed_callers: [...definition.allowedCallers] } : {}),
+      ...(definition.deferLoading !== undefined ? { defer_loading: definition.deferLoading } : {}),
+      ...(definition.inputExamples
+        ? { input_examples: definition.inputExamples.map((example) => ({ ...example })) }
+        : {}),
+      ...(definition.eagerInputStreaming !== undefined
+        ? { eager_input_streaming: definition.eagerInputStreaming }
+        : {}),
+    };
+  });
 }
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh';
@@ -105,7 +162,22 @@ export interface MessagesPayload {
   system?: TextBlock[];
   messages: MessageParam[];
   tools?: ToolDefinition[];
-  output_config?: { effort: Effort };
+  tool_choice?:
+    | { type: 'auto' | 'any' | 'none'; disable_parallel_tool_use?: boolean }
+    | { type: 'tool'; name: string; disable_parallel_tool_use?: boolean };
+  output_config?: {
+    effort?: Effort;
+    format?: {
+      type: 'json_schema';
+      schema: Readonly<Record<string, unknown>>;
+    };
+  };
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  stop_sequences?: readonly string[];
+  metadata?: Readonly<Record<string, unknown>>;
+  service_tier?: string;
   stream?: boolean;
 }
 
@@ -129,26 +201,27 @@ export interface Usage {
   output_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  [member: string]: unknown;
 }
 
 // ── Effort capability gate ───────────────────────────────────────────────────
 
 /**
- * Models that accept `output_config.effort`. The effort lever is a real
- * token-saving control, but it is only valid on this set — sending it to any
- * other model (e.g. Haiku 4.5, Sonnet 4.5) returns a 400
- * `invalid_request_error: "This model does not support the effort parameter."`.
- * Keep this list in lockstep with the Anthropic model catalog.
+ * Model-id PREFIXES whose models accept `output_config.effort`. The effort lever
+ * is a real token-saving control, but sending it to a model without it returns a
+ * 400 `invalid_request_error: "This model does not support the effort parameter."`.
+ *
+ * Prefixes, not exact ids: a new release inside a supporting family keeps the
+ * lever instead of silently losing it. Each prefix is drawn at the boundary where
+ * support actually starts, which is why Sonnet is listed by generation — Sonnet
+ * 4.5 does not accept effort while 4.6 and 5 do — and Haiku is absent entirely.
  */
-const EFFORT_SUPPORTED_MODELS = new Set([
-  'claude-fable-5',
-  'claude-opus-4-8',
-  'claude-opus-4-7',
-  'claude-opus-4-6',
-  'claude-opus-4-5',
+const EFFORT_SUPPORTED_MODEL_PREFIXES = [
+  'claude-fable-',
+  'claude-opus-',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
-]);
+];
 
 /**
  * Whether a model accepts the `output_config.effort` parameter. Callers use
@@ -157,7 +230,7 @@ const EFFORT_SUPPORTED_MODELS = new Set([
  * 400) on models that don't support it.
  */
 export function supportsEffort(model: string): boolean {
-  return EFFORT_SUPPORTED_MODELS.has(model);
+  return EFFORT_SUPPORTED_MODEL_PREFIXES.some((prefix) => model.startsWith(prefix));
 }
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
@@ -181,18 +254,27 @@ function messagesHeaders(env: Env): Record<string, string> {
   };
 }
 
+/** Stable non-secret account scope for provider-file dedup/reference isolation. */
+export async function fileAccountScope(env: Env): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(claudeApiKey(env)));
+  const prefix = Array.from(new Uint8Array(digest).slice(0, 12), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  return `anthropic:${prefix}`;
+}
+
 /** Upload a file to the Anthropic Files API (`formData` must contain `file`). */
-export async function uploadFile(formData: FormData, env: Env): Promise<Response> {
+export async function uploadFile(
+  formData: FormData,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
   return fetch(`${anthropicApiBase(env)}/v1/files`, {
     method: 'POST',
     headers: filesHeaders(env),
     body: formData,
+    ...(signal ? { signal } : {}),
   });
-}
-
-/** List files in the Anthropic Files API. */
-export async function listFiles(env: Env): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/files`, { headers: filesHeaders(env) });
 }
 
 /**
@@ -201,24 +283,41 @@ export async function listFiles(env: Env): Promise<Response> {
  * otherwise gone. Used by the dedup layer to verify a cached file_id before
  * reuse so a stale id is never vended downstream.
  */
-export async function getFileMetadata(fileId: string, env: Env): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/files/${fileId}`, { headers: filesHeaders(env) });
+export async function getFileMetadata(
+  fileId: string,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${anthropicApiBase(env)}/v1/files/${fileId}`, {
+    headers: filesHeaders(env),
+    ...(signal ? { signal } : {}),
+  });
 }
 
 /** Delete a file from the Anthropic Files API. */
-export async function deleteFile(fileId: string, env: Env): Promise<Response> {
+export async function deleteFile(
+  fileId: string,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
   return fetch(`${anthropicApiBase(env)}/v1/files/${fileId}`, {
     method: 'DELETE',
     headers: filesHeaders(env),
+    ...(signal ? { signal } : {}),
   });
 }
 
 /** Call the Messages API non-streaming. Returns the raw Anthropic `Response`. */
-export async function createMessage(payload: ClientMessagesPayload, env: Env): Promise<Response> {
+export async function createMessage(
+  payload: ClientMessagesPayload | MessagesPayload,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
   return fetch(`${anthropicApiBase(env)}/v1/messages`, {
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify(payload),
+    ...(signal ? { signal } : {}),
   });
 }
 
@@ -230,7 +329,11 @@ export async function createMessage(payload: ClientMessagesPayload, env: Env): P
  * `stream`, `output_config` and any other inference-only fields are stripped.
  * Returns the raw `Response` (consistent with createMessage); callers `.json()`.
  */
-export async function countTokens(payload: ClientMessagesPayload, env: Env): Promise<Response> {
+export async function countTokens(
+  payload: ClientMessagesPayload | MessagesPayload,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
   const body: Record<string, unknown> = { model: payload.model, messages: payload.messages };
   if (payload.system) body.system = payload.system;
   if (payload.tools) body.tools = payload.tools;
@@ -238,6 +341,7 @@ export async function countTokens(payload: ClientMessagesPayload, env: Env): Pro
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
 }
 
@@ -245,10 +349,15 @@ export async function countTokens(payload: ClientMessagesPayload, env: Env): Pro
  * Call the Messages API with `stream: true`. Returns the raw `Response` so the
  * caller can read the SSE body itself.
  */
-export async function streamMessage(payload: MessagesPayload, env: Env): Promise<Response> {
+export async function streamMessage(
+  payload: MessagesPayload,
+  env: Env,
+  signal?: AbortSignal,
+): Promise<Response> {
   return fetch(`${anthropicApiBase(env)}/v1/messages`, {
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify({ ...payload, stream: true }),
+    ...(signal ? { signal } : {}),
   });
 }

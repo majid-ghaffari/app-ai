@@ -10,14 +10,12 @@
  * their original order.
  */
 
-import { silentLogger, type Logger } from './logger';
-import type { CacheControl, CacheableBlock, ClientMessagesPayload } from './anthropic';
+import { silentLogger, type Logger } from '../../lib/logger';
+import type { CacheControl, CacheableBlock, ClientMessagesPayload } from './anthropic-wire';
+import { STABLE_CACHE_PREFIX_MARKER } from '../cache';
 
 /** Anthropic's hard limit on cache_control breakpoints per request. */
 const MAX_CACHE_BLOCKS = 4;
-
-/** Internal user-block member that reserves the stable-prefix breakpoint. */
-export const STABLE_CACHE_PREFIX_MARKER = 'limespot_stable_cache_prefix';
 
 /**
  * Extended 1-hour cache breakpoint. Used for the STABLE prefix (system prompt,
@@ -25,7 +23,7 @@ export const STABLE_CACHE_PREFIX_MARKER = 'limespot_stable_cache_prefix';
  * survives traffic gaps between requests. 1h TTL is GA — no beta header needed.
  * 1h write costs 2× base input; reads are 0.1× (break-even ≥3 requests).
  */
-export const EXTENDED_CACHE_CONTROL: CacheControl = { type: 'ephemeral', ttl: '1h' };
+const EXTENDED_CACHE_CONTROL: CacheControl = { type: 'ephemeral', ttl: '1h' };
 
 /** Rough byte-size estimates used only to rank user blocks by cache value. */
 const IMAGE_SIZE_ESTIMATE = 1000000;

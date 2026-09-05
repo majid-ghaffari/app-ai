@@ -23,16 +23,17 @@ import {
   unknownToolResult,
   type BridgeChannel,
 } from '../integration-bridge';
-import type { ToolDefinition } from '../../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../../lib/inference-types';
 import type { ToolsetDescriptor } from '../types';
 
 /** Frozen contract shape — pinned by the contract snapshot. */
-const TOOL_DEFINITIONS: ToolDefinition[] = [
+const TOOL_DEFINITIONS: CanonicalServerToolDefinition[] = [
   {
     name: 'klaviyo_rest_request',
+    execution: 'server',
     description:
       "Call the merchant's Klaviyo API. Provide the HTTP method, the path (e.g. 'api/segments'), and optional query parameters (JSON:API style, e.g. filter, page[cursor]) and JSON body. Reads are always safe; perform writes only when the merchant has explicitly asked for the change, and confirm destructive actions first.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'] },

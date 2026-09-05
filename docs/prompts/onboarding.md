@@ -14,11 +14,11 @@ The best-practice playbook embedded in the prompt covers: per-page recommendatio
 
 ## Model
 
-The default `frontier` tier — the same agent-loop model as [`chat`](../../src/prompts/chat.md), resolved at deploy time via `resolveModel(env, tier)` from the `MODEL_FRONTIER` env var (see [`src/config.ts`](../../src/config.ts)). It is a deploy-time configuration choice, not a hardcoded id. `maxTokens: 4096`. No `effort` override (defaults to `high`) — pinned by `test/token-saving.test.ts` (`getSystemPrompt('onboarding', ENV).effort` is `undefined`).
+The `studio-data-agent` group runs on the `frontier` tier, shared with [`chat`](../../src/prompts/chat.md); its model resolves from `MODEL_FRONTIER` through [`src/config.ts`](../../src/config.ts). `maxTokens: 4096`. The registry entry omits effort, so the provider default applies.
 
 ## Tools
 
-- **`usesTools: true`** — this prompt runs on the SERVER tool-use path. On `POST /chat`, `handlers/chat.ts::runAgentLoop` dispatches the always-active personalizer toolset (`src/toolsets/personalizer/index.ts`): `get_store_analytics` (real AOV / order count / revenue), `list_segments`, `list_campaigns`, `get_store_config` (platform / industry / configured boxes), and `get_entity_context`. app-ai proxies each tool server→server to Brain's `v2/ai-tools/*` endpoints, forwarding the merchant's context-ID, then feeds the result back into the loop. The AOV-derived progress-bar threshold and the "reflect what already exists" behavior come from these reads; the prompt tells the model to consult them before recommending and never fabricate a number.
+- **`usesTools: true`** — this prompt runs on the SERVER tool-use path. On `POST /chat`, the canonical agent runtime dispatches the always-active personalizer toolset (`src/toolsets/personalizer/index.ts`): `get_store_analytics` (real AOV / order count / revenue), `list_segments`, `list_campaigns`, `get_store_config` (platform / industry / configured boxes), and `get_entity_context`. app-ai proxies each tool server→server to Brain's `v2/ai-tools/*` endpoints, forwarding the merchant's context-ID, then feeds the result back into the loop. The AOV-derived progress-bar threshold and the "reflect what already exists" behavior come from these reads; the prompt tells the model to consult them before recommending and never fabricate a number.
 - **No `clientTools`.** This is the SERVER-tool path. It is the counterpart of [`onboarding-chat`](onboarding-chat.md), which drops the server toolset for the single `look_at_page` CLIENT tool — `usesTools` and `clientTools` are mutually exclusive, which is why the two are separate registry entries.
 
 ## Attachments
@@ -49,7 +49,7 @@ Plain prose comes before the block. The `directives` array is the two-sided cont
 
 `onboarding` is the CONVERSATIONAL, best-practice AGENT-LOOP variant of the onboarding family. It is distinct from every other onboarding-named prompt:
 
-- **`onboarding-chat`** ([doc](onboarding-chat.md)) — the mid-flow VISUAL chat: a single-file CLIENT-tool prompt carrying `look_at_page` (no server tools). Where `onboarding` reads store DATA via the server toolset, `onboarding-chat` SEES the rendered page via the client screenshot tool. Same default `frontier` tier; different tool mode.
+- **`onboarding-chat`** ([doc](onboarding-chat.md)) — the mid-flow VISUAL chat: a single-file CLIENT-tool prompt carrying `look_at_page` (no server tools). Where `onboarding` reads store data via the `studio-data-agent` server toolset, `onboarding-chat` sees the rendered page through the separate `studio-visual-agent` group.
 - **`onboarding-batch` / `onboarding-batch-all`** — the JSON PROPOSE passes (per-page / whole-store). COMPOSED prompts (per-prompt fragments + the SHARED blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/)), `usesTools: false`, structured JSON output over page-tile screenshots. They are the placement reasoners the shipped batch show actually drives.
 - **`onboarding-review` / `onboarding-review-all`** — the JSON QC passes (per-page / whole-store) that verify the applied render and emit corrections. Also COMPOSED, `usesTools: false`, JSON-only.
 
@@ -62,6 +62,6 @@ Single-file prompt, so it does NOT participate in the composed-prompt byte-equiv
 ## Pinning tests
 
 - `test/chat.test.ts` → _"exposes the Studio system prompts"_ asserts `onboarding` resolves with a non-empty prompt.
-- `test/token-saving.test.ts` pins the registry wiring: `onboarding` resolves to the default `frontier` tier (not the fast/balanced tiers), and it carries NO `effort`.
+- `test/token-saving.test.ts` pins the registry wiring: `onboarding` resolves through the frontier `studio-data-agent` route and carries no effort override.
 
 There is no separate output-JSON schema pin — the reply is prose + an optional directive envelope, not a fixed JSON object, so directive shapes are enforced by the prompt text and the lib-side executor, not a snapshot.

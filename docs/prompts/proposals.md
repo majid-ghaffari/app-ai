@@ -18,7 +18,7 @@ The LimeSpot best-practice catalog (`context.grounding`) still rides along as th
 
 ### Transport (`/chat`, not `/messages`)
 
-`proposals` is selected via `X-Personalizer-System-Prompt: proposals` on `POST /chat` (the tool-use path — `handlers/chat.ts::runAgentLoop` dispatches the personalizer tools), NOT the single-shot `/messages` path. The lib client sends its message history + the page-evidence `fileIds`; the non-streaming JSON response (`{ text, stopReason, iterations, usage }`) carries the assistant's JSON proposal as `text` (or the SSE `done` payload when streaming). The best-practice catalog is passed as `context.grounding` (folded into the system array by `buildSystem`).
+`proposals` is selected via `X-Personalizer-System-Prompt: proposals` on `POST /chat` (the canonical server-tool path dispatches the personalizer tools), NOT the single-shot `/messages` path. The lib client sends its message history + the page-evidence `fileIds`; the non-streaming JSON response (`{ text, stopReason, iterations, usage }`) carries the assistant's JSON proposal as `text` (or the SSE `done` payload when streaming). The best-practice catalog is passed as `context.grounding` (folded into the system array by `buildSystem`).
 
 ## Model
 

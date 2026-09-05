@@ -11,6 +11,13 @@ NAME to its text and metadata is [`../prompt-registry.ts`](../prompt-registry.ts
 `X-Personalizer-System-Prompt` header) and never hardcodes prompt content — the lib-side contract is
 `packages/storefront/src/admin/ai/CONTRACTS.md` + `docs/AI-LAYER.md` in the lib repo.
 
+Every prompt belongs to exactly one typed compatibility group. The same registry owns each group's
+capability tier, capability requirements, and file-reusing fallback edges. The
+registry resolves prompt → group → tier → configured model, and the model id decides provider,
+API family, capabilities, and file policy through the model catalog; callers never
+name a group, profile, provider, file purpose, or model. The exact group inventory and reuse graph
+are frozen by [`../../test/prompt-groups.test.ts`](../../test/prompt-groups.test.ts).
+
 ## Doc-sync rule (HARD — mirrors the root CLAUDE.md propagation rule)
 
 **Every registered prompt — every key in `systemPrompts` (plus the `chat` / `onboarding` / `placement` /

@@ -14,7 +14,9 @@
  * where to set it (the router's catch maps the throw to the Brain-shaped 500
  * envelope). The one genuinely optional binding is `FILES_KV`, whose absence
  * changes behavior explicitly and documentedly (lib/file-dedup.ts gracefully
- * no-ops to a plain upload). `DEMO_SESSIONS` is required when the demo
+ * no-ops to a plain upload); prompt-aware public references are self-contained
+ * authenticated ciphertext under the required `TOKEN_ENCRYPTION_SECRET`, so they never
+ * depend on KV consistency. `DEMO_SESSIONS` is required when the demo
  * exchange/bearer feature is exercised and fails closed when absent.
  *
  * The `Env` interface below is the single source of truth for the worker's
@@ -25,10 +27,11 @@
  * src outside this module; no `env.X || …` / `env.X ?? …` inline fallbacks).
  */
 
-// `ModelTier` is a compile-time-only type (the semantic capability tiers the
-// prompt registry uses). Importing it as `import type` is erased by the bundler,
-// so this does NOT create a runtime import cycle with `prompt-registry.ts` (which imports
-// `resolveModel` from here).
+// `ModelTier` is a compile-time-only type: the capability tier a prompt group
+// declares. Importing it as `import type` is erased by the bundler, so this
+import type { ProviderName } from './lib/inference-types';
+// does not create a runtime import cycle with `prompt-registry.ts` (which
+// imports `resolveModel` and `modelOverrides` from here).
 import type { ModelTier } from './prompt-registry';
 
 /**
@@ -39,6 +42,8 @@ import type { ModelTier } from './prompt-registry';
 export interface Env {
   /** Deployment label used for diagnostics; LOG_TARGETS_* alone controls log routing. */
   readonly ENVIRONMENT?: string;
+  /** Explicit opt-in for paid provider calls outside production. */
+  readonly AI_CHANNEL?: string;
   /** Personalizer API base URL, no trailing slash. Non-secret var. */
   readonly PERSONALIZER_API_URL?: string;
   /**
@@ -50,6 +55,14 @@ export interface Env {
   readonly PERSONALIZER_INTEGRATION_BRIDGE_TOKEN?: string;
   /** Anthropic API origin (`https://api.anthropic.com`), no trailing slash. Non-secret var. */
   readonly ANTHROPIC_API_BASE?: string;
+  /** OpenAI API origin (`https://api.openai.com`), no trailing slash. Non-secret var. */
+  readonly OPENAI_API_BASE?: string;
+  /**
+   * Gemini Developer API origin including its version segment
+   * (`https://generativelanguage.googleapis.com/v1beta`), no trailing slash.
+   * Non-secret var.
+   */
+  readonly GEMINI_API_BASE?: string;
   /** Per-level comma-separated log sink routes (`console`, `seq`, or `ignore`). */
   readonly LOG_TARGETS_TRACE?: string;
   readonly LOG_TARGETS_DEBUG?: string;
@@ -64,9 +77,17 @@ export interface Env {
   /** Comma-separated Origins allowed to send credentialed CORS requests. Non-secret var. */
   readonly CREDENTIALED_ORIGINS?: string;
   /**
+   * The `SubscriberID` Personalizer reports for the master account. Only that
+   * subscriber may read the operator diagnostics route; every other validated
+   * merchant is answered as though the route did not exist. Non-secret var.
+   */
+  readonly MASTER_SUBSCRIBER_ID?: string;
+  /**
    * Concrete model bound to the `fast` capability tier — the latency-sensitive /
    * cheapest one-shot prompts (`placement`). Non-secret var; the ONLY place a
-   * `fast`-tier model id appears (swap it to bump a version or switch provider).
+   * `fast`-tier model id appears. The id itself selects the provider through
+   * the model catalog, and must resolve to a model whose capabilities satisfy
+   * every prompt group on this tier.
    */
   readonly MODEL_FAST?: string;
   /**
@@ -78,17 +99,46 @@ export interface Env {
   readonly MODEL_BALANCED?: string;
   /**
    * Concrete model bound to the `frontier` capability tier — the most-capable
-   * flagship, the DEFAULT tier (the agent-loop chat prompts + the heaviest
+   * flagship (the agent-loop chat prompts + the heaviest
    * classification). Non-secret var; the ONLY place a `frontier`-tier model id
    * appears.
    */
   readonly MODEL_FRONTIER?: string;
-  /** Anthropic API key. SECRET — Cloudflare encrypted secret / .dev.vars. */
+  /**
+   * OPTIONAL sparse per-prompt exceptions to the tier bindings above, as a
+   * comma-separated `promptGroupOrPromptName=modelId` list. Empty by default;
+   * a prompt name beats its group, and a group beats its tier binding. The
+   * registry rejects a key that names no registered prompt or prompt group, so
+   * a typo can never become a silent no-op. Non-secret var.
+   */
+  readonly MODEL_OVERRIDES?: string;
+  /**
+   * Anthropic API key. SECRET — Cloudflare encrypted secret / .dev.vars. Always
+   * required: the unregistered `/messages` passthrough speaks Anthropic.
+   */
   readonly CLAUDE_API_KEY?: string;
   /**
-   * OPTIONAL KV namespace for Files API content-hash dedup. When absent,
-   * lib/file-dedup.ts explicitly no-ops to a plain upload (documented
-   * degradation, not a hidden default).
+   * OpenAI API key. SECRET — required only while a resolved route uses OpenAI;
+   * a blank one is not reported missing on a deployment that routes nothing
+   * there (`missingRequiredSecretNames`).
+   */
+  readonly OPENAI_API_KEY?: string;
+  /**
+   * Gemini API key. SECRET — required only while a resolved route uses Gemini;
+   * a blank one is not reported missing on a deployment that routes nothing
+   * there (`missingRequiredSecretNames`).
+   */
+  readonly GEMINI_API_KEY?: string;
+  /**
+   * Base64-encoded 32 random bytes. It is an HKDF ROOT, never used directly as
+   * a cipher key: separate AES-GCM and HMAC subkeys are derived from it for
+   * sealed opaque file references, sealed inference continuations, and the
+   * keyed tenant pseudonym that scopes both (and the dedup KV records). SECRET.
+   */
+  readonly TOKEN_ENCRYPTION_SECRET?: string;
+  /**
+   * Metadata-only KV namespace for best-effort file dedup.
+   * Dedup may no-op when absent; public reference correctness does not use KV.
    */
   readonly FILES_KV?: KVNamespace;
   /**
@@ -132,6 +182,8 @@ type RequiredVarName =
   | 'PERSONALIZER_API_URL'
   | 'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN'
   | 'ANTHROPIC_API_BASE'
+  | 'OPENAI_API_BASE'
+  | 'GEMINI_API_BASE'
   | 'LOG_TARGETS_TRACE'
   | 'LOG_TARGETS_DEBUG'
   | 'LOG_TARGETS_INFO'
@@ -140,6 +192,7 @@ type RequiredVarName =
   | 'LOG_TARGETS_FATAL'
   | 'LOG_SEQ_INGEST_URL'
   | 'CREDENTIALED_ORIGINS'
+  | 'MASTER_SUBSCRIBER_ID'
   | 'MODEL_FAST'
   | 'MODEL_BALANCED'
   | 'MODEL_FRONTIER'
@@ -153,11 +206,17 @@ type RequiredVarName =
   | 'DEMO_MAX_MESSAGES'
   | 'DEMO_MAX_UPLOAD_BYTES'
   | 'DEMO_MAX_TOTAL_UPLOAD_BYTES'
-  | 'DEMO_MAX_MESSAGE_BYTES';
+  | 'DEMO_MAX_MESSAGE_BYTES'
+  | 'OPENAI_API_KEY'
+  | 'GEMINI_API_KEY'
+  | 'TOKEN_ENCRYPTION_SECRET';
 
 /** The variables that are SECRETS (encrypted-secret channel, never wrangler.toml `[vars]`). */
 const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
   'CLAUDE_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'TOKEN_ENCRYPTION_SECRET',
   'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
   'DEMO_ACTIVATION_SIGNING_SECRET',
   'DEMO_SESSION_SIGNING_SECRET',
@@ -181,16 +240,38 @@ const LOG_TARGET_VAR: Record<LogLevel, RequiredVarName> = {
   fatal: 'LOG_TARGETS_FATAL',
 };
 
+/**
+ * A required SECRET is absent or unusable. The message names the secret and
+ * where an operator sets it — for logs and thrown-error callers — and the
+ * public Brain envelope never carries it: `lib/responses.ts` answers a merchant
+ * route with a generic message for this class, so an internal instruction
+ * about the secret store never reaches a client.
+ */
+export class SecretConfigurationError extends Error {
+  readonly secretName: string;
+
+  constructor(secretName: string, message: string) {
+    super(message);
+    this.name = 'SecretConfigurationError';
+    this.secretName = secretName;
+  }
+}
+
 /** Read one required variable, throwing a config error naming it when absent. */
 function requireVar(env: Env, name: RequiredVarName): string {
   const value = env[name];
   if (typeof value === 'string' && value.length > 0) {
     return value;
   }
-  const where = SECRET_VAR_NAMES.includes(name)
-    ? 'Set it as a Cloudflare encrypted secret (production) or in .dev.vars (local dev, gitignored — see .dev.vars.example).'
-    : 'Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).';
-  throw new Error(`Missing required configuration variable ${name}. ${where}`);
+  if (SECRET_VAR_NAMES.includes(name)) {
+    throw new SecretConfigurationError(
+      name,
+      `Missing required configuration variable ${name}. Set it as a Cloudflare encrypted secret (production) or in .dev.vars (local dev, gitignored — see .dev.vars.example).`,
+    );
+  }
+  throw new Error(
+    `Missing required configuration variable ${name}. Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).`,
+  );
 }
 
 /** Personalizer API base URL. */
@@ -209,7 +290,44 @@ export function personalizerIntegrationBridgeToken(env: Env): string {
 
 /** Anthropic API origin (the client appends the versioned `/v1/...` paths). */
 export function anthropicApiBase(env: Env): string {
-  return requireVar(env, 'ANTHROPIC_API_BASE');
+  return paidProviderBase(env, 'ANTHROPIC_API_BASE', 'anthropic');
+}
+
+/** OpenAI API origin. Only the OpenAI wire adapter may call this. */
+export function openaiApiBase(env: Env): string {
+  return paidProviderBase(env, 'OPENAI_API_BASE', 'openai');
+}
+
+/** Gemini API origin. Only the Gemini wire adapter may call this. */
+export function geminiApiBase(env: Env): string {
+  return paidProviderBase(env, 'GEMINI_API_BASE', 'gemini');
+}
+
+function paidProviderBase(
+  env: Env,
+  name: Extract<RequiredVarName, `${string}_API_BASE`>,
+  provider: string,
+): string {
+  const value = requireVar(env, name);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} must be an absolute URL`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${name} must use http or https`);
+  }
+  const production = env.ENVIRONMENT?.trim().toLowerCase() === 'production';
+  const optedIn = env.AI_CHANNEL?.trim().toLowerCase() === 'prod';
+  const loopback =
+    url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (!production && !optedIn && !loopback) {
+    throw new Error(
+      `Refusing paid ${provider} provider call outside production without AI_CHANNEL=prod`,
+    );
+  }
+  return value;
 }
 
 /** Parse and validate the configured target fan-out for one log level. */
@@ -251,19 +369,111 @@ const TIER_VAR: Record<ModelTier, RequiredVarName> = {
 };
 
 /**
- * Resolve a semantic capability `tier` (from the prompt registry) to the
- * concrete model bound to it in configuration — the ONLY place a tier maps to a
- * model id. Reads via the fail-fast `requireVar`, so a missing binding throws
- * naming the variable (`MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`).
- * Switching model versions OR provider is a config-only change here.
+ * Resolve a capability tier to the concrete configured model. This is the only
+ * place a tier maps to a model id. Reads via the fail-fast `requireVar`, so a
+ * missing binding throws naming the variable (`MODEL_FAST` / `MODEL_BALANCED` /
+ * `MODEL_FRONTIER`). What that model id then implies — provider, API family,
+ * capabilities, direct-file policy — is the model catalog's answer, not this
+ * module's.
  */
 export function resolveModel(env: Env, tier: ModelTier): string {
   return requireVar(env, TIER_VAR[tier]);
 }
 
-/** The Anthropic API key. Only lib/anthropic.ts may call this. */
+/**
+ * Sparse per-prompt / per-prompt-group model exceptions, parsed from
+ * `MODEL_OVERRIDES`. OPTIONAL by design — an unset or empty value yields no
+ * overrides, and reading it never throws for absence (the presence test is
+ * explicit, not a config fallback). A malformed or repeated entry DOES throw:
+ * the registry validates the keys, this validates the syntax.
+ */
+export function modelOverrides(env: Env): ReadonlyMap<string, string> {
+  const overrides = new Map<string, string>();
+  const raw = env.MODEL_OVERRIDES;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return overrides;
+  for (const entry of raw.split(',')) {
+    const text = entry.trim();
+    if (text.length === 0) continue;
+    const separator = text.indexOf('=');
+    const key = separator === -1 ? '' : text.slice(0, separator).trim();
+    const model = separator === -1 ? '' : text.slice(separator + 1).trim();
+    if (key.length === 0 || model.length === 0) {
+      throw new Error(
+        `MODEL_OVERRIDES entry "${text}" must read promptGroupOrPromptName=modelId. Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).`,
+      );
+    }
+    if (overrides.has(key)) {
+      throw new Error(`MODEL_OVERRIDES sets ${key} more than once.`);
+    }
+    overrides.set(key, model);
+  }
+  return overrides;
+}
+
+/** The one subscriber allowed to read the operator diagnostics route. */
+export function masterSubscriberId(env: Env): number {
+  return positiveIntegerVar(env, 'MASTER_SUBSCRIBER_ID');
+}
+
+/** The secret each provider's wire adapter reads. */
+const PROVIDER_SECRET_VAR: Readonly<Record<ProviderName, RequiredVarName>> = {
+  anthropic: 'CLAUDE_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+};
+
+/**
+ * The REQUIRED secrets this environment has not been given, by NAME ONLY.
+ *
+ * A provider's key is required only while some resolved route uses that
+ * provider (`providersInUse` — the registry knows which; this module cannot),
+ * so a deployment routing everything to one provider is not forever told the
+ * others' keys are missing. Every other secret is required unconditionally.
+ *
+ * A blank-secret report exists so an operator can see what is still unset
+ * without opening the secret store; it therefore never returns, derives, or
+ * hints at a value — no prefix, no length, no presence of a partial. A secret
+ * that IS set contributes nothing to the result at all.
+ */
+export function missingRequiredSecretNames(
+  env: Env,
+  providersInUse: Iterable<ProviderName>,
+): readonly string[] {
+  const providers = new Set(providersInUse);
+  const dormantProviderSecrets = new Set(
+    (Object.keys(PROVIDER_SECRET_VAR) as ProviderName[])
+      .filter((provider) => !providers.has(provider))
+      .map((provider) => PROVIDER_SECRET_VAR[provider]),
+  );
+  return SECRET_VAR_NAMES.filter((name) => {
+    if (dormantProviderSecrets.has(name)) return false;
+    const value = env[name];
+    return typeof value !== 'string' || value.length === 0;
+  });
+}
+
+/** The Anthropic API key. Only the Anthropic wire adapter may call this. */
 export function claudeApiKey(env: Env): string {
   return requireVar(env, 'CLAUDE_API_KEY');
+}
+
+/** The OpenAI API key. Only the OpenAI wire adapter may call this. */
+export function openaiApiKey(env: Env): string {
+  return requireVar(env, 'OPENAI_API_KEY');
+}
+
+/** The Gemini API key. Only the Gemini wire adapter may call this. */
+export function geminiApiKey(env: Env): string {
+  return requireVar(env, 'GEMINI_API_KEY');
+}
+
+/**
+ * The HKDF root every app-ai-sealed token is derived from — opaque file
+ * references, inference continuations, and the tenant pseudonym that binds
+ * them. Not file-specific and never applied as a cipher key directly.
+ */
+export function tokenEncryptionSecret(env: Env): string {
+  return requireVar(env, 'TOKEN_ENCRYPTION_SECRET');
 }
 
 /**
@@ -371,6 +581,7 @@ function strongSigningSecret(
 function positiveIntegerVar(
   env: Env,
   name:
+    | 'MASTER_SUBSCRIBER_ID'
     | 'DEMO_SESSION_TTL_SECONDS'
     | 'DEMO_MAX_UPLOADS'
     | 'DEMO_MAX_MESSAGES'

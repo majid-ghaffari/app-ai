@@ -18,7 +18,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt, isProbeName } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
-import { ENV, CORS, stubFetch, fetchCall, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  sentBody,
+  opaqueFileEnv,
+} from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status });
@@ -88,7 +96,14 @@ describe('POST /messages — visual-verify routing', () => {
     // Fresh Response per call so the count_tokens pre-flight and the real
     // /messages POST each read their own body (a shared Response can only be
     // read once).
-    fetchMock.mockImplementation(async () => jsonOk({ content: [], input_tokens: 0 }));
+    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage([], { input_tokens: 0 })));
+    const files = await opaqueFileEnv(
+      [
+        { upstreamFileId: 'file_shot_1', mediaType: 'image/png' },
+        { upstreamFileId: 'file_html_1', mediaType: 'text/plain' },
+      ],
+      ['render-verification'],
+    );
 
     await handleMessages(
       // Body WITHOUT `model` — the verify transport omits it so the registry is
@@ -100,8 +115,8 @@ describe('POST /messages — visual-verify routing', () => {
             {
               role: 'user',
               content: [
-                { type: 'image', source: { type: 'file', file_id: 'shot_1' } },
-                { type: 'document', source: { type: 'file', file_id: 'html_1' } },
+                { type: 'image', source: { type: 'file', file_id: files.ids[0] } },
+                { type: 'document', source: { type: 'file', file_id: files.ids[1] } },
                 { type: 'text', text: 'intent: the box is highlighted' },
               ],
             },
@@ -109,7 +124,7 @@ describe('POST /messages — visual-verify routing', () => {
         },
         'visual-verify',
       ),
-      ENV,
+      files.env,
       CORS,
     );
 
@@ -133,7 +148,7 @@ describe('POST /messages — visual-verify routing', () => {
         'The box is not highlighted — the screenshot shows a uniformly dimmed page and hitTestAtCenter is false, so a scrim covers it.',
       fix: { action: 'retrySpotlight', args: { target: "[data-box-type='BoughtTogether']" } },
     });
-    stubFetch().mockResolvedValue(jsonOk({ content: [{ type: 'text', text: verdict }] }));
+    stubFetch().mockResolvedValue(jsonOk(anthropicMessage([{ type: 'text', text: verdict }])));
 
     const res = await handleMessages(
       messagesRequest(

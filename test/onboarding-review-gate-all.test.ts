@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handleMessages } from '../src/handlers/messages';
 import { getSystemPrompt } from '../src/prompt-registry';
-import { CORS, ENV, fetchCall, fetchedUrls, sentBody, stubFetch } from './helpers';
+import {
+  anthropicMessage,
+  CORS,
+  ENV,
+  fetchCall,
+  fetchedUrls,
+  sentBody,
+  stubFetch,
+} from './helpers';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -20,7 +28,7 @@ describe('onboarding-review-gate-all', () => {
 
   it('routes through /messages with registry-owned model and budget', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ content: [] }), { status: 200 }));
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(anthropicMessage()), { status: 200 }));
     const request = new Request('https://app-ai.test/messages', {
       method: 'POST',
       headers: {

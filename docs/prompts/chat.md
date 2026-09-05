@@ -12,7 +12,7 @@ The Studio UI — not this prompt — greets the merchant and drives the onboard
 
 ## Model
 
-The default `frontier` tier — the shared agent-loop model, resolved at deploy time via `resolveModel(env, tier)` from the `MODEL_FRONTIER` env var (see [`src/config.ts`](../../src/config.ts)). It is a deploy-time configuration choice, not a hardcoded id. `maxTokens: 4096`. No `effort` override (defaults to `high`). This is the SAME tier as its client-tool twin `onboarding-chat` and as the `onboarding` assistant — every entry that OMITS `tier` shares this default `frontier` tier, and `chat` is the general default agent-loop persona, distinct from the cost/quality-tuned reasoners (`proposals` on the `balanced` tier, `placement` on the `fast` tier).
+The `studio-data-agent` group runs on the `frontier` tier, whose model is resolved from `MODEL_FRONTIER` through [`src/config.ts`](../../src/config.ts) and whose provider and capabilities come from that model's family in [`src/inference/model-catalog.ts`](../../src/inference/model-catalog.ts). `maxTokens: 4096`. The registry entry omits effort, so the provider default applies. `chat` shares this tier with `onboarding`; its client-tool twin `onboarding-chat` belongs to the distinct `studio-visual-agent` group.
 
 ## Tools
 
@@ -85,8 +85,8 @@ The prompt notes other actions in prose (navigate a step, apply a placement, tog
 
 `chat` is the BASE general Studio chat assistant. Its siblings on the same `/chat` tool-use path:
 
-- **[`onboarding-chat`](onboarding-chat.md)** — the CLIENT-tool twin. SAME identity and SAME tier (the default `frontier` tier), but it DROPS the server data toolset (`usesTools: false`) and instead carries the browser `look_at_page` client tool (the store iframe is the AI's hands) so it can SEE what rendered before it answers or refines a box. `chat` reads DATA from the server; `onboarding-chat` reads PIXELS from the browser. Mutually-exclusive tool modes → separate registry entries, not a flag.
-- **[`proposals`](proposals.md)** and **`onboarding`** — the other tool-use agent-loop prompts. `proposals` (on the `balanced` tier) is the per-store SETUP PROPOSAL reasoner: it runs the same server tool loop but grounds additionally in real page evidence (cleaned HTML + screenshots) and returns a single structured JSON object, not chat prose. `onboarding` is the opinionated new-merchant assistant that applies best-practice defaults over the same loop. `chat` is the general, non-opinionated conversational default the others specialize away from.
+- **[`onboarding-chat`](onboarding-chat.md)** — the CLIENT-tool twin. It shares the frontier profile class but belongs to the separate `studio-visual-agent` group: it drops the server data toolset (`usesTools: false`) and instead carries the browser `look_at_page` client tool (the store iframe is the AI's hands) so it can see what rendered before it answers or refines a box. `chat` reads data from the server; `onboarding-chat` reads pixels from the browser.
+- **[`proposals`](proposals.md)** and **`onboarding`** — the other tool-use agent-loop prompts. `proposals` belongs to the balanced `setup-strategy` group and returns a structured JSON proposal over page evidence plus store data. `onboarding` shares `chat`'s `studio-data-agent` group and applies the opinionated new-merchant playbook.
 
 ## Caching notes
 
@@ -101,4 +101,4 @@ The prompt's contract is pinned by [`test/chat.test.ts`](../../test/chat.test.ts
 - _"chat prompt documents the toggleBox directive"_ — asserts `toggleBox`, the `box` / `on` arg shape, add/remove intent, and box-type keys (`BoughtTogether`, `RecentViews`) that agree with lib's `ONBOARDING_BOX_TO_BRAIN`.
 - The `tool definitions` block pins the frozen five-tool order (`get_store_analytics`, `list_segments`, `list_campaigns`, `get_store_config`, `get_entity_context`) and `get_entity_context`'s `input_schema`, plus the full `/chat` agent-loop + SSE behavior these tools drive.
 
-The registry resolution (`usesTools: true`, the default `frontier` tier, non-empty prompt) is covered alongside the other registered prompts. There is no output-JSON schema snapshot — the reply is prose + an optional directive envelope, so directive shapes are enforced by the prompt text and the lib-side executor, not a fixed JSON object.
+The registry resolution (`studio-data-agent`, `usesTools: true`, frontier profile, non-empty prompt) is covered alongside the other registered prompts. There is no output-JSON schema snapshot — the reply is prose + an optional directive envelope, so directive shapes are enforced by the prompt text and the lib-side executor, not a fixed JSON object.

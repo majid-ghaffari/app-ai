@@ -1,10 +1,10 @@
 /**
  * Token-saving / cost-reduction coverage:
  *   1. Extended 1h TTL on the stable prefix (system + attachments + kept user blocks).
- *   2. Agent-loop conversation breakpoints (lib/agent-cache.ts) — last-block,
- *      ~15-block intermediate rule, 4-breakpoint cap, stale-strip.
+ *   2. Agent-loop conversation breakpoints (inference/cache.ts) — last-block, ~15-block
+ *      intermediate rule, breakpoint cap, stale-strip, one extended file-prefix intent kept.
  *   3. Files API checksum dedup (lib/file-dedup.ts) — sha256Hex, KV hit/miss, no-op.
- *   4. count_tokens pre-flight helper (lib/anthropic.ts).
+ *   4. Anthropic adapter count_tokens pre-flight helper.
  *   5. Model/effort routing (prompt-registry.ts + handlers).
  *
  * fetch + KV mocked; Web Crypto comes from the vitest (Node) runtime.
@@ -12,13 +12,19 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-import { applyConversationBreakpoints } from '../src/lib/agent-cache';
-import { sha256Hex, dedupUpload, KV_RECORD_TTL_SECONDS } from '../src/lib/file-dedup';
-import * as anthropic from '../src/lib/anthropic';
-import type { ContentBlock, MessageParam } from '../src/lib/anthropic';
-import { buildSystem, handleChat } from '../src/handlers/chat';
-import { getSystemPrompt } from '../src/prompt-registry';
+import { applyCanonicalConversationBreakpoints } from '../src/inference/cache';
 import {
+  sha256Hex,
+  dedupUpload,
+  fileMetadataTtlSeconds,
+  KV_RECORD_TTL_SECONDS,
+} from '../src/lib/file-dedup';
+import * as anthropic from '../src/inference/adapters/anthropic-wire';
+import type { InferenceContent, InferenceMessage } from '../src/lib/inference-types';
+import { buildSystem, handleChat } from '../src/handlers/chat';
+import { getFilePolicy, getModelProfile, getSystemPrompt } from '../src/prompt-registry';
+import {
+  anthropicMessageStart,
   ENV,
   CORS,
   stubFetch,
@@ -27,7 +33,20 @@ import {
   headerOf,
   sentBody,
   kvMock,
+  opaqueFileEnv,
 } from './helpers';
+
+const FILE_ROUTE = {
+  profile: getModelProfile('placement', ENV),
+  policy: getFilePolicy('anthropic-provider-files'),
+  accountScope: 'anthropic:test-account',
+  tenantScope: 'tenant:test-tenant',
+  compatibleGroups: ['image-selection'] as [string, ...string[]],
+};
+
+async function dedupStorageKey(content: string): Promise<string> {
+  return `${FILE_ROUTE.tenantScope}:${FILE_ROUTE.accountScope}:${FILE_ROUTE.policy.name}:${FILE_ROUTE.compatibleGroups.join(',')}:${encodeURIComponent('text/plain')}:${await sha256Hex(content)}`;
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -38,94 +57,101 @@ function jsonOk(data: unknown, status = 200): Response {
 // ── LEVER 1: extended 1h TTL on the stable prefix ───────────────────────────
 
 describe('LEVER 1 — extended 1h TTL on the stable prefix', () => {
-  it('chat buildSystem: base prompt block is 1h-cached, volatile context block is uncached', () => {
-    const entry = getSystemPrompt('chat', ENV);
-    const blocks = buildSystem(entry, { hostPage: 'Home', candidates: [{ index: 0 }] });
-    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
-    // The volatile context block (page/candidates) must NOT be cached.
-    expect(blocks.length).toBeGreaterThan(1);
-    expect(blocks[blocks.length - 1]?.cache_control).toBeUndefined();
+  it('chat buildSystem: volatile canonical context remains uncached', () => {
+    const messages = buildSystem({ hostPage: 'Home', candidates: [{ index: 0 }] });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe('system');
+    expect(messages[0]?.content[0]).toMatchObject({ type: 'text', cache: 'none' });
   });
 
-  it('chat buildSystem: with no context there is only the cached base block', () => {
-    const blocks = buildSystem(getSystemPrompt('chat', ENV), undefined);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+  it('chat buildSystem: with no volatile context there is no extra system message', () => {
+    expect(buildSystem(undefined)).toEqual([]);
   });
 });
 
 // ── LEVER 2: agent-loop conversation breakpoints ────────────────────────────
 
-describe('LEVER 2 — applyConversationBreakpoints', () => {
+describe('LEVER 2 — applyCanonicalConversationBreakpoints', () => {
   /** Build a conversation of N total content blocks spread across messages. */
-  function buildConversation(blockCounts: number[]): MessageParam[] {
+  function buildConversation(blockCounts: number[]): InferenceMessage[] {
     return blockCounts.map((count, i) => ({
       role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
       content: Array.from(
         { length: count },
-        (_unused, j): ContentBlock => ({ type: 'text', text: `m${i}b${j}` }),
+        (_unused, j): InferenceContent => ({ type: 'text', text: `m${i}b${j}`, cache: 'none' }),
       ),
     }));
   }
 
-  function flatBlocks(messages: MessageParam[]): ContentBlock[] {
-    const flat: ContentBlock[] = [];
-    for (const message of messages) {
-      if (Array.isArray(message.content)) {
-        for (const block of message.content) flat.push(block);
-      }
-    }
-    return flat;
+  function flatBlocks(messages: InferenceMessage[]): InferenceContent[] {
+    return messages.flatMap((message) => [...message.content]);
   }
 
-  it('places a breakpoint on the last block of the last message', () => {
+  /** Flat indices carrying a short conversation breakpoint, in conversation order. */
+  function shortBreakpoints(messages: InferenceMessage[]): number[] {
+    const marked: number[] = [];
+    flatBlocks(messages).forEach((block, index) => {
+      if (block.cache === 'short') marked.push(index);
+    });
+    return marked;
+  }
+
+  it('places a short breakpoint on the last block of the last message', () => {
     const messages = buildConversation([2, 3]);
-    applyConversationBreakpoints(messages);
-    const last = flatBlocks(messages).at(-1);
-    expect(last?.cache_control).toEqual({ type: 'ephemeral' });
+    applyCanonicalConversationBreakpoints(messages, 3);
+    expect(flatBlocks(messages).at(-1)?.cache).toBe('short');
   });
 
   it('the ~15-block intermediate rule keeps breakpoints ≤20 apart on a long conversation', () => {
-    // 50 total blocks across messages.
-    const messages = buildConversation([10, 10, 10, 10, 10]);
-    applyConversationBreakpoints(messages);
-    const flat = flatBlocks(messages);
-    const marked: number[] = [];
-    flat.forEach((block, index) => {
-      if (block.cache_control) marked.push(index);
-    });
-    // Last block is always marked.
-    expect(marked).toContain(flat.length - 1);
-    // No two consecutive breakpoints (and the tail) more than 20 apart.
-    const sorted = [...marked].sort((a, b) => a - b);
-    for (let i = 1; i < sorted.length; i++) {
-      expect((sorted[i] ?? 0) - (sorted[i - 1] ?? 0)).toBeLessThanOrEqual(20);
+    const messages = buildConversation([10, 10, 10, 10, 10]); // 50 blocks
+    applyCanonicalConversationBreakpoints(messages, 3);
+    const marked = shortBreakpoints(messages);
+    expect(marked).toContain(flatBlocks(messages).length - 1);
+    for (let i = 1; i < marked.length; i++) {
+      expect((marked[i] ?? 0) - (marked[i - 1] ?? 0)).toBeLessThanOrEqual(20);
     }
   });
 
-  it('never exceeds the message-breakpoint cap (default 3 → system holds the 4th)', () => {
+  it('never exceeds the conversation-breakpoint cap (3 → the system block holds the 4th)', () => {
     const messages = buildConversation([20, 20, 20, 20, 20]); // 100 blocks
-    applyConversationBreakpoints(messages);
-    const marked = flatBlocks(messages).filter((block) => block.cache_control);
-    expect(marked.length).toBeLessThanOrEqual(3);
+    applyCanonicalConversationBreakpoints(messages, 3);
+    expect(shortBreakpoints(messages).length).toBeLessThanOrEqual(3);
   });
 
-  it('strips stale breakpoints before re-applying (no accumulation across iterations)', () => {
+  it('strips stale short breakpoints before re-applying (no accumulation across iterations)', () => {
     const messages = buildConversation([10, 10, 10, 10]); // 40 blocks
-    applyConversationBreakpoints(messages);
-    const firstCount = flatBlocks(messages).filter((block) => block.cache_control).length;
-    // Re-run (simulating the next loop iteration) — count must not grow.
-    applyConversationBreakpoints(messages);
-    const secondCount = flatBlocks(messages).filter((block) => block.cache_control).length;
+    applyCanonicalConversationBreakpoints(messages, 3);
+    const firstCount = shortBreakpoints(messages).length;
+    applyCanonicalConversationBreakpoints(messages, 3);
+    const secondCount = shortBreakpoints(messages).length;
     expect(secondCount).toBe(firstCount);
     expect(secondCount).toBeLessThanOrEqual(3);
   });
 
-  it('tolerates string-content messages and empty input', () => {
-    const messages: MessageParam[] = [{ role: 'user', content: 'plain string' }];
-    expect(() => applyConversationBreakpoints(messages)).not.toThrow();
-    expect(messages[0]?.content).toBe('plain string');
-    expect(() => applyConversationBreakpoints([])).not.toThrow();
+  it('keeps only the last extended file-prefix intent and never re-marks it', () => {
+    const image = (data: string): InferenceContent => ({
+      type: 'image',
+      source: { type: 'base64', mediaType: 'image/png', data },
+      cache: 'extended',
+    });
+    const messages: InferenceMessage[] = [
+      {
+        role: 'user',
+        content: [
+          image('screenshot'),
+          image('html'),
+          { type: 'text', text: 'place', cache: 'none' },
+        ],
+      },
+      ...buildConversation([4, 4]),
+    ];
+    applyCanonicalConversationBreakpoints(messages, 2);
+    const flat = flatBlocks(messages);
+    expect(flat[0]?.cache).toBe('none');
+    expect(flat[1]?.cache).toBe('extended');
+    expect(shortBreakpoints(messages).length).toBeLessThanOrEqual(2);
+    expect(flat.at(-1)?.cache).toBe('short');
+    expect(() => applyCanonicalConversationBreakpoints([], 3)).not.toThrow();
   });
 });
 
@@ -149,13 +175,19 @@ describe('LEVER 3 — file-dedup', () => {
     // is still alive (200). It must NOT upload (no POST /files) and must NOT
     // rewrite KV.
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ id: 'file_cached', type: 'file' }, 200));
+    fetchMock.mockResolvedValue(
+      jsonOk({ id: 'file_cached', type: 'file', mime_type: 'text/plain', size_bytes: 3 }, 200),
+    );
     const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_cached', createdAt: 1 }));
     const out = await dedupUpload(
       { content: 'abc', mimeType: 'text/plain', filename: 'a.txt' },
+      FILE_ROUTE,
       env,
     );
-    expect(out).toEqual({ fileId: 'file_cached', deduped: true });
+    expect(out).toMatchObject({
+      reference: { upstreamFileId: 'file_cached', mediaType: 'text/plain', sizeBytes: 3 },
+      deduped: true,
+    });
     // Exactly one fetch: the GET metadata existence check (not an upload POST).
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const { url, init } = fetchCall(fetchMock, 0);
@@ -164,7 +196,7 @@ describe('LEVER 3 — file-dedup', () => {
     expect(kv.put).not.toHaveBeenCalled();
     expect(kv.delete).not.toHaveBeenCalled();
     // Looked up under the content hash.
-    expect(kv.get).toHaveBeenCalledWith(await sha256Hex('abc'));
+    expect(kv.get).toHaveBeenCalledWith(await dedupStorageKey('abc'));
   });
 
   it('KV hit on a STALE id (file 404s) drops the record, re-uploads, and refreshes', async () => {
@@ -172,15 +204,21 @@ describe('LEVER 3 — file-dedup', () => {
     const fetchMock = stubFetch();
     fetchMock
       .mockResolvedValueOnce(jsonOk({ error: { message: 'File not found' } }, 404))
-      .mockResolvedValueOnce(jsonOk({ id: 'file_fresh' }, 200));
+      .mockResolvedValueOnce(
+        jsonOk({ id: 'file_fresh', type: 'file', mime_type: 'text/plain', size_bytes: 3 }, 200),
+      );
     const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_stale', createdAt: 1 }));
     const out = await dedupUpload(
       { content: 'abc', mimeType: 'text/plain', filename: 'a.txt' },
+      FILE_ROUTE,
       env,
     );
     // Never returns the dead id — a fresh upload replaces it.
-    expect(out).toEqual({ fileId: 'file_fresh', deduped: false });
-    expect(kv.delete).toHaveBeenCalledWith(await sha256Hex('abc'));
+    expect(out).toMatchObject({
+      reference: { upstreamFileId: 'file_fresh' },
+      deduped: false,
+    });
+    expect(kv.delete).toHaveBeenCalledWith(await dedupStorageKey('abc'));
     // Metadata check (GET) then upload (POST /files).
     expect(fetchCall(fetchMock, 0).url).toBe('https://api.anthropic.com/v1/files/file_stale');
     const upload = fetchCall(fetchMock, 1);
@@ -190,47 +228,247 @@ describe('LEVER 3 — file-dedup', () => {
     const putCall = kv.put.mock.calls.at(0);
     if (!putCall) throw new Error('KV put was not called');
     const [hashKey, stored, putOpts] = putCall;
-    expect(hashKey).toBe(await sha256Hex('abc'));
-    expect((JSON.parse(stored) as { fileId: string }).fileId).toBe('file_fresh');
+    expect(hashKey).toBe(await dedupStorageKey('abc'));
+    expect(JSON.parse(stored)).toMatchObject({ fileId: 'file_fresh', mediaType: 'text/plain' });
     expect(putOpts?.expirationTtl).toBe(KV_RECORD_TTL_SECONDS);
+  });
+
+  it('treats a malformed metadata success as stale instead of vending the cached id', async () => {
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(new Response('null'))
+      .mockResolvedValueOnce(
+        jsonOk({ id: 'file_recovered', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      );
+    const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_malformed', createdAt: 1 }));
+    await expect(
+      dedupUpload({ content: 'abc', mimeType: 'text/plain', filename: 'a.txt' }, FILE_ROUTE, env),
+    ).resolves.toMatchObject({
+      reference: { upstreamFileId: 'file_recovered' },
+      deduped: false,
+    });
+    expect(kv.delete).toHaveBeenCalledWith(await dedupStorageKey('abc'));
+    expect(fetchCall(fetchMock, 1).url).toBe('https://api.anthropic.com/v1/files');
   });
 
   it('KV miss uploads, stores hash→fileId, returns deduped:false', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ id: 'file_new' }));
+    fetchMock.mockResolvedValue(
+      jsonOk({ id: 'file_new', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+    );
     const { kv, env } = kvMock();
 
     const out = await dedupUpload(
       { content: 'xyz', mimeType: 'text/plain', filename: 'b.txt' },
+      FILE_ROUTE,
       env,
     );
-    expect(out).toEqual({ fileId: 'file_new', deduped: false });
+    expect(out).toMatchObject({ reference: { upstreamFileId: 'file_new' }, deduped: false });
     expect(fetchCall(fetchMock, 0).url).toBe('https://api.anthropic.com/v1/files');
     const putCall = kv.put.mock.calls.at(0);
     if (!putCall) throw new Error('KV put was not called');
     const [hashKey, stored, putOpts] = putCall;
-    expect(hashKey).toBe(await sha256Hex('xyz'));
-    expect((JSON.parse(stored) as { fileId: string }).fileId).toBe('file_new');
+    expect(hashKey).toBe(await dedupStorageKey('xyz'));
+    expect(JSON.parse(stored)).toMatchObject({ fileId: 'file_new', mediaType: 'text/plain' });
     // The KV record carries the conservative TTL (stale-id bound).
     expect(putOpts?.expirationTtl).toBe(KV_RECORD_TTL_SECONDS);
   });
 
+  it('treats a stored bare provider id as a miss rather than a validated record', async () => {
+    // Only the JSON record shape is a hit: a raw `file_…` string is never read
+    // out of storage as if it carried validated route metadata.
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonOk({ id: 'file_fresh', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+    );
+    const { kv, env } = kvMock('file_bare_record');
+
+    const out = await dedupUpload(
+      { content: 'xyz', mimeType: 'text/plain', filename: 'b.txt' },
+      FILE_ROUTE,
+      env,
+    );
+    expect(out).toMatchObject({ reference: { upstreamFileId: 'file_fresh' }, deduped: false });
+    // No metadata verification of the bare id — straight to the upload.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchCall(fetchMock, 0).url).toBe('https://api.anthropic.com/v1/files');
+    expect(kv.put).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats KV read and write outages as best-effort cache misses', async () => {
+    const readFetch = stubFetch().mockResolvedValueOnce(
+      jsonOk({
+        id: 'file_after_read_outage',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 3,
+      }),
+    );
+    const readOutage = kvMock();
+    readOutage.kv.get.mockRejectedValueOnce(new Error('KV unavailable'));
+
+    await expect(
+      dedupUpload(
+        { content: 'read-outage', mimeType: 'text/plain', filename: 'read.txt' },
+        FILE_ROUTE,
+        readOutage.env,
+      ),
+    ).resolves.toMatchObject({
+      reference: { upstreamFileId: 'file_after_read_outage' },
+      deduped: false,
+    });
+    expect(fetchCall(readFetch, 0).url).toBe('https://api.anthropic.com/v1/files');
+
+    const writeFetch = stubFetch().mockResolvedValueOnce(
+      jsonOk({
+        id: 'file_after_write_outage',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 3,
+      }),
+    );
+    const writeOutage = kvMock();
+    writeOutage.kv.put.mockRejectedValueOnce(new Error('KV unavailable'));
+
+    await expect(
+      dedupUpload(
+        { content: 'write-outage', mimeType: 'text/plain', filename: 'write.txt' },
+        FILE_ROUTE,
+        writeOutage.env,
+      ),
+    ).resolves.toMatchObject({
+      reference: { upstreamFileId: 'file_after_write_outage' },
+      deduped: false,
+    });
+    expect(fetchCall(writeFetch, 0).url).toBe('https://api.anthropic.com/v1/files');
+  });
+
+  it('isolates identical bytes by tenant, provider account, file policy, and group', async () => {
+    const fetchMock = stubFetch();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonOk({ id: 'file_policy_a', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      )
+      .mockResolvedValueOnce(
+        jsonOk({ id: 'file_policy_b', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      )
+      .mockResolvedValueOnce(
+        jsonOk({ id: 'file_tenant_b', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      );
+    const { kv, env } = kvMock();
+    const alternateRoute = {
+      ...FILE_ROUTE,
+      compatibleGroups: ['onboarding-visual'] as [string, ...string[]],
+    };
+
+    await dedupUpload(
+      { content: 'same-bytes', mimeType: 'text/plain', filename: 'a.txt' },
+      FILE_ROUTE,
+      env,
+    );
+    await dedupUpload(
+      { content: 'same-bytes', mimeType: 'text/plain', filename: 'b.txt' },
+      alternateRoute,
+      env,
+    );
+    await dedupUpload(
+      { content: 'same-bytes', mimeType: 'text/plain', filename: 'tenant.txt' },
+      { ...FILE_ROUTE, tenantScope: 'tenant:other' },
+      env,
+    );
+
+    const firstKey = kv.put.mock.calls[0]?.[0];
+    const secondKey = kv.put.mock.calls[1]?.[0];
+    const thirdKey = kv.put.mock.calls[2]?.[0];
+    expect(firstKey).toContain(
+      `:${FILE_ROUTE.policy.name}:${FILE_ROUTE.compatibleGroups.join(',')}:`,
+    );
+    expect(secondKey).toContain(
+      `:${alternateRoute.policy.name}:${alternateRoute.compatibleGroups.join(',')}:`,
+    );
+    expect(firstKey).not.toBe(secondKey);
+    expect(firstKey).not.toBe(thirdKey);
+  });
+
+  it('never retains metadata past provider expiry', () => {
+    const now = Date.parse('2026-08-11T12:00:00.000Z');
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    expect(fileMetadataTtlSeconds(new Date(now + 3600_000).toISOString())).toBe(3600);
+    expect(fileMetadataTtlSeconds(null)).toBe(KV_RECORD_TTL_SECONDS);
+    expect(() => fileMetadataTtlSeconds(new Date(now + 60_000).toISOString())).toThrow(/too near/);
+  });
+
+  it('preserves cancellation and surfaces stale-check and upload timeouts', async () => {
+    const cancelled = new AbortController();
+    cancelled.abort();
+    stubFetch().mockRejectedValueOnce(new DOMException('aborted', 'AbortError'));
+    const cached = kvMock(JSON.stringify({ fileId: 'file_cached', createdAt: 1 }));
+    await expect(
+      dedupUpload(
+        { content: 'cached', mimeType: 'text/plain', filename: 'cached.txt' },
+        FILE_ROUTE,
+        cached.env,
+        cancelled.signal,
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: { failureClass: 'cancelled', retryable: false },
+    });
+
+    const timedOut = new AbortController();
+    timedOut.abort();
+    stubFetch().mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+    const timedCached = kvMock(JSON.stringify({ fileId: 'file_cached', createdAt: 1 }));
+    await expect(
+      dedupUpload(
+        { content: 'cached', mimeType: 'text/plain', filename: 'cached.txt' },
+        FILE_ROUTE,
+        timedCached.env,
+        timedOut.signal,
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: { failureClass: 'timeout', retryable: true },
+    });
+
+    stubFetch().mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+    const missing = kvMock();
+    await expect(
+      dedupUpload(
+        { content: 'missing', mimeType: 'text/plain', filename: 'missing.txt' },
+        FILE_ROUTE,
+        missing.env,
+        timedOut.signal,
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: { failureClass: 'timeout', retryable: true },
+    });
+  });
+
   it('no KV binding → plain upload, never touches KV, deduped:false', async () => {
     const fetchMock = stubFetch();
-    fetchMock.mockResolvedValue(jsonOk({ id: 'file_plain' }));
+    fetchMock.mockResolvedValue(
+      jsonOk({ id: 'file_plain', type: 'file', mime_type: 'image/png', size_bytes: 4 }),
+    );
     const out = await dedupUpload(
       { content: 'data', mimeType: 'image/png', filename: 'c.png' },
+      FILE_ROUTE,
       ENV, // no FILES_KV
     );
-    expect(out).toEqual({ fileId: 'file_plain', deduped: false });
+    expect(out).toMatchObject({ reference: { upstreamFileId: 'file_plain' }, deduped: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('throws (caller catches) when the upload fails', async () => {
     stubFetch().mockResolvedValue(jsonOk({ error: { message: 'boom' } }, 500));
     await expect(
-      dedupUpload({ content: 'd', mimeType: 'text/plain', filename: 'd.txt' }, ENV),
-    ).rejects.toThrow(/boom/);
+      dedupUpload({ content: 'd', mimeType: 'text/plain', filename: 'd.txt' }, FILE_ROUTE, ENV),
+    ).rejects.toMatchObject({
+      inferenceError: {
+        backend: 'anthropic',
+        status: 500,
+        // The provider's message leads; the adapter appends the Files API
+        // beta-access hint to a 500 upload.
+        message: expect.stringMatching(/^boom[\s\S]*Files API[\s\S]*beta/),
+      },
+    });
   });
 });
 
@@ -272,25 +510,17 @@ describe('LEVER 4 — countTokens', () => {
 // ── LEVER 5: model / effort routing ─────────────────────────────────────────
 
 describe('LEVER 5 — model + effort routing', () => {
-  it('registry tiers resolve to models: placement→fast, a balanced prompt→balanced, no-tier→frontier default', () => {
-    // The tier PAIRING is registry data; the model VALUES are deploy-time config
-    // (MODEL_FAST / MODEL_BALANCED / MODEL_FRONTIER via `resolveModel`). Production
-    // values are pinned by the wrangler.toml [vars] contract test in
-    // test/config.test.ts.
-    // `fast` tier — the latency-sensitive placement prompt.
+  it('prompt groups resolve through profiles to the configured model bindings', () => {
+    // Group→profile pairing is registry data; model values are deploy-time
+    // configuration. Production values are pinned by test/config.test.ts.
     expect(getSystemPrompt('placement', ENV).model).toBe(ENV.MODEL_FAST);
-    // `balanced` tier — a multi-modal / JSON reasoner.
+    expect(getSystemPrompt('image-selection', ENV).model).toBe(ENV.MODEL_FAST);
     expect(getSystemPrompt('proposals', ENV).model).toBe(ENV.MODEL_BALANCED);
-    // DEFAULT (`frontier`) tier — the entries that OMIT `tier`.
     expect(getSystemPrompt('chat', ENV).model).toBe(ENV.MODEL_FRONTIER);
     expect(getSystemPrompt('onboarding', ENV).model).toBe(ENV.MODEL_FRONTIER);
-    expect(getSystemPrompt('image-selection', ENV).model).toBe(ENV.MODEL_FRONTIER);
   });
 
-  it('the DEFAULT tier is `frontier` — a no-tier prompt resolves to the frontier binding', () => {
-    // A no-tier entry (`chat`) MUST resolve to the frontier model id, proving the
-    // registry's DEFAULT_TIER is `frontier` (the flagship agent-loop tier). If the
-    // default flipped, this catches it.
+  it('pins representative fast, balanced, and frontier group routes', () => {
     expect(getSystemPrompt('chat', ENV).model).toBe('claude-opus-4-8');
     expect(getSystemPrompt('placement', ENV).model).toBe('claude-haiku-4-5');
     expect(getSystemPrompt('proposals', ENV).model).toBe('claude-sonnet-5');
@@ -320,19 +550,29 @@ describe('LEVER 5 — model + effort routing', () => {
     expect(anthropic.supportsEffort('claude-opus-4-5')).toBe(true);
     expect(anthropic.supportsEffort('claude-sonnet-4-6')).toBe(true);
     expect(anthropic.supportsEffort('claude-sonnet-5')).toBe(true);
+    // Matching is by family prefix, so an UNRELEASED version inside a supporting
+    // family keeps the lever instead of silently losing it to an exact-id list.
+    expect(anthropic.supportsEffort('claude-opus-4-9')).toBe(true);
+    expect(anthropic.supportsEffort('claude-opus-5')).toBe(true);
+    expect(anthropic.supportsEffort('claude-sonnet-5-1')).toBe(true);
+    expect(anthropic.supportsEffort('claude-fable-6')).toBe(true);
     // Models that 400 on output_config.effort.
     expect(anthropic.supportsEffort('claude-haiku-4-5')).toBe(false);
+    expect(anthropic.supportsEffort('claude-haiku-5')).toBe(false);
     expect(anthropic.supportsEffort('claude-sonnet-4-5')).toBe(false);
+    expect(anthropic.supportsEffort('gpt-5')).toBe(false);
     expect(anthropic.supportsEffort(getSystemPrompt('placement', ENV).model)).toBe(false);
   });
 
   it('chat.ts NEVER sends output_config.effort to an effort-UNsupported model (placement 500 guard)', async () => {
     // Minimal SSE body the worker can parse → ends the loop after one turn.
     const sse =
-      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+      `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart())}\n\n` +
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n' +
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
-      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n';
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n';
     const sseResponse = () =>
       new Response(
         new ReadableStream({
@@ -369,8 +609,7 @@ describe('LEVER 5 — model + effort routing', () => {
     expect(placementBody.model).toBe('claude-haiku-4-5');
     expect(placementBody.output_config).toBeUndefined();
 
-    // Forcing effort via the client body on the placement model must STILL be
-    // dropped — the guard is on model capability, not on where effort came from.
+    // Caller effort is not an authority and remains absent.
     const placementForced = await bodyOf(req('placement', { effort: 'low' }));
     expect(placementForced.model).toBe('claude-haiku-4-5');
     expect(placementForced.output_config).toBeUndefined();
@@ -380,11 +619,10 @@ describe('LEVER 5 — model + effort routing', () => {
     expect(chatBody.model).toBe('claude-opus-4-8');
     expect(chatBody.output_config).toBeUndefined();
 
-    // chat → Opus 4.8 (effort-SUPPORTED) with effort set via body: output_config
-    // IS attached. Proves the guard keeps the lever working where it's valid.
+    // A caller cannot add effort to a prompt whose registry entry omits it.
     const chatEffort = await bodyOf(req('chat', { effort: 'low' }));
     expect(chatEffort.model).toBe('claude-opus-4-8');
-    expect(chatEffort.output_config).toEqual({ effort: 'low' });
+    expect(chatEffort.output_config).toBeUndefined();
   });
 });
 
@@ -403,7 +641,9 @@ describe('integration — agent-loop cache_control count ≤ 4', () => {
       const lines: string[] = [];
       const push = (type: string, data: Record<string, unknown>) =>
         lines.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-      push('message_start', { message: { usage: { input_tokens: 10 } } });
+      lines.push(
+        `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart({ input_tokens: 10 }))}\n\n`,
+      );
       blocks.forEach((block, index) => {
         if (block.type === 'text') {
           push('content_block_start', { index, content_block: { type: 'text' } });
@@ -418,8 +658,10 @@ describe('integration — agent-loop cache_control count ≤ 4', () => {
             delta: { type: 'input_json_delta', partial_json: '{}' },
           });
         }
+        push('content_block_stop', { index });
       });
       push('message_delta', { delta: { stop_reason: stopReason }, usage: { output_tokens: 5 } });
+      push('message_stop', {});
       return lines.join('');
     }
     const sseResponse = (text: string) =>
@@ -495,10 +737,12 @@ describe('integration — agent-loop cache_control count ≤ 4', () => {
 describe('LEVER 6 — fileIds document-block caching (placement file prefix)', () => {
   /** Minimal one-turn SSE the worker parses → ends the loop after one turn. */
   const ONE_TURN_SSE =
-    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+    `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart())}\n\n` +
     'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n' +
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
-    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n';
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
 
   const sseResponse = () =>
     new Response(
@@ -524,12 +768,30 @@ describe('LEVER 6 — fileIds document-block caching (placement file prefix)', (
       const match = u.match(/\/v1\/files\/(file_[^/?]+)$/);
       if (match?.[1]) {
         return Promise.resolve(
-          jsonOk({ id: match[1], mime_type: mimeByFileId[match[1]] || 'text/plain' }),
+          jsonOk({
+            id: match[1],
+            type: 'file',
+            mime_type: mimeByFileId[match[1]] || 'text/plain',
+            size_bytes: 1,
+          }),
         );
       }
       // The Messages stream.
       return Promise.resolve(sseResponse());
     });
+    const record = body as { fileIds?: unknown };
+    const upstreamIds = Array.isArray(record.fileIds) ? record.fileIds.map((id) => String(id)) : [];
+    const references = await opaqueFileEnv(
+      upstreamIds.map((upstreamFileId) => ({
+        upstreamFileId,
+        mediaType: mimeByFileId[upstreamFileId] ?? null,
+      })),
+      ['placement-vision'],
+    );
+    const routedBody = {
+      ...(body as Record<string, unknown>),
+      ...(upstreamIds.length > 0 ? { fileIds: references.ids } : {}),
+    };
     const req = new Request('https://app-ai.test/chat', {
       method: 'POST',
       headers: {
@@ -538,9 +800,9 @@ describe('LEVER 6 — fileIds document-block caching (placement file prefix)', (
         'X-Personalizer-System-Prompt': 'placement',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(routedBody),
     });
-    await (await handleChat(req, ENV, CORS)).text();
+    await (await handleChat(req, references.env, CORS)).text();
     const index = fetchedUrls(fetchMock).findIndex((u) => u.endsWith('/v1/messages'));
     if (index < 0) throw new Error('no /v1/messages call was made');
     return sentBody(fetchCall(fetchMock, index).init);

@@ -23,21 +23,22 @@ import {
   unknownToolResult,
   type BridgeChannel,
 } from '../integration-bridge';
-import type { ToolDefinition } from '../../lib/anthropic';
+import type { CanonicalServerToolDefinition } from '../../lib/inference-types';
 import type { ToolsetDescriptor } from '../types';
 
 /**
- * Anthropic tool definitions (sent in the `tools` array). Frozen cross-repo
+ * Canonical server-tool definitions. Frozen cross-repo
  * contract shapes — names, schemas, and descriptions are pinned by the
  * contract snapshot; the descriptions carry the write-caution instruction the
  * integration bridge itself does not enforce.
  */
-const TOOL_DEFINITIONS: ToolDefinition[] = [
+const TOOL_DEFINITIONS: CanonicalServerToolDefinition[] = [
   {
     name: 'shopify_rest_request',
+    execution: 'server',
     description:
       "Call the merchant's Shopify Admin REST API. Provide the HTTP method, the version-less resource path (e.g. 'products.json'), and optional query parameters and JSON body. Reads are always safe; perform writes (POST/PUT/DELETE) only when the merchant has explicitly asked for the change, and confirm destructive actions first.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'] },
@@ -57,9 +58,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'shopify_graphql',
+    execution: 'server',
     description:
       "Run a GraphQL operation against the merchant's Shopify Admin API. Queries are always safe; run mutations only when the merchant has explicitly asked for the change, and confirm destructive actions first. Use variables for values.",
-    input_schema: {
+    inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'A GraphQL document (query or mutation).' },

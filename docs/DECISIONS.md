@@ -11,8 +11,9 @@ supersession, this log holds what stands.
 
 ### 2. GA 1-hour prompt cache on stable prefixes
 
-Stable, reused prefixes carry `cache_control: { type: 'ephemeral', ttl: '1h' }`
-(`EXTENDED_CACHE_CONTROL` in `lib/cache-control.ts`): the `/messages` system
+Stable, reused prefixes carry canonical `cache: 'extended'` intents that the
+Anthropic adapter realizes as `cache_control: { type: 'ephemeral', ttl: '1h' }`:
+the `/messages` system
 block + reused file attachments, the `/chat` `buildSystem` base block, and the
 placement file-block prefix. `/messages` callers identify the terminal stable
 user-content prefix with `limespot_stable_cache_prefix: true`; the worker turns
@@ -29,11 +30,12 @@ block, conversation turns) is left uncached or on the 5-minute default.
 
 ### 3. Effort lever is model-gated
 
-`output_config.effort` is a real output-token control, but it is valid only on a
-specific model set. `EFFORT_SUPPORTED_MODELS` in `lib/anthropic.ts` is that set —
+Semantic effort is a real output-token control, but Anthropic's
+`output_config.effort` is valid only on a specific model set.
+`EFFORT_SUPPORTED_MODELS` in `inference/adapters/anthropic-wire.ts` is that set —
 the only place it is written down — and `supportsEffort(model)` is the gate over it.
-Sending the parameter to a model outside the set returns a 400. The handlers gate on the resolved
-model's capability and omit `output_config` otherwise, so a registry entry can
+Sending the parameter to a model outside the set returns a 400. The registry owns
+semantic effort and the adapter gates on the resolved model, so a registry entry can
 carry `effort` without risking a 400 on a model swap. Placement runs on Haiku
 4.5, so it carries no `effort` — the guard would drop it regardless, and setting
 it would be dead config.
@@ -56,19 +58,25 @@ This keeps prompt wording out of JS (pure text, byte-for-byte) while staying
 filesystem-free. A prompt needing runtime `${}` interpolation can't be a static
 `.md` — that dynamic piece stays in JS.
 
-### 5. KV dedup is a graceful no-op, with a 30-day TTL and an existence check
+### 5. KV dedup is a graceful no-op, with expiry-bounded TTL and an existence check
 
 The Files API does not dedup by content — re-uploading identical bytes mints a
 fresh `file_id`. `lib/file-dedup.ts` hashes the bytes (SHA-256) and, when
-`env.FILES_KV` is bound, reuses the stored `file_id` on a hash hit. Three
+`env.FILES_KV` is bound, reuses the stored `file_id` only on the same tenant +
+provider account + file-policy + compatible-group + hash route. Four
 decisions:
 
-- **Graceful no-op.** When the binding is absent, dedup falls back to a plain
-  upload — the live path never depends on KV being provisioned.
-- **30-day record TTL** (`KV_RECORD_TTL_SECONDS`). Files persist until explicitly
-  deleted, so the record TTL is deliberately shorter than a file's lifetime: a
-  mapping that outlives common churn (key rotation, manual cleanup) ages out on
-  its own, and the TTL also bounds KV growth.
+- **Best-effort optimization only.** Missing or unavailable KV reads/writes fall
+  back to a direct provider upload. Prompt-aware public references are sealed,
+  self-contained metadata and never depend on KV visibility for resolution.
+- **Expiry-bounded record TTL.** `KV_RECORD_TTL_SECONDS` caps retention at 30
+  days; when the provider supplies an earlier expiry, both dedup and opaque
+  metadata expire first. A transient metadata failure propagates instead of
+  fabricating a non-expiring object.
+- **Route-scoped keys.** Identical bytes uploaded for another tenant, provider
+  account, file policy, or compatible prompt group have a separate mapping, so
+  multi-route upload cannot overwrite or reuse an incompatible opaque vendor
+  object.
 - **Live existence check.** On a KV hit the cached `file_id` is verified against
   the Files API metadata endpoint before reuse; a 404 drops the stale record and
   re-uploads, so dedup never vends a dead `file_id` that would 400 a later
@@ -119,7 +127,7 @@ ID.'`, Brain's exact analog).
 - **404 `RecordNotFoundException`** — unknown route
   (`Message: 'Resource not found.'`, Brain's exact mapping).
 - **`AnthropicApiException`, upstream status kept** — a non-ok Anthropic
-  response (`/messages`, `/files` list/delete/upload, the `/chat` agent loop).
+  response (`/messages`, `/files` upload/delete, the `/chat` agent loop).
   `Message` is Anthropic's `error.message`; the raw upstream body rides in
   `MessageDetail`. A 500 upload failure also appends the Files-API-beta-access
   hint to `Message`.
@@ -148,9 +156,10 @@ as `fileIds` in `/chat`. Two cooperating mechanisms keep the cost down:
 - **Cache.** `normalizeMessages` prepends the file blocks to the first user turn
   and marks the LAST file block with the 1h breakpoint, so the whole file prefix
   caches at 0.1× on the repeat call (prefix match). The breakpoint budget stays
-  ≤4: 1 system + 1 file-prefix + ≤2 conversation (`applyConversationBreakpoints`
-  drops its cap to 2 when a file prefix is present, and reserves the file-prefix
-  head blocks so they aren't stripped or recounted).
+  ≤4: 1 system + 1 file-prefix + ≤2 conversation
+  (`applyCanonicalConversationBreakpoints` drops its cap to 2 when a file prefix
+  is present, and reserves the file-prefix head blocks so they aren't stripped
+  or recounted).
 - **Dedup.** Same-page reuse maps to the same `file_id` via the `/files`
   content-hash dedup, so the same bytes hit the same cache entry across calls.
 - **Block typing.** Each `fileId` is resolved to an `image` block (mime
@@ -165,7 +174,7 @@ This can be measured live with the optional token-savings diagnostic (see
 ### 10. AI tools live in named toolsets behind a registry
 
 The AI-tool layer is organized as named TOOLSETS (`src/toolsets/<name>/`), one
-per backend, each encapsulating its Anthropic tool definitions, its
+per backend, each encapsulating its canonical tool definitions, its
 dispatch/executors, its normalizers, and its degrade conventions. A registry
 (`src/toolsets/registry.ts`) composes the active toolsets per request from the
 subscriber's available integration parties (#14); handlers consume tools only
@@ -203,10 +212,11 @@ bundle. Standards: [CODE-PATTERNS.md](CODE-PATTERNS.md) → Strict TypeScript.
 
 Every URL and deploy-time tunable lives in configuration behind the single
 typed `Env` in `src/config.ts`: `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`,
-`CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
+`OPENAI_API_BASE`, `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, and the capability-tier→model bindings `MODEL_FAST` /
 `MODEL_BALANCED` / `MODEL_FRONTIER` in wrangler.toml `[vars]` (production) /
 `.dev.vars` (local; documented in the committed `.dev.vars.example`), and the
-`CLAUDE_API_KEY` secret in Cloudflare encrypted secrets / `.dev.vars`. **A missing variable throws, naming the variable and
+provider API keys plus `TOKEN_ENCRYPTION_SECRET` and the Personalizer integration token
+in Cloudflare encrypted secrets / `.dev.vars`. **A missing variable throws, naming the variable and
 its channel — there are no fallback defaults**, because a fallback silently
 turns a deployment mistake into wrong routing (a worker quietly talking to the
 wrong Personalizer is worse than a loud 500). The classification line: frozen
@@ -408,7 +418,7 @@ ceiling, while the compact schema keeps the ordinary response far below it.
 ### 19. Logging policy is level-routed configuration, with one request runtime
 
 Worker application code emits structured records through one request-scoped `LoggingRuntime`.
-The router establishes request ID, raw context ID, route, method, and validated subscriber context;
+The router establishes request ID, route, method, and validated subscriber context;
 handlers and shared helpers derive scoped loggers from that immutable runtime. Each severity has a
 required `LOG_TARGETS_<LEVEL>` binding whose value is `ignore` or a comma-separated fan-out to
 registered sinks. Environment names do not select behavior.
@@ -420,10 +430,12 @@ CLEF delivery is asynchronous through `waitUntil`, fail-open, and optionally
 authenticated with the `LOG_SEQ_API_KEY` secret; the configured shared endpoint accepts anonymous
 ingestion. A rejected background task is caught and emitted through the same runtime.
 
-Diagnostic records retain errors, stacks, causes, complete provider input/output, tool activity, file IDs,
-request state, and raw context IDs. The serializer redacts only secret-bearing fields (API keys,
-authorization/cookies/passwords, and service tokens). The inference trace is a TRACE producer, not
-an environment branch, so it follows the same routing contract as every code-level record.
+Diagnostic records retain errors, stacks, causes, diagnostic provider text, tool decisions, and
+request state. The serializer redacts credential-bearing fields (API keys,
+authorization/cookies/passwords, service tokens, and context IDs), while the inference-trace
+boundary also removes opaque file references, encoded media, and provider continuation state before
+any sink receives the record. The inference trace is a TRACE producer, not an environment branch,
+so it follows the same routing contract as every code-level record.
 
 ### 20. Relocation is its own review verb (`moveBox`), never a remove + add pair
 
@@ -539,3 +551,328 @@ The rejected alternatives are treating tool-name presence as sufficient without 
 composing all known tools and relying on downstream authorization failures, coupling
 `get_entity_context` to a catalog that does not own it, and returning upstream diagnostic bodies to
 the model.
+
+### 25. Prompt groups own provider routes and direct-file compatibility
+
+`src/prompt-registry.ts` owns the internal resolution chain: prompt name →
+prompt group → capability tier → configured model id, with the provider, API
+family, capabilities, and direct-file policy following from that model id
+(decision 30). Every prompt entry has one required `group`; the 13 groups and
+eleven file-reusing fallback edges are typed registry data. Module
+initialization and `test/prompt-groups.test.ts` reject orphan groups, feature
+requirements a group does not declare, a borrowed file route that is itself
+borrowed, and a file-reusing fallback crossing file routes; route resolution
+additionally rejects a model whose capabilities miss the group's requirements
+and a file policy incompatible with the resolved API family. This keeps
+provider and model authority inside app-ai; callers name prompt contracts
+only.
+
+`src/lib/inference-types.ts` is the canonical provider-neutral contract for
+content, requests, tools, streams, results, usage, errors, continuation state,
+model capabilities, and file references. Canonical tools retain full JSON
+Schema, and agent requests are a server/client discriminated union so a
+browser-owned tool cannot enter the server executor path. The public file reference is opaque;
+provider/account/upstream identifiers exist only in an internal reference.
+The frozen prompt-aware file contract uses one `file` multipart part plus one
+or more repeated `prompt` string parts. Every success has one shape: `{ id, type }`
+plus a prompt-addressable `references` map naming every declared prompt, with the
+top-level reference representing the first declared prompt. Destinations sharing a
+route share the reference minted for it, so an upload resolving to a single route
+names every declared prompt against that one value rather than omitting the map —
+one parse path for the caller, whatever the route count.
+`test/__snapshots__/prompt-aware-files.contract.json` is byte-checked, and the lib
+holds a byte-identical copy, so the two repositories move it together.
+The `/files` handler validates every repeated `prompt` field, resolves prompt → group → profile/provider/account/file
+policy after multipart parsing and before provider I/O, collapses same-route
+destinations, and starts distinct route uploads concurrently. It returns random
+`file_ref_v1_*` tokens carrying authenticated encrypted route metadata under
+`TOKEN_ENCRYPTION_SECRET`, bound to a keyed tenant pseudonym: the validated context ID for a merchant, and
+the demo session identifier for a scoped demo session, which carries no context ID
+and therefore uploads into a namespace of its own.
+Self-contained tokens avoid Workers KV's eventual-consistency window in the
+immediate upload→inference flow; `FILES_KV` is best-effort dedup only. File bytes
+are sent directly to each provider and never retained by app-ai. Inference
+recursively resolves public tokens to internal provider references and validates
+tenant, provider, account, policy, API family, expiry, and compatible group
+before adapter I/O. Registered/canonical inference rejects raw provider IDs, and
+the bounded absent/unknown-selector `/messages` passthrough refuses any
+`source.type === 'file'` block with 400 `ArgumentException` and replaces the
+caller's `model` and `max_tokens` with the registry's unregistered route (the
+`fast` tier binding, which must resolve to the Anthropic Messages family, and a
+fixed output budget), so no path forwards a raw provider id or a caller-chosen
+cost. The worker-first deployment order and the paired rollback this
+contract imposes on app-ai and Studio are a hard rule in the root
+[CLAUDE.md](../CLAUDE.md) → Hard rules.
+
+The direct-upload path sends provider bytes to every resolved vendor
+route without production byte retention, and evidence reuse is valid only
+inside a compatible prompt group. The alternatives — a second registry,
+model-prefix provider inference, caller-supplied provider/profile fields, and
+intermediary blob storage — split authority or add an avoidable custody
+boundary, so they are excluded.
+
+### 26. One canonical runtime owns inference; adapters own provider protocols
+
+`src/inference/service.ts` implements `complete`, `stream`, and the shared
+server/client/no-tool agent loop using only the canonical types in
+`src/lib/inference-types.ts`. The loop preserves opaque provider continuation
+state, applies canonical cache intents between turns, executes only server-owned
+tools, and returns browser-owned calls without executing them.
+
+When a browser-owned tool pauses `/chat`, the terminal payload includes an
+opaque `continuation` token alongside `toolCalls`. An adapter can also mark state
+as required after an ordinary terminal turn (Gemini thought signatures), in which
+case `/chat` and registered `/messages` return the same sealed token. The client
+echoes that token with its matching next request. The worker rejects
+malformed, tampered, expired, cross-tenant, cross-group, cross-profile, or
+cross-provider tokens before provider I/O. Tokens are authenticated encrypted
+envelopes bound to the server-resolved route; only the owning adapter interprets
+the decoded provider state. This preserves signed Anthropic thinking blocks and
+provider-native continuation handles without allowing stored provider state to
+cross an app-ai ownership boundary.
+
+`src/inference/factory.ts` is the only provider/API-family switch. Provider
+authentication, HTTP, wire types, file operations, request serialization,
+stream parsing, effort/structured-output/cache realization, token estimates,
+usage/stops, and normalized errors live under `src/inference/adapters/`. Both
+registered `/messages` and `/chat` use the canonical service. Absent/unknown
+`/messages` selectors retain a bounded raw Anthropic compatibility path inside
+the Anthropic adapter so the external envelope stays unchanged.
+
+The configured tier bindings resolve every group to Anthropic. The adapter
+fixture matrix and architecture fitness tests pin the boundary, so another
+provider is a configuration change rather than a change to the seam.
+
+The canonical custom-tool contract preserves strict execution and current
+provider-neutral controls while provider-hosted tools carry adapter-owned opaque
+definitions. Anthropic compatibility accepts content-backed documents as either
+strings or text/image-block arrays, preserves citation and service-tier controls,
+strips cache markers only from cache-capable block positions before canonical
+allocation, validates message and file success envelopes fail-closed, and
+normalizes `output_tokens_details.thinking_tokens` as reasoning usage. Ordinary
+assistant history receives opaque provider state only at the Anthropic
+compatibility boundary; selecting another provider never fabricates
+provider-owned continuation state.
+
+### 27. OpenAI uses Responses with stored opaque continuation, without changing production routes
+
+The production-capable OpenAI adapter uses dependency-free Web `fetch` against the
+Responses and Files APIs. Canonical instructions/messages, image and file
+inputs, strict function tools, `text.format` JSON Schema, semantic reasoning
+effort, typed SSE events, usage, stops, and failures are translated and
+validated only under `src/inference/adapters/`. Tool results retain their
+`call_id`; visual tool results may carry input images/files. Successful turns
+return adapter-owned `previous_response_id` state, which the shared runtime and
+browser continuation contract carry opaquely. The initial stable system input
+and its explicit cache boundary remain in stored response state; a continuation
+therefore sends only input after the referenced assistant turn.
+The public envelope is authenticated and tenant/group/profile-bound before
+`previous_response_id` can reach the shared OpenAI project. Registered
+`/messages` results without an Anthropic raw envelope are serialized from the
+canonical result into the existing public message shape.
+Provider-hosted OpenAI tools remain fail-closed until their provider-specific
+output Items are explicitly modeled; this candidate currently owns custom
+server/client function tools only.
+
+The OpenAI Files policy is `provider-managed` with purpose `user_data`.
+Upload/retrieve/delete success envelopes are shape-checked, and file IDs
+remain sealed behind the same tenant/account/policy/group-bound public
+references when a prompt group is eventually routed there. The adapter factory
+can select `openai/openai-responses` for internal tests, but every production
+prompt group remains on Anthropic until prompt-level quality/latency/cost
+evaluations are recorded. Candidate-route fitness checks reject provider/file
+policy and capability mismatches before a group can select OpenAI.
+Best-effort dedup metadata retains validated upload MIME because OpenAI File
+objects omit MIME; a reused image therefore remains an image on later turns.
+
+Canonical prompt-cache intent is realized through Responses explicit
+`prompt_cache_breakpoint` markers on the supported text/image/file content
+blocks, a group/profile-stable `prompt_cache_key`, and request-wide explicit
+`30m` policy. The adapter rejects more than four writable markers before
+provider I/O. Because OpenAI currently offers only the `30m` explicit TTL,
+canonical `short` and `extended` preserve the requested stable-prefix boundary
+but share that provider retention policy.
+
+The optional `npm run verify:openai` matrix is paid and refuses to run unless
+both `OPENAI_LIVE_SMOKE=1` and `AI_CHANNEL=prod` are explicit. It is not a CI or
+release gate; the adapter's contract is held offline by the deterministic
+fixtures in `test/openai-adapter.test.ts` and the guard in
+`test/openai-live-guard.test.ts`.
+
+### 28. Local inference uses one Claude Code/Codex fulfiller boundary
+
+The development-only Anthropic-compatible shim selects a canonical local
+one-shot fulfiller through `LOCAL_AI_FULFILLER`. Claude Code remains the default
+and retains the established streaming, server-tool, and browser-tool bridge.
+Codex is deliberately narrower: it requires an explicit `CODEX_LOCAL_MODEL` and
+accepts only non-streaming, tool-free visual/structured turns. It runs
+`codex exec` ephemerally with inherited AGENTS/project instruction bytes set to
+zero, ignored user configuration/rules, a read-only sandbox,
+disabled shell/web/plugin/subagent/app-connector/dependency-install tools, image files, an optional JSON Schema output
+contract, strict terminal JSONL events, and request cancellation. Saved auth is
+forced to ChatGPT by default; `CODEX_API_KEY` requires `AI_CHANNEL=prod`. The
+child receives only an allowlisted runtime/auth environment, so app/provider
+secrets never reach model-invoked processes. Unsupported content or capability
+fails before process spawn, cancellation waits for child exit with bounded
+SIGKILL escalation, and temporary schema/image/result artifacts are removed in
+a `finally` path. The invocation follows the current official
+[Codex non-interactive](https://developers.openai.com/codex/noninteractive),
+[CLI reference](https://developers.openai.com/codex/cli/reference), and
+[configuration reference](https://developers.openai.com/codex/config-reference).
+
+The production Worker remains dependency-free and unchanged by this Node-only
+tooling. Outside production, provider-base accessors reject non-loopback Anthropic,
+OpenAI, and Gemini origins unless `AI_CHANNEL=prod` is explicit. Offline tests
+mock the Codex process boundary and never invoke Codex or a paid provider.
+
+### 29. The configured model id decides the provider
+
+A prompt group declares the capability TIER it runs on and the capabilities it
+requires. It names no provider, no API family, and no file policy. Those follow
+from the model id configured for its tier, resolved by the model catalog in
+`src/inference/model-catalog.ts`.
+
+The split is between what a DEPLOYMENT chose and what a model IS. Which model a
+tier runs is a deployment choice, so model ids stay in `wrangler.toml [vars]`
+(`MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER`, plus the sparse
+`MODEL_OVERRIDES` exceptions). Which vendor serves a model, over which API
+family, with which capabilities and direct-file policy, is a fact about the
+model, so it lives in code. Configuration that carried facts would let a
+deployment assert a capability the model does not have.
+
+The catalog matches by model-id FAMILY PREFIX, following the same routing
+principle as Brain's `ModelProviders`/`ModelClientRouter`, and not by exact id:
+an exact-id table silently drops a newly released version out of its family,
+and an effort gate keyed by exact id drops `output_config.effort` on every
+version bump. app-ai needs more than a provider
+name from that match, because a profile also carries capabilities and a file
+policy, so each family resolves the whole profile at once.
+
+An id no family claims THROWS at resolution, naming the id and the variable
+that supplied it. There is no default provider to fall through to: guessing one
+is how a credential, a file route, and a tenant's evidence reach the wrong
+vendor. Every resolution is then validated — capabilities against the group's
+declared requirements, file policy against the resolved API family, and a
+per-prompt override against its group's shared provider file route — so a
+settings-level provider switch fails closed instead of degrading.
+
+`GET /prompts` reports the resolved end of that chain per prompt under the live
+configuration, master-gated by `MASTER_SUBSCRIBER_ID` and answering every other
+validated merchant with the router's unknown-route body byte for byte. It also
+names the required secrets that are still blank, by name only.
+
+### 30. Gemini carries thought signatures in sealed continuation state
+
+The dormant Gemini adapter uses dependency-free Web `fetch` against
+`generateContent`, authenticating with `x-goog-api-key` rather than a bearer
+token, with the API version carried as a path segment inside `GEMINI_API_BASE`.
+It serves the `gemini-3` family only — the generation with a documented
+`thinkingLevel`, a documented `functionCall.id`, and mandatory thought
+signatures — and refuses every other id, including the image, speech, audio,
+embedding, live, and transcription models that publish other generation methods.
+
+`thoughtSignature` is the adapter's defining constraint. It is a part-level
+sibling of `functionCall`, present only on the FIRST call part of a parallel
+batch, and Gemini 3 rejects a replayed call part that has lost it. The adapter
+therefore stores the exact `role:"model"` content it received in opaque
+`backend: 'gemini'` provider state, replays it verbatim, and declares
+`requiresOrdinaryTurnContinuation`, so the signature crosses the public HTTP
+boundary of a browser client-tool round trip. A response whose first function
+call carries no signature, and a replay whose signature was stripped, both fail
+before provider I/O rather than becoming a provider 400 mid-loop.
+
+Three seams are implemented to documented behaviour and marked unverified in
+code, because official pages disagree or are silent. Structured output sends the
+normative REST reference's flat `responseMimeType`/`responseSchema`; the
+structured-output guide's nested `responseFormat.text` wrapper is the rejected
+alternative. Streaming publishes no terminal sentinel, so a clean close after a
+chunk carrying a finish reason IS the success condition and a close without one
+is a truncation failure. The error envelope is parsed defensively for both a
+lowercase string `code` and the classic integer `code` plus uppercase `status`,
+and 429 is split so a transient rate limit retries while an exhausted quota does
+not.
+
+Gemini has no cache breakpoints, so canonical cache intents map to no request
+field and capability declarations claim no canonical prompt caching; implicit
+caching still rewards the existing stable-prefix ordering discipline. Gemini
+counts a cache hit inside `promptTokenCount`, the opposite of Anthropic's
+disjoint accounting, and the mapping site says so. Strict structured output and
+strict tool schemas are refused because Gemini's parameters are an OpenAPI
+subset with a syntactic guarantee only. Files use the documented two-call
+resumable protocol; the provider-returned upload endpoint is validated against
+the configured origin before it is used, the reconstructed `fileUri` is pinned
+against the one the provider returned, and a non-active file is polled to a
+terminal state rather than referenced. The optional `npm run verify:gemini`
+probe matrix is paid, requires both `GEMINI_LIVE_SMOKE=1` and `AI_CHANNEL=prod`,
+and is outside CI/release gates.
+
+### 31. Gemini's shared output budget is split explicitly, and an invisible turn fails
+
+A canonical `maxOutputTokens` means the budget for the ANSWER. That is what a
+prompt group sizes, what `/messages` echoes back as `maxTokens`, and what
+`test/max-tokens-exact.test.ts` pins as passing through untouched. Anthropic's
+`max_tokens` bounds exactly that. Gemini's `maxOutputTokens` does not: it is ONE
+budget covering thinking tokens and the answer together.
+
+Forwarding the canonical number unchanged therefore hands a prompt a smaller
+answer for no reason other than which provider served it, and a small budget can
+be consumed entirely by thoughts — HTTP 200, `finishReason: MAX_TOKENS`, and
+nothing but `thought: true` parts. The Gemini adapter instead sends the canonical
+answer budget PLUS a thinking allowance, so the canonical meaning survives the
+translation.
+
+The allowance is chosen per THINKING LEVEL rather than pinned as a token count,
+because Gemini 3 exposes thinking as the qualitative `thinkingLevel` and offers
+no numeric split to fix. The level is consequently always sent — a request that
+declares no effort resolves to `high`, the most expensive level the model could
+otherwise pick — so the reserved share is a declared translation rather than a
+guess at a provider default. Unused output tokens are not billed, so a generous
+allowance costs nothing on a turn that thinks less than it reserves.
+
+The budget alone cannot make starvation impossible, so the second half of the
+decision is that it must never be silent. A terminal turn carrying neither
+visible text nor a tool call leaves the adapter as an `InferenceFailure`
+(`empty_response`, `invalid-response`) naming the provider's finish reason,
+through the same path as every other normalized adapter failure. An empty
+success is indistinguishable downstream from a model that legitimately said
+nothing, and it reaches a caller as a valid response with no content and nothing
+in the logs to explain it. A prompt-level block keeps its `content-filter` stop
+reason: that is a rejected request, not an invisible answer.
+
+The paid probe matrix carries the same correction. Every probe budgets thinking
+alongside its answer, a probe whose turn is starved anyway reports the distinct
+`starved` outcome instead of failing the contract, and the catalog probe runs
+first and fails by name when the configured smoke model is not one this API
+surface serves — a well-formed id that does not exist costs no inference to
+discover.
+
+### 32. Gemini caches implicitly, so cache intent is honoured by order
+
+`inlineCacheBreakpoints` is a capability about a MECHANISM: whether a provider
+honours per-block cache markers on a request. Anthropic and OpenAI do; Gemini
+does not. Naming it after the mechanism matters because a name that reads as
+"can cache at all" is false — Gemini caches a repeated request PREFIX
+automatically, above a size floor, with no request field and no API call.
+
+Because it reads as a cost characteristic rather than a correctness one, no
+prompt group requires it. Requiring the mechanism made a provider that caches by
+another route unroutable, which is a routing defect and not a safety property: a
+group needs caching to be affordable, not to be correct. Groups still require
+what they cannot work without — vision, provider files, streaming, structured
+output, tools, reasoning — and `GET /prompts` reports, per prompt, whether the
+resolved model honours the markers its canonical request carries, so an operator
+can see which prompts pay for reuse by another route.
+
+The Gemini adapter earns that other route deliberately. Implicit caching rewards
+a prefix that repeats byte for byte, so a canonical cache intent is honoured by
+ORDER instead of by a field: every component that repeats across calls of one
+prompt — system instruction, tool declarations, tool config, generation config —
+is emitted before `contents`, and the canonical block order inside `contents` is
+preserved exactly, because that is where the handlers already place reusable
+evidence first and per-call content last. Nothing in that prefix may vary per
+request, which is pinned by an adapter test asserting that two requests sharing a
+prompt produce byte-identical leading request bytes and diverge only at the
+per-call text.
+
+The explicit `cachedContents` named-cache resource is a separate lifecycle with
+its own creation, TTL, and deletion, and no adapter owns it.

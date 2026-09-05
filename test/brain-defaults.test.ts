@@ -23,7 +23,16 @@ import {
 } from '../src/lib/brain-defaults';
 import { handleMessages } from '../src/handlers/messages';
 import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
-import { ENV, CORS, stubFetch, fetchCall, fetchedUrls, headerOf, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  fetchedUrls,
+  headerOf,
+  sentBody,
+} from './helpers';
 
 beforeEach(() => resetDefaultsCacheForTests());
 afterEach(() => vi.restoreAllMocks());
@@ -436,7 +445,17 @@ describe('injection — the propose /messages path adds a second cacheable syste
       if (u.includes('personalizerConfig')) {
         return Promise.resolve(jsonResponse(rawDefaults()));
       }
-      return Promise.resolve(jsonResponse({ content: [] }));
+      if (u.endsWith('/v1/files')) {
+        return Promise.resolve(
+          jsonResponse({
+            id: 'file_attachment',
+            type: 'file',
+            mime_type: 'text/markdown',
+            size_bytes: 1,
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(anthropicMessage()));
     });
     return fetchMock;
   }
@@ -494,7 +513,7 @@ describe('injection — the propose /messages path adds a second cacheable syste
     fetchMock.mockImplementation((input) => {
       const u = String(input);
       if (u.includes('personalizerConfig')) return Promise.reject(new Error('brain down'));
-      return Promise.resolve(jsonResponse({ content: [] }));
+      return Promise.resolve(jsonResponse(anthropicMessage()));
     });
     const res = await handleMessages(messagesRequest('onboarding-batch'), ENV, CORS);
     expect(res.status).toBe(200);

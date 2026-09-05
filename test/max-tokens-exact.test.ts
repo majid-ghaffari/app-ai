@@ -21,7 +21,16 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getSystemPrompt } from '../src/prompt-registry';
 import { handleMessages } from '../src/handlers/messages';
 import { handleChat } from '../src/handlers/chat';
-import { ENV, CORS, stubFetch, fetchCall, fetchedUrls, sentBody } from './helpers';
+import {
+  anthropicMessage,
+  anthropicMessageStart,
+  ENV,
+  CORS,
+  stubFetch,
+  fetchCall,
+  fetchedUrls,
+  sentBody,
+} from './helpers';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -35,7 +44,7 @@ async function messagesBody(
   body: Record<string, unknown>,
 ): Promise<ReturnType<typeof sentBody>> {
   const fetchMock = stubFetch();
-  fetchMock.mockResolvedValue(jsonOk({ content: [] }));
+  fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
   const req = new Request('https://app-ai.test/messages', {
     method: 'POST',
     headers: {
@@ -117,10 +126,12 @@ describe('registry max_tokens is EXACT on /messages (no floor, no cap, no client
 
 describe('registry max_tokens is EXACT on /chat (placement overrides the client budget)', () => {
   const ONE_TURN_SSE =
-    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+    `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart())}\n\n` +
     'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n' +
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
-    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n';
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
 
   const sseResponse = () =>
     new Response(

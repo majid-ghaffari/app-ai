@@ -22,6 +22,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getSystemPrompt } from '../src/prompt-registry';
 import { handleChat } from '../src/handlers/chat';
 import {
+  anthropicMessageStart,
   ENV,
   CORS,
   AVAILABLE_AI_TOOLS,
@@ -31,6 +32,7 @@ import {
   sentBody,
   readWorkerSse,
   eventOf,
+  opaqueFileEnv,
 } from './helpers';
 
 interface SseBlockSpec {
@@ -46,7 +48,9 @@ function anthropicSse(blocks: SseBlockSpec[], stopReason: string): string {
   const lines: string[] = [];
   const push = (type: string, data: Record<string, unknown>) =>
     lines.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-  push('message_start', { message: { usage: { input_tokens: 10 } } });
+  lines.push(
+    `event: message_start\ndata: ${JSON.stringify(anthropicMessageStart({ input_tokens: 10 }))}\n\n`,
+  );
   blocks.forEach((block, index) => {
     if (block.type === 'text') {
       push('content_block_start', { index, content_block: { type: 'text' } });
@@ -135,14 +139,15 @@ describe('proposals registry entry', () => {
 describe('POST /chat — proposals is tool-capable', () => {
   it('sends the personalizer tool surface + the page-evidence file blocks', async () => {
     const fetchMock = stubFetch();
+    const files = await opaqueFileEnv(
+      [
+        { upstreamFileId: 'file_html_home', mediaType: 'text/plain' },
+        { upstreamFileId: 'file_shot_home', mediaType: 'image/png' },
+      ],
+      ['setup-strategy'],
+      'ctx-123',
+    );
     fetchMock
-      // Files-metadata lookups for the two page-evidence fileIds (document + image).
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ mime_type: 'text/plain' }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ mime_type: 'image/png' }), { status: 200 }),
-      )
       // A single Anthropic turn that emits the final JSON (no tool call this time).
       .mockResolvedValueOnce(
         sseResponse(
@@ -162,11 +167,11 @@ describe('POST /chat — proposals is tool-capable', () => {
       chatRequest(
         {
           messages: [{ role: 'user', content: 'PAGE: Home' }],
-          fileIds: ['html_home', 'shot_home'],
+          fileIds: files.ids,
         },
         { 'X-Personalizer-System-Prompt': 'proposals' },
       ),
-      ENV,
+      files.env,
       CORS,
       [],
       AVAILABLE_AI_TOOLS,

@@ -1,47 +1,73 @@
 /**
- * POST /messages — single-shot Anthropic Messages proxy (the LIVE smart-image
- * surface). Optionally injects a server-side system prompt (selected by the
- * `X-Personalizer-System-Prompt` header), uploads any prompt attachments to the
- * Files API and prepends them to the first user message, manages the 4-block
- * `cache_control` limit, then proxies to Anthropic and returns the body as-is.
- *
- * Success responses flow through unchanged. Failures return the Brain-shaped
- * error envelope (lib/responses.ts): a non-ok Anthropic response keeps
- * Anthropic's status, carries `ExceptionType: 'AnthropicApiException'`, and puts
- * the raw upstream body in `MessageDetail`.
+ * POST /messages — registered prompt completion with the existing response
+ * envelope. Registered requests are canonical and provider-routed internally;
+ * absent/unknown selectors remain on a bounded Anthropic compatibility path.
  */
 
-import { getSystemPrompt } from '../prompt-registry';
-import * as anthropic from '../lib/anthropic';
-import type { CacheableBlock, ClientMessagesPayload, Usage } from '../lib/anthropic';
-import { manageCacheControl, EXTENDED_CACHE_CONTROL } from '../lib/cache-control';
+import {
+  getModelProfile,
+  getFilePolicy,
+  getSystemPrompt,
+  getUnregisteredMessagesRoute,
+  isPromptName,
+  type PromptAttachment,
+  type SystemPromptEntry,
+} from '../prompt-registry';
+import type {
+  InferenceContent,
+  InferenceMessage,
+  InferenceRequest,
+  InferenceResult,
+  InferenceUsage,
+  SemanticEffort,
+} from '../lib/inference-types';
 import { getDefaultsBlock } from '../lib/brain-defaults';
 import { dedupUpload } from '../lib/file-dedup';
-import {
-  jsonResponse,
-  errorResponseFrom,
-  anthropicErrorResponse,
-  WorkerError,
-  type CorsHeaders,
-} from '../lib/responses';
+import { jsonResponse, errorResponseFrom, WorkerError, type CorsHeaders } from '../lib/responses';
 import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
 import {
   createDevelopmentInferenceTrace,
-  traceableContent,
-  traceableMessages,
-  traceableSystem,
+  redactInferenceTraceValue,
 } from '../lib/dev-inference-trace';
+import {
+  createInferenceDiagnosticsService,
+  createInferenceFileService,
+  createInferenceService,
+  createUnregisteredSelectorPassthrough,
+  isRequiredContinuationMissing,
+  requiresOrdinaryTurnContinuation,
+} from '../inference/factory';
+import { allocateSingleTurnCache } from '../inference/cache';
+import {
+  hasProviderFileSource,
+  parseCompatibilityMessages,
+  parseCompatibilityToolChoice,
+  parseCompatibilityTools,
+  parseInferenceMetadata,
+  parseSampling,
+  parseServiceTier,
+  parseStopSequences,
+  parseStructuredOutput,
+  messagesCompatibilityResponse,
+} from '../inference/messages-compatibility';
+import { InferenceFailure, inferenceFailureTrace } from '../inference/adapter';
+import {
+  decodeOpaqueContinuation,
+  encodeOpaqueContinuation,
+  preflightContinuationSealing,
+  type ContinuationRoute,
+} from '../inference/continuation';
+import {
+  GLOBAL_REGISTRY_ATTACHMENT_TENANT_SCOPE,
+  fileTenantScope,
+  resolveInferenceMessageFileReferences,
+} from '../inference/file-references';
 import type { Env } from '../config';
 
-/**
- * Soft input-token threshold above which we log a count_tokens estimate (and a
- * warning). Purely advisory — NEVER gates/rejects the live request. An internal
- * observability constant, not a deploy-time tunable: changing it changes only
- * when a log line warns, never any wire behavior.
- */
+/** Advisory threshold; it changes only logging, never request acceptance. */
 const LARGE_PAYLOAD_TOKEN_THRESHOLD = 100000;
 
-/** Latency-critical visual calls must never wait for an advisory count_tokens round-trip. */
+/** Latency-critical visual calls never wait for advisory token counting. */
 const NON_BLOCKING_VISUAL_PROMPTS = new Set([
   'onboarding-batch',
   'onboarding-batch-all',
@@ -61,148 +87,151 @@ export async function handleMessages(
   env: Env,
   corsHeaders: CorsHeaders,
   logging: LoggingRuntime = createLoggingRuntime(env),
-  options: { readonly demo?: boolean } = {},
+  options: { readonly demo?: boolean; readonly tenantScope?: string } = {},
 ): Promise<Response> {
   const requestStartedAt = Date.now();
-  const systemPromptName = request.headers.get('X-Personalizer-System-Prompt');
+  const selector = request.headers.get('X-Personalizer-System-Prompt');
   const qcTelemetry = readQcTelemetry(request);
   const log = logging.logger('Messages', {
-    prompt: systemPromptName,
+    prompt: selector,
     ...(qcTelemetry ? { qcAttempt: qcTelemetry.attempt, qcEscalated: qcTelemetry.escalated } : {}),
   });
   const trace = createDevelopmentInferenceTrace(
-    logging.logger('InferenceTrace', { prompt: systemPromptName }),
+    logging.logger('InferenceTrace', { prompt: selector }),
     'messages',
-    systemPromptName,
+    selector,
   );
   try {
     log.info('Request received');
-
     const body = (await request.json()) as Record<string, unknown>;
-    const { apiKey: _apiKey, ...clientPayload } = body as {
-      apiKey?: unknown;
-    } & ClientMessagesPayload;
+    const { apiKey: _apiKey, ...clientBody } = body;
     // Demo sessions carry a narrower server-owned request contract: only the
-    // validated evidence messages survive. The registry supplies system/model/
-    // budget/effort, and caller-supplied tools or provider knobs never reach the
-    // paid upstream API.
-    const claudePayload: ClientMessagesPayload = options.demo
-      ? { ...(clientPayload.messages === undefined ? {} : { messages: clientPayload.messages }) }
-      : clientPayload;
+    // validated evidence messages survive. The registry supplies prompt, model,
+    // budget, and effort, and caller-supplied tools or provider knobs never
+    // reach the paid upstream API.
+    const safeBody: Record<string, unknown> = options.demo
+      ? { ...(clientBody.messages === undefined ? {} : { messages: clientBody.messages }) }
+      : clientBody;
 
-    // Cross-repo ruleset handshake — reject a lib built against a stale onboarding
-    // playbook before any inference (throws a 409 the outer catch maps to the
-    // Brain envelope). No-op for non-onboarding prompts and (during rollout) for
-    // a caller that sends no version header.
-    validateRulesetVersion(request, systemPromptName, env, log, options.demo === true);
-
-    let attachmentFileCount = 0;
-    if (systemPromptName) {
-      try {
-        attachmentFileCount = await injectSystemPrompt(systemPromptName, claudePayload, env, log);
-      } catch (error) {
-        log.error('Failed to load system prompt', error, { systemPromptName });
+    if (!selector || !isPromptName(selector)) {
+      // An unregistered selector is a bounded Anthropic-wire passthrough. The
+      // caller owns its conversation; app-ai owns the model and output budget
+      // (the registry's unregistered route replaces whatever the caller sent)
+      // and the rule that no provider file id crosses this path: a raw id is
+      // not tenant-bound, so a file block here is refused as client input.
+      if (hasProviderFileSource(safeBody.messages)) {
+        throw new WorkerError(
+          'File blocks require a registered X-Personalizer-System-Prompt; upload through /files and reference the returned id under that prompt',
+          { status: 400, exceptionType: 'ArgumentException' },
+        );
       }
-    }
-
-    // The registry is authoritative for the inference model: when the caller
-    // omits `model`, fall back to the resolved system-prompt entry's model
-    // (a deploy-time choice — the entry's capability tier resolved via
-    // `resolveModel`). Additive + safe —
-    // a caller that sends its own `model` (e.g. image-selection sends Haiku) is
-    // untouched; only a body without `model` (the Website-Analysis probe) is
-    // defaulted, so a probe runs on its registry model per docs/prompts.
-    applyRegistryModel(claudePayload, systemPromptName, env, log, options.demo === true);
-
-    // Set `max_tokens` EXACTLY to the resolved entry's registry value — the
-    // registry is authoritative for a registered prompt's output budget. Any
-    // client-sent `max_tokens` is overridden (there is no floor, no cap, no
-    // client read): changing a registry `maxTokens` literal changes the outgoing
-    // Anthropic request one-for-one. Between the model default and cache
-    // management so the budget rides the same forwarded payload.
-    applyRegistryMaxTokens(claudePayload, systemPromptName, env, log);
-
-    // PROPOSE prompts: fetch + project the global Brain default box settings
-    // and inject them as a SECOND cacheable system block (after the stable prompt,
-    // before the store screenshots that ride in the user message). Best-effort —
-    // a fetch failure degrades to no injection and never fails the request. The
-    // The context-ID authenticates the Brain fetch and is correlated by the request logger only.
-    if (!options.demo) {
-      const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
-      await injectBrainDefaults(systemPromptName, claudePayload, contextId, env, log);
-    }
-
-    manageCacheControl(claudePayload, attachmentFileCount, logging.logger('CacheControl'));
-
-    // Apply opt-in output effort from the registry entry, if the client didn't
-    // already set output_config (additive + safe — see prompt-registry.ts entry shape).
-    applyRegistryEffort(claudePayload, systemPromptName, qcTelemetry?.escalated === true, env, log);
-
-    // Best-effort pre-flight token estimate for large payloads — log/warn only,
-    // never gate the live path.
-    if (!systemPromptName || !NON_BLOCKING_VISUAL_PROMPTS.has(systemPromptName)) {
-      await preflightTokenEstimate(claudePayload, env, log);
-    }
-
-    trace.record('request.forwarded', {
-      model: claudePayload.model,
-      maxTokens: claudePayload.max_tokens,
-      outputConfig: claudePayload.output_config,
-      system: traceableSystem(claudePayload.system),
-      messages: traceableMessages(claudePayload),
-    });
-
-    const response = await anthropic.createMessage(claudePayload, env);
-    const data = (await response.json()) as {
-      error?: { type?: string; message?: string };
-      usage?: Usage;
-      stop_reason?: unknown;
-      content?: unknown;
-    };
-
-    trace.record('response.received', {
-      status: response.status,
-      stopReason: data.stop_reason,
-      usage: data.usage,
-      content: traceableContent(data.content),
-    });
-
-    if (!response.ok) {
-      log.error('Anthropic request failed', data.error, {
-        status: response.status,
-        totalMs: Date.now() - requestStartedAt,
-        model: claudePayload.model,
-        maxTokens: claudePayload.max_tokens,
-        effort: readAppliedEffort(claudePayload),
-        stopReason: data.stop_reason,
-        usage: usageFields(data.usage),
-        qc: qcTelemetry,
+      const route = getUnregisteredMessagesRoute(env);
+      const passthroughBody: Record<string, unknown> = {
+        ...safeBody,
+        model: route.model,
+        max_tokens: route.maxTokens,
+      };
+      const passthrough = createUnregisteredSelectorPassthrough(env);
+      await preflightPassthrough(passthroughBody, passthrough.countTokens, request.signal, log);
+      trace.record('request.forwarded', {
+        compatibility: 'unregistered-selector-passthrough',
+        model: route.model,
+        maxTokens: route.maxTokens,
+        system: traceRawBlocks(passthroughBody.system),
+        messages: traceMessages(passthroughBody.messages),
       });
-      return anthropicErrorResponse(data, response.status, 'Anthropic request failed', corsHeaders);
+      const data = await passthrough.complete(passthroughBody, request.signal, log);
+      trace.record('response.received', { content: traceRawContent(data) });
+      return jsonResponse(data, corsHeaders);
     }
 
-    logUsageStats(data.usage, log);
+    // A registered route resolves before attachment/file/provider I/O. Missing
+    // configuration therefore fails closed rather than restoring caller model authority.
+    const entry = getSystemPrompt(selector, env);
+    validateRulesetVersion(request, entry, log, options.demo === true);
+    const tenantScope =
+      options.tenantScope ??
+      (await fileTenantScope(request.headers.get('X-Personalizer-Context-ID'), env));
+    const profile = getModelProfile(entry.name, env);
+    if (requiresOrdinaryTurnContinuation(profile, env)) {
+      if (!tenantScope) {
+        throw new WorkerError('Inference continuation requires a validated tenant', {
+          status: 400,
+          exceptionType: 'ArgumentException',
+        });
+      }
+      await preflightContinuationSealing(env);
+    }
+    const continuation = await decodeMessagesContinuation(
+      safeBody.continuation,
+      tenantScope ? { tenantScope, promptGroup: entry.group, modelProfile: profile.name } : null,
+      profile.provider,
+      env,
+    );
+    if (isRequiredContinuationMissing(profile, env, safeBody.messages, continuation)) {
+      throw new WorkerError('Assistant history requires an inference continuation token', {
+        status: 400,
+        exceptionType: 'ArgumentException',
+      });
+    }
+    const effort = resolveRegistryEffort(entry, qcTelemetry?.escalated === true);
+    const inferenceRequest = await buildInferenceRequest(
+      entry,
+      safeBody,
+      request,
+      env,
+      log,
+      tenantScope,
+      continuation,
+      { effort, injectBrainDefaults: options.demo !== true },
+    );
+
+    if (!NON_BLOCKING_VISUAL_PROMPTS.has(selector)) {
+      await preflightCanonical(inferenceRequest, env, log, tenantScope);
+    }
+    trace.record('request.forwarded', {
+      group: entry.group,
+      modelProfile: entry.modelProfile,
+      provider: entry.provider,
+      apiFamily: entry.apiFamily,
+      maxTokens: entry.maxTokens,
+      effort,
+      prompt: inferenceRequest.prompt,
+      messages: traceMessages(inferenceRequest.messages),
+    });
+
+    const result = await createInferenceService(env, tenantScope).complete(inferenceRequest);
+    logUsageStats(result.usage, log);
+    trace.record('response.received', {
+      stopReason: result.stopReason,
+      usage: result.usage,
+      content: traceCanonicalContent(result.content),
+    });
     const completion = {
       totalMs: Date.now() - requestStartedAt,
-      model: claudePayload.model,
-      maxTokens: claudePayload.max_tokens,
-      effort: readAppliedEffort(claudePayload),
-      stopReason: data.stop_reason,
-      usage: usageFields(data.usage),
+      model: inferenceRequest.modelProfile.model,
+      maxTokens: entry.maxTokens,
+      effort: effort ?? null,
+      stopReason: result.stopReason,
+      usage: usageFields(result.usage),
       qc: qcTelemetry,
     };
-    if (data.stop_reason === 'max_tokens') {
+    if (result.stopReason === 'max-output-tokens') {
       log.warn('QC inference reached max_tokens', completion);
     } else {
       log.info('Inference completed', completion);
     }
-    return jsonResponse(data, corsHeaders);
+    return await registeredMessagesResponse(
+      result,
+      inferenceRequest,
+      corsHeaders,
+      env,
+      tenantScope,
+    );
   } catch (error) {
-    trace.record('request.failed', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    log.error('Messages request failed', error, {
-      systemPromptName,
+    trace.record('request.failed', inferenceFailureTrace(error));
+    log.error('Exception:', error, {
+      inference: redactInferenceTraceValue(inferenceFailureTrace(error)),
       totalMs: Date.now() - requestStartedAt,
       qc: qcTelemetry,
     });
@@ -210,44 +239,173 @@ export async function handleMessages(
   }
 }
 
-/**
- * Inject a server-side system prompt into the payload, uploading any attachment
- * files and prepending them (as document/image content blocks) to the first
- * user message. Mutates `claudePayload`. Returns the number of attachment
- * blocks prepended to the first user message.
- */
-async function injectSystemPrompt(
-  systemPromptName: string,
-  claudePayload: ClientMessagesPayload,
+function profileModel(request: InferenceRequest): string {
+  return request.modelProfile.model;
+}
+
+/** Serialize a canonical registered result through the existing public `/messages` envelope. */
+export async function registeredMessagesResponse(
+  result: InferenceResult,
+  request: InferenceRequest,
+  corsHeaders: Record<string, string>,
+  env?: Env,
+  tenantScope?: string | null,
+): Promise<Response> {
+  const needsContinuation =
+    result.providerState &&
+    !hasRawCompatibilityResponse(result) &&
+    (result.toolCalls.length > 0 || result.providerState.requiredOnNextTurn === true);
+  if (needsContinuation && (!env || !tenantScope)) {
+    throw new Error('Inference continuation requires a validated tenant');
+  }
+  let continuation: string | undefined;
+  if (needsContinuation && result.providerState && env && tenantScope) {
+    continuation = await encodeOpaqueContinuation(
+      result.providerState,
+      continuationRoute(request, tenantScope),
+      env,
+    );
+  }
+  return jsonResponse(
+    messagesCompatibilityResponse(result, profileModel(request), continuation),
+    corsHeaders,
+  );
+}
+
+function hasRawCompatibilityResponse(result: InferenceResult): boolean {
+  const value = result.providerState?.value;
+  return !!value && typeof value === 'object' && 'rawResponse' in value;
+}
+
+async function buildInferenceRequest(
+  entry: SystemPromptEntry,
+  body: Record<string, unknown>,
+  request: Request,
   env: Env,
   log: Logger,
-): Promise<number> {
-  const prompt = getSystemPrompt(systemPromptName, env);
-
-  // CACHE-FIRST STRUCTURE (see prompt-registry.ts → CACHING). `prompt.prompt` is the
-  // STABLE, shop-independent system text — for the composed onboarding prompts it
-  // is `composePrompt(...blocks)` in a deterministic order, byte-identical across
-  // every shop. We put ALL of it in the single cacheable system block with a 1h
-  // `cache_control` breakpoint, so repeated per-shop calls HIT the cached prefix
-  // after the first. The LIB-SIDE EXPECTATION that makes this work: per-shop
-  // VARIABLE data (the page screenshots + the per-page manifest) rides AFTER this
-  // breakpoint, in the first user MESSAGE — never in the system prompt — so it
-  // never invalidates the cached prefix. `manageCacheControl` (below) then
-  // distributes the remaining breakpoints across those user blocks.
-  claudePayload.system = [
-    { type: 'text', text: prompt.prompt, cache_control: { ...EXTENDED_CACHE_CONTROL } },
-  ];
-  log.info(`Loaded system prompt: ${systemPromptName} (${prompt.prompt.length} chars)`);
-
-  if (!prompt.attachments || prompt.attachments.length === 0) {
-    return 0;
+  tenantScope: string | null,
+  continuation: InferenceRequest['continuation'],
+  requestPolicy: { effort: SemanticEffort | undefined; injectBrainDefaults: boolean },
+): Promise<InferenceRequest> {
+  const profile = getModelProfile(entry.name, env);
+  const policy = getFilePolicy(entry.filePolicy);
+  const files = createInferenceFileService(env);
+  const messages = await resolveInferenceMessageFileReferences(
+    parseCompatibilityMessages(body.messages, entry.provider),
+    { promptGroup: entry.group, modelProfile: profile, filePolicy: policy },
+    env,
+    files,
+    tenantScope,
+  );
+  const attachmentCount = await prependPromptAttachments(
+    messages,
+    entry,
+    env,
+    request.signal,
+    log,
+    tenantScope,
+  );
+  const systemMessages: InferenceMessage[] = [];
+  if (entry.injectsBrainDefaults && requestPolicy.injectBrainDefaults) {
+    const contextId = request.headers.get('X-Personalizer-Context-ID') ?? '';
+    const defaults = contextId
+      ? await getDefaultsBlock(contextId, env, log.child({ component: 'defaults' }))
+      : null;
+    if (defaults) {
+      systemMessages.push({
+        role: 'system',
+        content: [{ type: 'text', text: defaults, cache: 'extended' }],
+      });
+      log.info('Injected Brain defaults block');
+    }
   }
 
-  log.info(`Processing ${prompt.attachments.length} prompt attachment(s)`);
-  const attachmentBlocks: CacheableBlock[] = [];
+  // The adapter owns the stable base-prompt breakpoint. Canonical allocation
+  // reserves the remaining slots for defaults, attachments, an explicit stable
+  // prefix, then the largest image/document inputs.
+  allocateSingleTurnCache(messages, 1 + systemMessages.length, attachmentCount);
+  const structuredOutput = parseStructuredOutput(body.output_config);
+  const sampling = parseSampling(body);
+  const stopSequences = parseStopSequences(body.stop_sequences);
+  const metadata = parseInferenceMetadata(body.metadata);
+  const serviceTier = parseServiceTier(body.service_tier);
+  const tools = parseCompatibilityTools(body.tools, entry.provider);
+  const toolChoice = parseCompatibilityToolChoice(body.tool_choice);
+  return {
+    prompt: entry.prompt,
+    promptGroup: entry.group,
+    modelProfile: profile,
+    filePolicy: policy,
+    messages: [...systemMessages, ...messages],
+    maxOutputTokens: entry.maxTokens,
+    tools,
+    abortSignal: request.signal,
+    ...(requestPolicy.effort ? { effort: requestPolicy.effort } : {}),
+    ...(structuredOutput ? { structuredOutput } : {}),
+    ...(sampling ? { sampling } : {}),
+    ...(stopSequences ? { stopSequences } : {}),
+    ...(metadata ? { metadata } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(toolChoice ? { toolChoice } : {}),
+    ...(continuation ? { continuation } : {}),
+  };
+}
 
-  for (const attachment of prompt.attachments) {
-    let fileId: string | null = null;
+function continuationRoute(
+  request: Pick<InferenceRequest, 'promptGroup' | 'modelProfile'>,
+  tenantScope: string,
+): ContinuationRoute {
+  return {
+    tenantScope,
+    promptGroup: request.promptGroup,
+    modelProfile: request.modelProfile.name,
+  };
+}
+
+/** Authenticate a registered `/messages` continuation before attachment or provider I/O. */
+export async function decodeMessagesContinuation(
+  raw: unknown,
+  route: ContinuationRoute | null,
+  provider: InferenceRequest['modelProfile']['provider'],
+  env: Env,
+): Promise<InferenceRequest['continuation']> {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !route) {
+    throw new WorkerError('Invalid inference continuation token', {
+      status: 400,
+      exceptionType: 'ArgumentException',
+    });
+  }
+  await preflightContinuationSealing(env);
+  try {
+    const state = await decodeOpaqueContinuation(raw, route, env);
+    if (state.backend !== provider) throw new Error('wrong provider');
+    return state;
+  } catch {
+    throw new WorkerError('Invalid inference continuation token', {
+      status: 400,
+      exceptionType: 'ArgumentException',
+    });
+  }
+}
+
+async function prependPromptAttachments(
+  messages: InferenceMessage[],
+  entry: SystemPromptEntry,
+  env: Env,
+  abortSignal: AbortSignal | undefined,
+  log: Logger,
+  tenantScope: string | null,
+): Promise<number> {
+  const attachments: readonly PromptAttachment[] = entry.attachments;
+  const first = messages[0];
+  if (!first || attachments.length === 0) return 0;
+  const content: InferenceContent[] = [];
+  const files = createInferenceFileService(env);
+  const profile = getModelProfile(entry.name, env);
+  const policy = getFilePolicy(entry.filePolicy);
+  const accountScope = await files.scope(profile, policy);
+  for (const attachment of attachments) {
     try {
       const result = await dedupUpload(
         {
@@ -255,132 +413,37 @@ async function injectSystemPrompt(
           mimeType: attachment.mimeType,
           filename: attachment.filename,
         },
+        {
+          profile,
+          policy,
+          accountScope,
+          tenantScope: tenantScope ?? GLOBAL_REGISTRY_ATTACHMENT_TENANT_SCOPE,
+          compatibleGroups: [entry.group],
+        },
         env,
+        abortSignal,
         log.child({ attachment: attachment.filename }),
       );
-      fileId = result.fileId;
+      content.push({
+        type: attachment.mimeType.startsWith('image/') ? 'image' : 'document',
+        source: { type: 'provider-file', reference: result.reference },
+        cache: 'extended',
+      });
       log.info(
-        `Attachment ${attachment.filename}: file_id ${fileId}${result.deduped ? ' (dedup hit)' : ''}`,
+        `Attachment ${attachment.filename}: uploaded${result.deduped ? ' (dedup hit)' : ''}`,
       );
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      log.error(`Failed to upload ${attachment.filename}: ${reason}`);
-      continue;
+      if (isCallerCancellation(error)) throw error;
+      log.error(
+        `Failed to upload ${attachment.filename}`,
+        redactInferenceTraceValue(inferenceFailureTrace(error)),
+      );
     }
-
-    if (!fileId) {
-      log.error(`No file_id for ${attachment.filename}; skipping attachment`);
-      continue;
-    }
-
-    attachmentBlocks.push({
-      type: attachment.mimeType.startsWith('image/') ? 'image' : 'document',
-      source: { type: 'file', file_id: fileId },
-      // Reused across calls → stable prefix → extended 1h cache.
-      cache_control: { ...EXTENDED_CACHE_CONTROL },
-    });
   }
-
-  const firstMessage = claudePayload.messages?.[0];
-  if (attachmentBlocks.length > 0 && firstMessage) {
-    const existing: CacheableBlock[] = Array.isArray(firstMessage.content)
-      ? firstMessage.content
-      : [{ type: 'text', text: firstMessage.content }];
-    firstMessage.content = [...attachmentBlocks, ...existing];
-    log.info(`Prepended ${attachmentBlocks.length} prompt attachment(s) to first message`);
-    return attachmentBlocks.length;
+  if (content.length > 0) {
+    messages[0] = { ...first, content: [...content, ...first.content] };
   }
-  return 0;
-}
-
-/**
- * PROPOSE-path Brain-defaults injection. When the resolved entry declares
- * `injectsBrainDefaults` (the onboarding / cart-drawer / optimize propose
- * prompts), fetch + project the canonical global Brain default box settings
- * (lib/brain-defaults.ts) and append them as a SECOND cacheable system block —
- * AFTER the stable system prompt, and BEFORE the per-store screenshots that ride
- * in the first user message (so the defaults block sits inside the cacheable
- * prefix while the volatile evidence stays after it). Byte-stable across stores
- * for the same global defaults → the block's own cache_control breakpoint HITS
- * Anthropic's prompt cache cross-tenant.
- *
- * Best-effort and non-fatal: no system block yet, no defaults resolved (a
- * cold-cache fetch failure), or an unknown prompt → the payload is left as-is
- * (no injection). `contextId` authenticates the Brain fetch and remains request-scoped.
- *
- */
-async function injectBrainDefaults(
-  systemPromptName: string | null,
-  claudePayload: ClientMessagesPayload,
-  contextId: string,
-  env: Env,
-  log: Logger,
-): Promise<void> {
-  if (!systemPromptName || !contextId) {
-    return;
-  }
-  let entry;
-  try {
-    entry = getSystemPrompt(systemPromptName, env);
-  } catch {
-    return;
-  }
-  if (!entry.injectsBrainDefaults) {
-    return;
-  }
-  // The stable system prompt must already be present (injectSystemPrompt ran);
-  // the defaults ride as the block AFTER it.
-  const system = claudePayload.system;
-  if (!Array.isArray(system) || system.length === 0) {
-    return;
-  }
-  const defaultsBlock = await getDefaultsBlock(
-    contextId,
-    env,
-    log.child({ component: 'defaults' }),
-  );
-  if (!defaultsBlock) {
-    return;
-  }
-  (system as CacheableBlock[]).push({
-    type: 'text',
-    text: defaultsBlock,
-    cache_control: { ...EXTENDED_CACHE_CONTROL },
-  });
-  log.info('Injected Brain defaults block');
-}
-
-/**
- * Set `claudePayload.model` from the resolved registry entry's model WHEN the
- * caller omitted it. The registry entry pairs each prompt with a capability tier
- * that resolves to a deploy-time model (via `resolveModel`); a caller that
- * already sent `model` owns it and is left untouched. No system prompt / unknown
- * name / already-set model → the payload is unchanged.
- */
-function applyRegistryModel(
-  claudePayload: ClientMessagesPayload,
-  systemPromptName: string | null,
-  env: Env,
-  log: Logger,
-  forceRegistryModel = false,
-): void {
-  if (!systemPromptName || (claudePayload.model && !forceRegistryModel)) {
-    return;
-  }
-  if (forceRegistryModel) {
-    const entry = getSystemPrompt(systemPromptName, env);
-    claudePayload.model = entry.model;
-    log.info(`Applied registry model '${entry.model}' for prompt ${systemPromptName}`);
-    return;
-  }
-  try {
-    const entry = getSystemPrompt(systemPromptName, env);
-    claudePayload.model = entry.model;
-    log.info(`Applied registry model '${entry.model}' for prompt ${systemPromptName}`);
-  } catch {
-    // Unknown prompt / missing model var — leave the payload as-is; the
-    // downstream Anthropic call surfaces a clear error.
-  }
+  return content.length;
 }
 
 /**
@@ -402,23 +465,11 @@ function applyRegistryModel(
  */
 function validateRulesetVersion(
   request: Request,
-  systemPromptName: string | null,
-  env: Env,
+  entry: SystemPromptEntry,
   log: Logger,
-  requireHeader = false,
+  requireHeader: boolean,
 ): void {
-  if (!systemPromptName) {
-    return;
-  }
-  let entry;
-  try {
-    entry = getSystemPrompt(systemPromptName, env);
-  } catch {
-    return;
-  }
-  if (!entry.rulesetVersion) {
-    return;
-  }
+  if (!entry.rulesetVersion) return;
   const header = request.headers.get('X-Personalizer-Ruleset-Version');
   if (header == null) {
     if (requireHeader) {
@@ -441,79 +492,23 @@ function validateRulesetVersion(
       },
     );
   }
-  log.info(`Ruleset version handshake OK (${entry.rulesetVersion}) for prompt ${systemPromptName}`);
+  log.info(`Ruleset version handshake OK (${entry.rulesetVersion})`);
 }
 
 /**
- * Set `claudePayload.max_tokens` EXACTLY to the resolved registry entry's
- * `maxTokens`. The registry is authoritative: a registered prompt's output
- * budget is a deploy-time choice that owns the wire value outright — there is no
- * floor, no cap, and no client `max_tokens` read, so a client-sent budget is
- * OVERRIDDEN and changing a registry `maxTokens` literal changes the outgoing
- * Anthropic request one-for-one. Without this, an omitted `max_tokens` reaches
- * Anthropic as a 400 (the field is required). No system prompt / unknown name →
- * the payload is unchanged (the caller owns its own token budget, as it does its
- * own model).
+ * Resolve the registered prompt's effort. An `adaptiveEffort` entry maps the
+ * content-free escalation signal onto its two registry-owned values; a fixed
+ * `effort` entry ignores the signal. The registry stays the effort authority —
+ * the caller only describes whether the request is a recovery attempt.
  */
-function applyRegistryMaxTokens(
-  claudePayload: ClientMessagesPayload,
-  systemPromptName: string | null,
-  env: Env,
-  log: Logger,
-): void {
-  if (!systemPromptName) {
-    return;
-  }
-  let entry;
-  try {
-    entry = getSystemPrompt(systemPromptName, env);
-  } catch {
-    // Unknown prompt — leave the caller's budget as-is (the downstream Anthropic
-    // call surfaces a clear error if it is missing / invalid).
-    return;
-  }
-  if (claudePayload.max_tokens !== entry.maxTokens) {
-    claudePayload.max_tokens = entry.maxTokens;
-    log.info(
-      `Applied registry max_tokens ${entry.maxTokens} (exact) for prompt ${systemPromptName}`,
-    );
-  }
-}
-
-/**
- * Add `output_config: { effort }` from the registry entry IF the entry carries
- * an `effort` field, the resolved model supports effort, AND the client hasn't
- * already set `output_config`. The effort lever is only valid on supporting
- * models — sending it to one that doesn't (e.g. Haiku 4.5) returns a 400 — so
- * it is gated on `supportsEffort`. Additive and safe otherwise: no entry / no
- * effort / unsupported model leaves the payload untouched.
- */
-function applyRegistryEffort(
-  claudePayload: ClientMessagesPayload,
-  systemPromptName: string | null,
+function resolveRegistryEffort(
+  entry: SystemPromptEntry,
   escalated: boolean,
-  env: Env,
-  log: Logger,
-): void {
-  if (!systemPromptName || claudePayload.output_config) {
-    return;
+): SemanticEffort | undefined {
+  if (entry.adaptiveEffort) {
+    return escalated ? entry.adaptiveEffort.escalated : entry.adaptiveEffort.default;
   }
-  let entry;
-  try {
-    entry = getSystemPrompt(systemPromptName, env);
-  } catch {
-    return;
-  }
-  const model = claudePayload.model || entry.model;
-  const effort = entry.adaptiveEffort
-    ? escalated
-      ? entry.adaptiveEffort.escalated
-      : entry.adaptiveEffort.default
-    : entry.effort;
-  if (effort && anthropic.supportsEffort(model)) {
-    claudePayload.output_config = { effort };
-    log.info(`Applied output effort '${effort}' from registry`);
-  }
+  return entry.effort;
 }
 
 type QcAttempt = 'full' | 'lean' | 'chunk' | 'specialist';
@@ -555,52 +550,28 @@ function readQcTelemetry(request: Request): QcTelemetry | null {
   };
 }
 
-/** Return the registry-selected effort without retaining arbitrary client output configuration. */
-function readAppliedEffort(payload: ClientMessagesPayload): unknown {
-  const config = payload.output_config;
-  if (!config || typeof config !== 'object') return null;
-  return (config as Record<string, unknown>).effort ?? null;
-}
-
-/** Normalize Anthropic usage into stable numeric telemetry keys. */
-function usageFields(usage: Usage | undefined): Record<string, number> {
+/** Normalize canonical usage into stable numeric telemetry keys. */
+function usageFields(usage: InferenceUsage): Record<string, number> {
   return {
-    inputTokens: usage?.input_tokens ?? 0,
-    outputTokens: usage?.output_tokens ?? 0,
-    cacheCreationInputTokens: usage?.cache_creation_input_tokens ?? 0,
-    cacheReadInputTokens: usage?.cache_read_input_tokens ?? 0,
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    cacheCreationInputTokens: usage.cacheWriteInputTokens ?? 0,
+    cacheReadInputTokens: usage.cachedInputTokens ?? 0,
   };
 }
 
-/**
- * Best-effort pre-flight token estimate. For large payloads, calls the free
- * count_tokens endpoint and logs the estimate (warns past a soft threshold).
- * NEVER throws into the live path and NEVER rejects the request.
- */
-async function preflightTokenEstimate(
-  claudePayload: ClientMessagesPayload,
+async function preflightCanonical(
+  request: InferenceRequest,
   env: Env,
   log: Logger,
+  tenantScope: string | null,
 ): Promise<void> {
-  // Cheap gate: only bother for payloads likely to be large (attachments or a
-  // long message history). Avoids a network round-trip on every small request.
-  const messages = Array.isArray(claudePayload.messages) ? claudePayload.messages : [];
-  const hasAttachments = messages.some(
-    (message) =>
-      Array.isArray(message.content) &&
-      message.content.some((block) => block.type === 'image' || block.type === 'document'),
-  );
-  if (messages.length < 4 && !hasAttachments) {
-    return;
-  }
-
+  if (!isLargeCandidate(request.messages)) return;
   try {
-    const response = await anthropic.countTokens(claudePayload, env);
-    if (!response.ok) {
-      return;
-    }
-    const data = (await response.json()) as { input_tokens?: number };
-    const inputTokens = data.input_tokens || 0;
+    const inputTokens = await createInferenceDiagnosticsService(env, tenantScope).countTokens(
+      request,
+    );
+    if (inputTokens === null) return;
     log.info(`Pre-flight count_tokens estimate: ${inputTokens} input tokens`);
     if (inputTokens > LARGE_PAYLOAD_TOKEN_THRESHOLD) {
       log.warn(
@@ -608,17 +579,111 @@ async function preflightTokenEstimate(
       );
     }
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    log.info(`count_tokens pre-flight skipped: ${reason}`);
+    if (isCallerCancellation(error)) throw error;
+    log.info(
+      `count_tokens pre-flight skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
-/** Log token-usage stats with cache-hit/creation markers. */
-function logUsageStats(usage: Usage | undefined, log: Logger): void {
-  if (!usage) {
-    return;
+async function preflightPassthrough(
+  payload: Record<string, unknown>,
+  countTokens: (
+    payload: Record<string, unknown>,
+    abortSignal?: AbortSignal,
+  ) => Promise<number | null>,
+  abortSignal: AbortSignal | undefined,
+  log: Logger,
+): Promise<void> {
+  const messages = parseCompatibilityMessages(payload.messages, 'anthropic');
+  if (!isLargeCandidate(messages)) return;
+  try {
+    const inputTokens = await countTokens(payload, abortSignal);
+    if (inputTokens !== null)
+      log.info(`Pre-flight count_tokens estimate: ${inputTokens} input tokens`);
+  } catch (error) {
+    if (isCallerCancellation(error)) throw error;
+    log.info(
+      `count_tokens pre-flight skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
-  log.info(
-    `Tokens — input: ${usage.input_tokens}, cache_creation: ${usage.cache_creation_input_tokens || 0}, cache_read: ${usage.cache_read_input_tokens || 0}, output: ${usage.output_tokens}`,
+}
+
+function isCallerCancellation(error: unknown): boolean {
+  return error instanceof InferenceFailure && error.inferenceError.failureClass === 'cancelled';
+}
+
+function isLargeCandidate(messages: readonly InferenceMessage[]): boolean {
+  return (
+    messages.length >= 4 ||
+    messages.some((message) =>
+      message.content.some((content) => content.type === 'image' || content.type === 'document'),
+    )
   );
+}
+
+function logUsageStats(usage: InferenceUsage, log: Logger): void {
+  if (usage.inputTokens === null && usage.outputTokens === null) return;
+  log.info(
+    `Tokens — input: ${usage.inputTokens}, cache_creation: ${usage.cacheWriteInputTokens ?? 0}, cache_read: ${usage.cachedInputTokens ?? 0}, output: ${usage.outputTokens}`,
+  );
+}
+
+function traceMessages(raw: unknown): unknown {
+  const messages = Array.isArray(raw) ? raw : [];
+  return messages.map((message) => {
+    if (!message || typeof message !== 'object') return { role: 'invalid' };
+    const record = message as Record<string, unknown>;
+    return { role: record.role, content: traceRawBlocks(record.content) };
+  });
+}
+
+function traceRawBlocks(raw: unknown): unknown {
+  if (typeof raw === 'string') return raw;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((item) => {
+    if (!item || typeof item !== 'object') return { type: 'invalid' };
+    const block = item as Record<string, unknown>;
+    if (block.type === 'text') return { type: 'text', text: block.text };
+    if (block.type === 'tool_use')
+      return {
+        type: 'tool_use',
+        name: block.name,
+        input: redactInferenceTraceValue(block.input),
+      };
+    if (block.type === 'tool_result') {
+      return {
+        type: 'tool_result',
+        content: traceRawBlocks(block.content),
+        isError: block.is_error === true,
+      };
+    }
+    return { type: block.type, source: 'file' };
+  });
+}
+
+function traceCanonicalContent(content: readonly InferenceContent[]): unknown {
+  return content.map((item) => {
+    if (item.type === 'text') return { type: 'text', text: item.text };
+    if (item.type === 'tool-call') {
+      return {
+        type: 'tool-call',
+        name: item.name,
+        input: redactInferenceTraceValue(item.input),
+      };
+    }
+    if (item.type === 'tool-result') {
+      return {
+        type: 'tool-result',
+        isError: item.isError,
+        content: traceCanonicalContent(item.content),
+      };
+    }
+    return { type: item.type, source: item.source.type };
+  });
+}
+
+function traceRawContent(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return traceRawBlocks((raw as Record<string, unknown>).content);
 }

@@ -1,8 +1,9 @@
 /**
  * Configuration module (src/config.ts) — the no-fallback contract: every
  * required variable read fails fast with an error naming the variable and
- * where to set it; FILES_KV alone is optional. Demo configuration is fail-fast
- * when the scoped demo route is used.
+ * where to set it; FILES_KV alone is optional for internal dedup. Sealed public
+ * file references use a required encryption key instead of KV consistency, and
+ * demo configuration is fail-fast when the scoped demo route is used.
  *
  * Also pins the PRODUCTION configuration values in wrangler.toml `[vars]` —
  * the deployed wire contract (Brain routing, model choices) is config, so
@@ -16,10 +17,13 @@ import {
   deploymentEnvironment,
   personalizerIntegrationBridgeToken,
   anthropicApiBase,
+  openaiApiBase,
   logSeqApiKey,
   logSeqIngestUrl,
   logTargets,
   claudeApiKey,
+  openaiApiKey,
+  tokenEncryptionSecret,
   credentialedOrigins,
   demoActivationSigningSecret,
   demoAuditStatusSigningSecret,
@@ -32,9 +36,11 @@ import {
   demoSessionAuthority,
   demoSessionSigningSecret,
   demoSessionTtlSeconds,
+  missingRequiredSecretNames,
   resolveModel,
   type Env,
 } from '../src/config';
+import { describePromptRoutes, validateModelRouting } from '../src/prompt-registry';
 import { ENV } from './helpers';
 
 const EMPTY_ENV: Env = {};
@@ -44,9 +50,12 @@ describe('config accessors — present values', () => {
     expect(deploymentEnvironment(ENV)).toBe('test');
     expect(personalizerApiUrl(ENV)).toBe('https://brain.test');
     expect(anthropicApiBase(ENV)).toBe('https://api.anthropic.com');
+    expect(openaiApiBase(ENV)).toBe('https://api.openai.com');
     expect(logSeqIngestUrl(ENV)).toBe('https://seq.test/ingest/clef');
     expect(logSeqApiKey(ENV)).toBeNull();
     expect(claudeApiKey(ENV)).toBe('test-key');
+    expect(openaiApiKey(ENV)).toBe('test-openai-key');
+    expect(tokenEncryptionSecret(ENV)).toBe(ENV.TOKEN_ENCRYPTION_SECRET);
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
     expect(demoActivationSigningSecret(ENV)).toBe(ENV.DEMO_ACTIVATION_SIGNING_SECRET);
     expect(demoSessionSigningSecret(ENV)).toBe(ENV.DEMO_SESSION_SIGNING_SECRET);
@@ -58,6 +67,21 @@ describe('config accessors — present values', () => {
     expect(demoMaxUploadBytes(ENV)).toBe(8000000);
     expect(demoMaxTotalUploadBytes(ENV)).toBe(64000000);
     expect(demoMaxMessageBytes(ENV)).toBe(1000000);
+  });
+
+  it.each([
+    ['anthropic', anthropicApiBase, 'ANTHROPIC_API_BASE', 'https://api.anthropic.com'],
+    ['openai', openaiApiBase, 'OPENAI_API_BASE', 'https://api.openai.com'],
+  ] as const)('requires explicit local paid opt-in for %s', (_provider, accessor, key, base) => {
+    const { AI_CHANNEL: _channel, ...withoutChannel } = ENV;
+    const local = { ...withoutChannel, ENVIRONMENT: 'local', [key]: base };
+    expect(() => accessor(local)).toThrow(/AI_CHANNEL=prod/);
+    expect(accessor({ ...local, AI_CHANNEL: 'prod' })).toBe(base);
+    expect(accessor({ ...local, [key]: 'http://127.0.0.1:9999' })).toBe('http://127.0.0.1:9999');
+    expect(() => accessor({ ...local, [key]: 'https://provider-proxy.example' })).toThrow(
+      /AI_CHANNEL=prod/,
+    );
+    expect(() => accessor({ ...local, [key]: 'file:///tmp/provider' })).toThrow(/http or https/);
   });
 
   it('resolveModel maps each capability tier to its bound variable value', () => {
@@ -97,6 +121,15 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     );
   });
 
+  it('OpenAI accessors fail fast with the correct config channel', () => {
+    expect(() => openaiApiBase(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable OPENAI_API_BASE.*wrangler\.toml/,
+    );
+    expect(() => openaiApiKey(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable OPENAI_API_KEY.*encrypted secret.*\.dev\.vars/,
+    );
+  });
+
   it('logSeqIngestUrl names LOG_SEQ_INGEST_URL', () => {
     expect(() => logSeqIngestUrl(EMPTY_ENV)).toThrow(
       /Missing required configuration variable LOG_SEQ_INGEST_URL.*wrangler\.toml/,
@@ -120,6 +153,12 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   it('claudeApiKey names CLAUDE_API_KEY and the secret channels', () => {
     expect(() => claudeApiKey(EMPTY_ENV)).toThrow(
       /Missing required configuration variable CLAUDE_API_KEY.*encrypted secret.*\.dev\.vars/,
+    );
+  });
+
+  it('tokenEncryptionSecret names TOKEN_ENCRYPTION_SECRET and the secret channels', () => {
+    expect(() => tokenEncryptionSecret(EMPTY_ENV)).toThrow(
+      /Missing required configuration variable TOKEN_ENCRYPTION_SECRET.*encrypted secret.*\.dev\.vars/,
     );
   });
 
@@ -176,6 +215,29 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     );
   });
 
+  it('reports a provider key missing only while a route uses that provider', () => {
+    const {
+      OPENAI_API_KEY: _openai,
+      GEMINI_API_KEY: _gemini,
+      CLAUDE_API_KEY: _claude,
+      ...none
+    } = ENV;
+    expect(missingRequiredSecretNames(none, ['anthropic'])).toEqual(['CLAUDE_API_KEY']);
+    expect(missingRequiredSecretNames(none, ['anthropic', 'gemini'])).toEqual([
+      'CLAUDE_API_KEY',
+      'GEMINI_API_KEY',
+    ]);
+    expect(missingRequiredSecretNames(none, ['anthropic', 'openai', 'gemini'])).toEqual([
+      'CLAUDE_API_KEY',
+      'OPENAI_API_KEY',
+      'GEMINI_API_KEY',
+    ]);
+    // Non-provider secrets are required whatever is routed.
+    const { TOKEN_ENCRYPTION_SECRET: _sealing, ...noSealing } = ENV;
+    expect(missingRequiredSecretNames(noSealing, [])).toEqual(['TOKEN_ENCRYPTION_SECRET']);
+    expect(missingRequiredSecretNames(ENV, [])).toEqual([]);
+  });
+
   it('an empty-string variable is treated as missing, not as a value', () => {
     expect(() => personalizerApiUrl({ PERSONALIZER_API_URL: '' })).toThrow(
       /Missing required configuration variable PERSONALIZER_API_URL/,
@@ -191,6 +253,51 @@ const wranglerFiles = import.meta.glob('../wrangler.toml', {
   import: 'default',
 }) as Record<string, string>;
 
+const devVarsExampleFiles = import.meta.glob('../.dev.vars.example', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+}) as Record<string, string>;
+
+const configSourceFiles = import.meta.glob('../src/config.ts', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+}) as Record<string, string>;
+
+/** The one file that is allowed to say what a binding is called. */
+function configSource(): string {
+  const source = Object.values(configSourceFiles)[0];
+  if (!source) throw new Error('src/config.ts not found next to test/');
+  return source;
+}
+
+/** Every member declared on the typed `Env` interface, in declaration order. */
+function declaredEnvMembers(): readonly string[] {
+  const source = configSource();
+  const start = source.indexOf('export interface Env {');
+  if (start === -1) throw new Error('src/config.ts declares no Env interface');
+  const body = source.slice(start, source.indexOf('\n}', start));
+  return [...body.matchAll(/^ {2}readonly ([A-Z][A-Z0-9_]*)\?:/gm)].map((match) => {
+    const name = match[1];
+    if (!name) throw new Error('unparsed Env member');
+    return name;
+  });
+}
+
+/** Names listed in the SECRET_VAR_NAMES table — the encrypted-secret channel. */
+function declaredSecretNames(): readonly string[] {
+  const source = configSource();
+  const start = source.indexOf('const SECRET_VAR_NAMES');
+  if (start === -1) throw new Error('src/config.ts declares no SECRET_VAR_NAMES');
+  const body = source.slice(start, source.indexOf('];', start));
+  return [...body.matchAll(/'([A-Z][A-Z0-9_]*)'/g)].map((match) => {
+    const name = match[1];
+    if (!name) throw new Error('unparsed secret name');
+    return name;
+  });
+}
+
 /** The `[vars]` table of wrangler.toml (up to the next `[` table header). */
 function productionVars(): string {
   const toml = Object.values(wranglerFiles)[0];
@@ -202,6 +309,86 @@ function productionVars(): string {
   return nextTable === -1 ? body : body.slice(0, nextTable);
 }
 
+/**
+ * The `[vars]` table parsed into the bindings it declares. Every entry is a
+ * quoted string, so a line that is neither blank, a comment, nor `KEY = "value"`
+ * is a parse failure here rather than a binding silently left out of the proof.
+ */
+function parsedProductionVars(): ReadonlyMap<string, string> {
+  const vars = new Map<string, string>();
+  for (const line of productionVars().split('\n')) {
+    const text = line.trim();
+    if (text.length === 0 || text.startsWith('#')) continue;
+    const match = text.match(/^([A-Z][A-Z0-9_]*) = "(.*)"$/);
+    if (!match?.[1] || match[2] === undefined) {
+      throw new Error(`wrangler.toml [vars] line is not a quoted string binding: ${text}`);
+    }
+    vars.set(match[1], match[2]);
+  }
+  return vars;
+}
+
+/** The deployed model-routing bindings over the test fixture's other members. */
+function deployedModelRoutingEnv(): Env {
+  const vars = parsedProductionVars();
+  const binding = (
+    name: 'MODEL_FAST' | 'MODEL_BALANCED' | 'MODEL_FRONTIER' | 'MODEL_OVERRIDES',
+  ) => {
+    const value = vars.get(name);
+    if (value === undefined) throw new Error(`wrangler.toml [vars] declares no ${name}`);
+    return value;
+  };
+  return {
+    ...ENV,
+    MODEL_FAST: binding('MODEL_FAST'),
+    MODEL_BALANCED: binding('MODEL_BALANCED'),
+    MODEL_FRONTIER: binding('MODEL_FRONTIER'),
+    MODEL_OVERRIDES: binding('MODEL_OVERRIDES'),
+  };
+}
+
+describe('configuration files stay reconciled with the typed Env', () => {
+  it('documents every binding the worker reads in .dev.vars.example', () => {
+    const example = Object.values(devVarsExampleFiles)[0];
+    if (!example) throw new Error('.dev.vars.example not found next to test/');
+    const members = declaredEnvMembers();
+    // A guard that has never seen the whole set is not a guard.
+    expect(members.length).toBeGreaterThan(25);
+    for (const member of members) {
+      expect(example, `${member} is undocumented in .dev.vars.example`).toContain(member);
+    }
+  });
+
+  it('marks every documented key REQUIRED or OPTIONAL and leaves every secret blank', () => {
+    const example = Object.values(devVarsExampleFiles)[0];
+    if (!example) throw new Error('.dev.vars.example not found next to test/');
+    for (const secret of declaredSecretNames()) {
+      // A committed example never carries a value that could be mistaken for one.
+      expect(example, `${secret} must be blank in the committed example`).toMatch(
+        new RegExp(`^${secret}=$`, 'm'),
+      );
+    }
+    expect(example).toMatch(/REQUIRED/);
+    expect(example).toMatch(/OPTIONAL/);
+  });
+
+  it('declares the provisioned Gemini channel in both files', () => {
+    const example = Object.values(devVarsExampleFiles)[0] ?? '';
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(productionVars()).toContain(
+      'GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"',
+    );
+    for (const key of ['GEMINI_API_BASE', 'GEMINI_API_KEY']) {
+      expect(example, `${key} is undocumented in .dev.vars.example`).toContain(key);
+    }
+    // The key is documented above [vars] as an encrypted secret, never declared
+    // in it: a plain-text var is re-applied on every deploy and would clobber
+    // the real secret.
+    expect(productionVars()).not.toContain('GEMINI_API_KEY');
+    expect(manifest).toContain('GEMINI_API_KEY');
+  });
+});
+
 describe('production [vars] — the deployed configuration values', () => {
   it('routes Brain calls to https://personalizer.io in production', () => {
     expect(productionVars()).toContain('PERSONALIZER_API_URL = "https://personalizer.io"');
@@ -211,10 +398,34 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('ANTHROPIC_API_BASE = "https://api.anthropic.com"');
   });
 
+  it('pins the dormant OpenAI Responses origin without changing prompt routes', () => {
+    expect(productionVars()).toContain('OPENAI_API_BASE = "https://api.openai.com"');
+  });
+
   it('pins the tier→model bindings (fast + balanced + frontier)', () => {
     expect(productionVars()).toContain('MODEL_FAST = "claude-haiku-4-5"');
     expect(productionVars()).toContain('MODEL_BALANCED = "claude-sonnet-5"');
     expect(productionVars()).toContain('MODEL_FRONTIER = "claude-opus-4-8"');
+  });
+
+  it('ships no per-prompt model exception by default', () => {
+    expect(productionVars()).toContain('MODEL_OVERRIDES = ""');
+  });
+
+  it('resolves every registered prompt and group under the deployed model bindings', () => {
+    // The deploy manifest's own MODEL_* and MODEL_OVERRIDES values, not the
+    // fixture's: an id no catalog family claims, or an override that moves a
+    // prompt off its group's shared file route, would 500 every prompt on that
+    // tier after deploy, and this is the statement that the pushed config fits.
+    const env = deployedModelRoutingEnv();
+    expect(() => validateModelRouting(env)).not.toThrow();
+    for (const description of describePromptRoutes(env)) {
+      expect(description.valid, `${description.name}: ${description.error ?? ''}`).toBe(true);
+    }
+  });
+
+  it('gates the operator diagnostics on a configured master subscriber', () => {
+    expect(productionVars()).toContain('MASTER_SUBSCRIBER_ID = "1"');
   });
 
   it('routes durable production QC telemetry and failures to Seq', () => {
@@ -251,7 +462,9 @@ describe('production [vars] — the deployed configuration values', () => {
       'ENVIRONMENT',
       'PERSONALIZER_API_URL',
       'ANTHROPIC_API_BASE',
+      'OPENAI_API_BASE',
       'CREDENTIALED_ORIGINS',
+      'MASTER_SUBSCRIBER_ID',
       'MODEL_FAST',
       'MODEL_BALANCED',
       'MODEL_FRONTIER',
@@ -273,9 +486,15 @@ describe('production [vars] — the deployed configuration values', () => {
       expect(vars).toContain(`${name} = `);
     }
     expect(vars).not.toContain('CLAUDE_API_KEY');
+    expect(vars).not.toContain('OPENAI_API_KEY');
     expect(vars).not.toContain('PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
     expect(vars).not.toContain('DEMO_ACTIVATION_SIGNING_SECRET');
     expect(vars).not.toContain('DEMO_SESSION_SIGNING_SECRET');
     expect(vars).not.toContain('DEMO_AUDIT_STATUS_SIGNING_SECRET');
+    expect(vars).not.toContain('TOKEN_ENCRYPTION_SECRET');
+    // Derived, so a secret added to src/config.ts cannot quietly appear in [vars].
+    for (const secret of declaredSecretNames()) {
+      expect(vars, `${secret} must never be a plain-text var`).not.toContain(secret);
+    }
   });
 });
