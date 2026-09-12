@@ -7,6 +7,7 @@ import type { Env } from '../src/config';
 import {
   anthropicFileRecord,
   anthropicMessage,
+  DEMO_STATUS_CALLBACK_URL,
   ENV,
   stubFetch,
   fetchedUrls,
@@ -15,6 +16,8 @@ import {
 } from './helpers';
 
 const STORE_ORIGIN = 'https://lsdev.myshopline.com';
+const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
+const PAST_ACTIVATION_CEILING_MILLISECONDS = 1_000_000;
 
 interface NamedDurableObjectId {
   readonly name: string;
@@ -95,6 +98,7 @@ async function activationToken(
   email = 'merchant@example.com',
   auditIdentifier = `audit-${tokenIdentifier}`,
   attemptLimit?: 2 | null,
+  statusCallbackUrl: string = DEMO_STATUS_CALLBACK_URL,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const staff = (entitlement as { type?: unknown }).type === 'limespot-staff-multi-store';
@@ -110,6 +114,7 @@ async function activationToken(
       email,
       emailVerified: true,
       entitlement,
+      statusCallbackUrl,
       issuedAt: now,
       expiresAt: now + 600,
     },
@@ -263,6 +268,98 @@ describe('demo session authorization', () => {
     const second = await request();
     expect(second.status).toBe(409);
     expect(await second.json()).toMatchObject({ ExceptionType: 'DemoActivationConsumedException' });
+  });
+
+  it('requires a bounded, bare, signed callback URL whose origin this deployment allowlists', async () => {
+    const env = durableEnv();
+    const now = Math.floor(Date.now() / 1000);
+    const claims = (
+      tokenIdentifier: string,
+      statusCallbackUrl?: string,
+    ): Record<string, unknown> => ({
+      version: 1,
+      kind: 'activation',
+      issuer: 'limespot-website',
+      audience: 'app-ai',
+      tokenIdentifier,
+      auditIdentifier: `audit-${tokenIdentifier}`,
+      attemptLimit: 2,
+      email: 'merchant@example.com',
+      emailVerified: true,
+      entitlement: { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      ...(statusCallbackUrl === undefined ? {} : { statusCallbackUrl }),
+      issuedAt: now,
+      expiresAt: now + 600,
+    });
+    const exchangeClaims = async (payload: Record<string, unknown>): Promise<Response> =>
+      worker.fetch(
+        new Request('https://app-ai.test/demo/session/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activationToken: await signWebsiteActivation(payload, env),
+            storeUrl: `${STORE_ORIGIN}/products/example`,
+          }),
+        }),
+        env,
+      );
+
+    const absent = await exchangeClaims(claims('callback-absent'));
+    expect(absent.status).toBe(401);
+    expect(await absent.json()).toMatchObject({ ExceptionType: 'DemoAuthorizationException' });
+
+    const foreignHost = await exchangeClaims(
+      claims('callback-foreign', 'https://evil.example/studio/activate/api/status'),
+    );
+    expect(foreignHost.status).toBe(401);
+
+    const insecure = await exchangeClaims(
+      claims('callback-insecure', 'http://limespot.test/studio/activate/api/status'),
+    );
+    expect(insecure.status).toBe(401);
+
+    const lookalikeHost = await exchangeClaims(
+      claims('callback-lookalike', 'https://limespot.test.evil.example/studio/activate/api/status'),
+    );
+    expect(lookalikeHost.status).toBe(401);
+
+    const relative = await exchangeClaims(
+      claims('callback-relative', '/studio/activate/api/status'),
+    );
+    expect(relative.status).toBe(401);
+
+    const credentialed = await exchangeClaims(
+      claims(
+        'callback-credentialed',
+        'https://user:secret@limespot.test/studio/activate/api/status',
+      ),
+    );
+    expect(credentialed.status).toBe(401);
+
+    const queried = await exchangeClaims(
+      claims('callback-query', `${DEMO_STATUS_CALLBACK_URL}?next=1`),
+    );
+    expect(queried.status).toBe(401);
+
+    const fragmented = await exchangeClaims(
+      claims('callback-fragment', `${DEMO_STATUS_CALLBACK_URL}#f`),
+    );
+    expect(fragmented.status).toBe(401);
+
+    const overlong = await exchangeClaims(
+      claims(
+        'callback-overlong',
+        `${DEMO_STATUS_CALLBACK_URL}/${'p'.repeat(
+          MAX_STATUS_CALLBACK_URL_LENGTH - DEMO_STATUS_CALLBACK_URL.length,
+        )}`,
+      ),
+    );
+    expect(overlong.status).toBe(401);
+
+    const allowlisted = await exchangeClaims(
+      claims('callback-allowlisted', DEMO_STATUS_CALLBACK_URL),
+    );
+    expect(allowlisted.status).toBe(201);
   });
 
   it('binds public activations to one origin and reserves multi-store entitlement for verified staff', async () => {
@@ -614,7 +711,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) return new Response(null, { status: 204 });
+      if (url === DEMO_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
       if (url.endsWith('/v1/files')) {
         return new Response(JSON.stringify(anthropicFileRecord('file-owned')), {
           status: 200,
@@ -669,7 +766,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) return new Response(null, { status: 204 });
+      if (url === DEMO_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
       if (url.includes('/v2/administrator-authentication/validate-context-id')) {
         return new Response(JSON.stringify({ SubscriberID: 42, SubscriberTitle: 'Store' }), {
           status: 200,
@@ -788,7 +885,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+      if (url === DEMO_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -858,7 +955,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+      if (url === DEMO_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -904,7 +1001,7 @@ describe('demo session authorization', () => {
     let inference = 0;
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+      if (url === DEMO_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -962,7 +1059,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === ENV.DEMO_AUDIT_STATUS_URL) {
+      if (url === DEMO_STATUS_CALLBACK_URL) {
         callbackBodies.push(String(init?.body));
         return new Response(null, { status: callbackAvailable ? 204 : 503 });
       }
@@ -985,5 +1082,47 @@ describe('demo session authorization', () => {
       { status: 'started', attemptNumber: 1 },
       { status: 'completed', attemptNumber: 1 },
     ]);
+  });
+
+  it('mirrors every event in the session to the URL its activation signed, past that token', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
+    const env = durableEnv({
+      DEMO_AUDIT_STATUS_ORIGINS: `${ENV.DEMO_AUDIT_STATUS_ORIGINS},https://mirror.limespot.test`,
+    });
+    const signedCallbackUrl = 'https://mirror.limespot.test/studio/activate/api/status';
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        'signed-callback',
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        'audit-signed-callback',
+        undefined,
+        signedCallbackUrl,
+      ),
+    );
+    const callbackTargets: string[] = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/studio/activate/api/status')) {
+        callbackTargets.push(url);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
+    vi.advanceTimersByTime(PAST_ACTIVATION_CEILING_MILLISECONDS);
+    expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
+
+    expect(callbackTargets).toEqual(Array.from({ length: 4 }, () => signedCallbackUrl));
+    expect(callbackTargets).not.toContain(DEMO_STATUS_CALLBACK_URL);
+    vi.useRealTimers();
   });
 });

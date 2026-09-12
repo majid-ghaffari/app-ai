@@ -515,6 +515,10 @@ identity/IP, daily-budget, and kill-switch controls belong to the limespot.com i
 hard spending controls outside it. App-ai HMAC-signs immutable `started`/`failed`/`completed` events
 with a third, purpose-specific secret and retries them from an ordered Durable Object outbox; website
 D1 is an idempotent operational mirror, while app-ai remains the attempt enforcement authority. The
+website owns its routing table, so the callback destination is a required `statusCallbackUrl` claim
+on the activation rather than app-ai configuration; app-ai keeps the decision of where a callback may
+go as the `DEMO_AUDIT_STATUS_ORIGINS` allowlist, and stores the validated URL on the session because a
+run outlives the token that named it. The
 Durable Object binding and first migration are part of `wrangler.toml`, while all signing keys remain
 encrypted secrets.
 

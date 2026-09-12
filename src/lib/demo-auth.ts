@@ -9,8 +9,8 @@
 
 import {
   demoActivationSigningSecret,
+  demoAuditStatusOrigins,
   demoAuditStatusSigningSecret,
-  demoAuditStatusUrl,
   demoMaxMessageBytes,
   demoMaxUploadBytes,
   demoSessionSigningSecret,
@@ -37,6 +37,7 @@ const MAX_IDENTIFIER_LENGTH = 256;
 /** A sealed public file reference is authenticated ciphertext, so it is far longer than an id. */
 const MAX_FILE_REFERENCE_LENGTH = 4096;
 const MAX_ACTIVATION_LIFETIME_SECONDS = 900;
+const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
 const ALLOWED_DEMO_UPLOAD_PROMPTS = new Set([
   'onboarding-batch-all',
   'onboarding-batch',
@@ -59,6 +60,7 @@ interface ActivationClaims {
   readonly entitlement:
     | { readonly type: 'store-origin'; readonly storeOrigin: string }
     | { readonly type: 'limespot-staff-multi-store' };
+  readonly statusCallbackUrl: string;
   readonly issuedAt: number;
   readonly expiresAt: number;
 }
@@ -106,14 +108,9 @@ export async function exchangeDemoActivation(
   }
   const storeOrigin = normalizeStoreOrigin(storeUrl);
   assertActivationEntitlement(activation, storeOrigin);
-  // Resolve every required exchange dependency before consuming the one-time
-  // activation, so a missing session key cannot strand an otherwise valid link.
+  const statusCallbackUrl = resolveStatusCallbackUrl(activation.statusCallbackUrl, env);
   const sessionSigningSecret = demoSessionSigningSecret(env);
-  // Validate the completion-ledger channel before consuming the one-use activation.
-  // Delivery outages are handled by the Durable Object outbox; missing or malformed
-  // configuration is a deployment error and fails the exchange closed.
   demoAuditStatusSigningSecret(env);
-  demoAuditStatusUrl(env);
   const now = epochSeconds();
   const expiresAt = now + demoSessionTtlSeconds(env);
   const sessionIdentifier = await opaqueSessionIdentifier(activation.tokenIdentifier);
@@ -136,6 +133,7 @@ export async function exchangeDemoActivation(
       activationIdentifier: activation.tokenIdentifier,
       attemptLimit: activation.attemptLimit,
       storeOrigin,
+      statusCallbackUrl,
       expiresAt,
     },
     env,
@@ -356,6 +354,7 @@ function isActivationClaims(value: unknown): value is ActivationClaims {
     isEmail(claims.email) &&
     claims.emailVerified === true &&
     isActivationEntitlement(claims.entitlement) &&
+    isBoundedStatusCallbackUrl(claims.statusCallbackUrl) &&
     Number.isSafeInteger(claims.issuedAt) &&
     Number.isSafeInteger(claims.expiresAt) &&
     hasExactKeys(claims, [
@@ -369,6 +368,7 @@ function isActivationClaims(value: unknown): value is ActivationClaims {
       'email',
       'emailVerified',
       'entitlement',
+      'statusCallbackUrl',
       'issuedAt',
       'expiresAt',
     ])
@@ -485,6 +485,22 @@ function validateDemoMessage(value: unknown): string[] {
   return [...new Set(fileIdentifiers)];
 }
 
+function resolveStatusCallbackUrl(claimed: string, env: Env): string {
+  let url: URL;
+  try {
+    url = new URL(claimed);
+  } catch {
+    throw unauthorized('The activation token status callback URL is invalid.');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw unauthorized('The activation token status callback URL is invalid.');
+  }
+  if (!demoAuditStatusOrigins(env).includes(url.origin)) {
+    throw unauthorized('The activation token status callback origin is not permitted.');
+  }
+  return url.toString();
+}
+
 function normalizeStoreOrigin(storeUrl: string): string {
   let url: URL;
   try {
@@ -525,6 +541,12 @@ async function opaqueSessionIdentifier(tokenIdentifier: string): Promise<string>
 
 function isBoundedIdentifier(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_IDENTIFIER_LENGTH;
+}
+
+function isBoundedStatusCallbackUrl(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length > 0 && value.length <= MAX_STATUS_CALLBACK_URL_LENGTH
+  );
 }
 
 function isBoundedFileReference(value: unknown): value is string {

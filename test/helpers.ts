@@ -38,7 +38,7 @@ export const ENV: Env = {
   DEMO_ACTIVATION_SIGNING_SECRET: 'test-activation-signing-secret-with-32-bytes',
   DEMO_SESSION_SIGNING_SECRET: 'test-session-signing-secret-distinct-32-bytes',
   DEMO_AUDIT_STATUS_SIGNING_SECRET: 'test-audit-status-signing-secret-distinct-32-bytes',
-  DEMO_AUDIT_STATUS_URL: 'https://limespot.test/personalization-audit/api/status',
+  DEMO_AUDIT_STATUS_ORIGINS: 'https://limespot.test',
   DEMO_SESSION_TTL_SECONDS: '1800',
   DEMO_MAX_UPLOADS: '40',
   DEMO_MAX_MESSAGES: '3',
@@ -48,6 +48,9 @@ export const ENV: Env = {
 };
 
 export const CORS = { 'Access-Control-Allow-Origin': '*' };
+
+/** A callback path under the one origin `ENV.DEMO_AUDIT_STATUS_ORIGINS` allowlists. */
+export const DEMO_STATUS_CALLBACK_URL = 'https://limespot.test/studio/activate/api/status';
 
 /** Brain AI-tool capabilities used by tests that intentionally exercise the full data-tool set. */
 export const AVAILABLE_AI_TOOLS = [

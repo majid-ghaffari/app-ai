@@ -5,7 +5,7 @@
  * consumes activation identifiers once, permits one active browser session,
  * preserves the public completion count across reissued links, owns provider
  * file identifiers, reserves quotas, and durably retries ordered website status
- * callbacks.
+ * callbacks to the destination the activation signed.
  */
 
 import {
@@ -37,6 +37,8 @@ interface SessionRecord {
   readonly auditIdentifier: string;
   readonly attemptLimit: 2 | null;
   readonly storeOrigin: string;
+  /** The website-signed, origin-allowlisted destination this audit's events are mirrored to. */
+  readonly statusCallbackUrl: string;
   readonly completedAttempts: number;
   readonly consumedActivationIdentifiers: readonly string[];
   readonly sessionIdentifier: string;
@@ -56,6 +58,7 @@ interface ExchangeInput {
   readonly attemptLimit: 2 | null;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  readonly statusCallbackUrl: string;
   readonly expiresAt: number;
 }
 
@@ -83,6 +86,8 @@ export interface DemoAuthorityExchange {
   readonly attemptLimit: 2 | null;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  /** The allowlisted destination every status event of this session is delivered to. */
+  readonly statusCallbackUrl: string;
   readonly expiresAt: number;
 }
 
@@ -226,6 +231,7 @@ export class DemoSessionAuthority implements DurableObject {
         auditIdentifier: input.auditIdentifier,
         attemptLimit: input.attemptLimit,
         storeOrigin: input.storeOrigin,
+        statusCallbackUrl: input.statusCallbackUrl,
         completedAttempts: expired?.completedAttempts ?? 0,
         consumedActivationIdentifiers: [
           ...(expired?.consumedActivationIdentifiers ?? []),
@@ -381,7 +387,8 @@ export class DemoSessionAuthority implements DurableObject {
     while (true) {
       const session = await this.state.storage.get<SessionRecord>(SESSION_STORAGE_KEY);
       const event = session?.statusOutbox[0];
-      if (!event || !(await deliverDemoAuditStatusEvent(event, this.env))) return;
+      if (!session || !event) return;
+      if (!(await deliverDemoAuditStatusEvent(event, session.statusCallbackUrl, this.env))) return;
       await this.state.storage.transaction(async (storage) => {
         const current = await storage.get<SessionRecord>(SESSION_STORAGE_KEY);
         if (!current || current.statusOutbox[0]?.eventIdentifier !== event.eventIdentifier) return;

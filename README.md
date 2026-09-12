@@ -307,7 +307,7 @@ variable, no fallback defaults.
   `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, `MASTER_SUBSCRIBER_ID`, the
   tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` and their sparse
   per-prompt `MODEL_OVERRIDES` exceptions, plus `LOG_TARGETS_*` and
-  `LOG_SEQ_INGEST_URL`, plus the `DEMO_*` session/quota limits (values pinned by `test/config.test.ts`)
+  `LOG_SEQ_INGEST_URL`, `DEMO_AUDIT_STATUS_ORIGINS`, plus the `DEMO_*` session/quota limits (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
@@ -319,8 +319,8 @@ variable, no fallback defaults.
   - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
     caller-auth token toward Personalizer's integration bridge)
   - Add distinct `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
-    `DEMO_AUDIT_STATUS_SIGNING_SECRET` values containing at least 32 random bytes each; configure
-    the exact website callback in `DEMO_AUDIT_STATUS_URL`
+    `DEMO_AUDIT_STATUS_SIGNING_SECRET` values containing at least 32 random bytes each; allowlist
+    the website's callback origins in `DEMO_AUDIT_STATUS_ORIGINS`
   - Optionally add `LOG_SEQ_API_KEY` when the Seq endpoint requires authentication
 
 ### Updating System Prompts
@@ -504,7 +504,7 @@ Every environment provides the full variable set — `ENVIRONMENT`,
 `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`,
 `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` /
 `MODEL_FRONTIER`, and the provider API keys + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` +
-`TOKEN_ENCRYPTION_SECRET` + three demo signing secrets, the exact `DEMO_AUDIT_STATUS_URL`,
+`TOKEN_ENCRYPTION_SECRET` + three demo signing secrets, the `DEMO_AUDIT_STATUS_ORIGINS` allowlist,
 six `LOG_TARGETS_*` routes, and
 `LOG_SEQ_INGEST_URL` whenever any route selects Seq. `LOG_SEQ_API_KEY` is optional.
 `src/config.ts` throws on malformed or missing required configuration.
@@ -575,7 +575,7 @@ Before deploying:
 - [ ] CORS origins restricted to production domains
 - [ ] No sensitive data in logs
 - [ ] Context validation working
-- [ ] `DEMO_SESSIONS` binding/migration, all three demo signing secrets, and exact status URL provisioned
+- [ ] `DEMO_SESSIONS` binding/migration, all three demo signing secrets, and the status-callback origin allowlist provisioned
 - [ ] Website/app-ai activation claims and signed status callback pass cross-repository contract tests
 - [ ] Website verification/rate limits/daily cap and the provider budget kill switch tested
 - [ ] Dependencies updated

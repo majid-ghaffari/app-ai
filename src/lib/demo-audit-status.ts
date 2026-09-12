@@ -1,6 +1,6 @@
 /** Authenticated app-ai to website audit-attempt status callbacks. */
 
-import { demoAuditStatusSigningSecret, demoAuditStatusUrl, type Env } from '../config';
+import { demoAuditStatusSigningSecret, type Env } from '../config';
 
 const CALLBACK_TIMEOUT_MILLISECONDS = 5_000;
 
@@ -17,9 +17,14 @@ export interface DemoAuditStatusEvent {
   readonly occurredAt: number;
 }
 
-/** Deliver one immutable event. Callers retain it for retry unless this returns true. */
+/**
+ * Deliver one immutable event to the destination the audit's activation signed
+ * and this deployment allowlisted. Callers retain it for retry unless this
+ * returns true.
+ */
 export async function deliverDemoAuditStatusEvent(
   event: DemoAuditStatusEvent,
+  statusCallbackUrl: string,
   env: Env,
 ): Promise<boolean> {
   try {
@@ -29,7 +34,7 @@ export async function deliverDemoAuditStatusEvent(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CALLBACK_TIMEOUT_MILLISECONDS);
     try {
-      const response = await fetch(demoAuditStatusUrl(env), {
+      const response = await fetch(statusCallbackUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

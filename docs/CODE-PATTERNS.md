@@ -129,12 +129,12 @@ constant, it belongs in configuration (next section). Inline `4`s and
 Every URL and every architecturally sensible deploy-time tunable lives in
 CONFIGURATION, not in code:
 
-| Channel                                | What                                                                                                                                                   |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/provider origins, CORS allowlist, master subscriber, tier→model bindings and their `MODEL_OVERRIDES` exceptions)  |
-| Cloudflare Dashboard encrypted secrets | Every provider API key, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET`, and the three key-separated `DEMO_*_SIGNING_SECRET` values |
-| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`                                                                         |
-| `.dev.vars.example` (committed)        | Every binding the worker reads, grouped, marked REQUIRED or OPTIONAL; secrets blank, non-secrets at their working local value                          |
+| Channel                                | What                                                                                                                                                                                         |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/provider origins, CORS allowlist, demo status-callback origin allowlist, master subscriber, tier→model bindings and their `MODEL_OVERRIDES` exceptions) |
+| Cloudflare Dashboard encrypted secrets | Every provider API key, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET`, and the three key-separated `DEMO_*_SIGNING_SECRET` values                                       |
+| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`                                                                                                               |
+| `.dev.vars.example` (committed)        | Every binding the worker reads, grouped, marked REQUIRED or OPTIONAL; secrets blank, non-secrets at their working local value                                                                |
 
 ### The rules
 

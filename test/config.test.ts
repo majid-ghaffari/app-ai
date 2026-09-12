@@ -26,8 +26,8 @@ import {
   tokenEncryptionSecret,
   credentialedOrigins,
   demoActivationSigningSecret,
+  demoAuditStatusOrigins,
   demoAuditStatusSigningSecret,
-  demoAuditStatusUrl,
   demoMaxMessageBytes,
   demoMaxMessages,
   demoMaxTotalUploadBytes,
@@ -60,7 +60,7 @@ describe('config accessors — present values', () => {
     expect(demoActivationSigningSecret(ENV)).toBe(ENV.DEMO_ACTIVATION_SIGNING_SECRET);
     expect(demoSessionSigningSecret(ENV)).toBe(ENV.DEMO_SESSION_SIGNING_SECRET);
     expect(demoAuditStatusSigningSecret(ENV)).toBe(ENV.DEMO_AUDIT_STATUS_SIGNING_SECRET);
-    expect(demoAuditStatusUrl(ENV)).toBe('https://limespot.test/personalization-audit/api/status');
+    expect(demoAuditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
     expect(demoSessionTtlSeconds(ENV)).toBe(1800);
     expect(demoMaxUploads(ENV)).toBe(40);
     expect(demoMaxMessages(ENV)).toBe(3);
@@ -92,6 +92,50 @@ describe('config accessors — present values', () => {
     expect(resolveModel(ENV, 'fast')).toBe(ENV.MODEL_FAST);
     expect(resolveModel(ENV, 'balanced')).toBe(ENV.MODEL_BALANCED);
     expect(resolveModel(ENV, 'frontier')).toBe(ENV.MODEL_FRONTIER);
+  });
+
+  it('accepts only bare origins in DEMO_AUDIT_STATUS_ORIGINS, HTTPS off the loopback', () => {
+    expect(
+      demoAuditStatusOrigins({
+        ...ENV,
+        DEMO_AUDIT_STATUS_ORIGINS: ' https://limespot.com , http://127.0.0.1:5173 ,, ',
+      }),
+    ).toEqual(['https://limespot.com', 'http://127.0.0.1:5173']);
+    expect(() => demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: ' , ' })).toThrow(
+      /must list at least one callback origin/,
+    );
+    expect(() =>
+      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: '/studio/activate/api/status' }),
+    ).toThrow(/must be an absolute origin/);
+    expect(() =>
+      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: 'https://limespot.com/studio' }),
+    ).toThrow(/must be a bare scheme:\/\/host/);
+    expect(() =>
+      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: 'http://limespot.com' }),
+    ).toThrow(/must use HTTPS/);
+  });
+
+  it('refuses a loopback HTTP callback origin in a production deployment', () => {
+    expect(() =>
+      demoAuditStatusOrigins({
+        ...ENV,
+        ENVIRONMENT: 'production',
+        DEMO_AUDIT_STATUS_ORIGINS: 'http://127.0.0.1:5173',
+      }),
+    ).toThrow(/must use HTTPS/);
+  });
+
+  it('names the configuration channel in every malformed-origin error', () => {
+    for (const value of [
+      ' , ',
+      '/studio/activate/api/status',
+      'https://limespot.com/studio',
+      'http://limespot.com',
+    ]) {
+      expect(() => demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: value })).toThrow(
+        /Set it in wrangler\.toml \[vars\] \(production\) or in \.dev\.vars/,
+      );
+    }
   });
 
   it('parses CREDENTIALED_ORIGINS as a trimmed, empties-dropped comma list', () => {
@@ -178,7 +222,9 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(() => demoAuditStatusSigningSecret(EMPTY_ENV)).toThrow(
       /DEMO_AUDIT_STATUS_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
     );
-    expect(() => demoAuditStatusUrl(EMPTY_ENV)).toThrow(/DEMO_AUDIT_STATUS_URL.*wrangler\.toml/);
+    expect(() => demoAuditStatusOrigins(EMPTY_ENV)).toThrow(
+      /DEMO_AUDIT_STATUS_ORIGINS.*wrangler\.toml/,
+    );
     expect(() =>
       demoActivationSigningSecret({ DEMO_ACTIVATION_SIGNING_SECRET: 'too-short' }),
     ).toThrow(/at least 32 bytes/);
@@ -447,6 +493,10 @@ describe('production [vars] — the deployed configuration values', () => {
     );
   });
 
+  it('allowlists only the limespot.com origin for signed status callbacks', () => {
+    expect(productionVars()).toContain('DEMO_AUDIT_STATUS_ORIGINS = "https://limespot.com"');
+  });
+
   it('binds the strongly consistent demo-session authority with its migration', () => {
     const manifest = Object.values(wranglerFiles)[0] ?? '';
     expect(manifest).toContain('name = "DEMO_SESSIONS"');
@@ -475,7 +525,7 @@ describe('production [vars] — the deployed configuration values', () => {
       'LOG_TARGETS_ERROR',
       'LOG_TARGETS_FATAL',
       'LOG_SEQ_INGEST_URL',
-      'DEMO_AUDIT_STATUS_URL',
+      'DEMO_AUDIT_STATUS_ORIGINS',
       'DEMO_SESSION_TTL_SECONDS',
       'DEMO_MAX_UPLOADS',
       'DEMO_MAX_MESSAGES',

@@ -158,8 +158,12 @@ export interface Env {
   readonly DEMO_SESSION_SIGNING_SECRET?: string;
   /** HMAC key shared with the website only for audit-status callbacks. SECRET. */
   readonly DEMO_AUDIT_STATUS_SIGNING_SECRET?: string;
-  /** Exact website endpoint that receives signed audit-attempt status callbacks. */
-  readonly DEMO_AUDIT_STATUS_URL?: string;
+  /**
+   * Comma-separated origins a website-signed activation may name in its
+   * `statusCallbackUrl` claim. The website owns the callback path and signs it
+   * into the token; this deployment owns the set of hosts it may be sent to.
+   */
+  readonly DEMO_AUDIT_STATUS_ORIGINS?: string;
   /** Strongly consistent authority for activation consumption, quotas, and file ownership. */
   readonly DEMO_SESSIONS?: DurableObjectNamespace;
   /** Lifetime of an exchanged demo session in seconds. */
@@ -200,7 +204,7 @@ type RequiredVarName =
   | 'DEMO_ACTIVATION_SIGNING_SECRET'
   | 'DEMO_SESSION_SIGNING_SECRET'
   | 'DEMO_AUDIT_STATUS_SIGNING_SECRET'
-  | 'DEMO_AUDIT_STATUS_URL'
+  | 'DEMO_AUDIT_STATUS_ORIGINS'
   | 'DEMO_SESSION_TTL_SECONDS'
   | 'DEMO_MAX_UPLOADS'
   | 'DEMO_MAX_MESSAGES'
@@ -257,6 +261,10 @@ export class SecretConfigurationError extends Error {
   }
 }
 
+/** Where a non-secret variable is set, appended to every configuration error naming one. */
+const SET_IN_VARS =
+  'Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).';
+
 /** Read one required variable, throwing a config error naming it when absent. */
 function requireVar(env: Env, name: RequiredVarName): string {
   const value = env[name];
@@ -269,9 +277,7 @@ function requireVar(env: Env, name: RequiredVarName): string {
       `Missing required configuration variable ${name}. Set it as a Cloudflare encrypted secret (production) or in .dev.vars (local dev, gitignored — see .dev.vars.example).`,
     );
   }
-  throw new Error(
-    `Missing required configuration variable ${name}. Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).`,
-  );
+  throw new Error(`Missing required configuration variable ${name}. ${SET_IN_VARS}`);
 }
 
 /** Personalizer API base URL. */
@@ -318,16 +324,23 @@ function paidProviderBase(
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`${name} must use http or https`);
   }
-  const production = env.ENVIRONMENT?.trim().toLowerCase() === 'production';
   const optedIn = env.AI_CHANNEL?.trim().toLowerCase() === 'prod';
-  const loopback =
-    url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
-  if (!production && !optedIn && !loopback) {
+  if (!isProductionDeployment(env) && !optedIn && !isLoopbackHost(url)) {
     throw new Error(
       `Refusing paid ${provider} provider call outside production without AI_CHANNEL=prod`,
     );
   }
   return value;
+}
+
+/** The deployed-versus-local distinction every fail-closed configuration rule keys off. */
+function isProductionDeployment(env: Env): boolean {
+  return env.ENVIRONMENT?.trim().toLowerCase() === 'production';
+}
+
+/** A host that can only be this machine, so plain HTTP carries nothing off it. */
+function isLoopbackHost(url: URL): boolean {
+  return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
 }
 
 /** Parse and validate the configured target fan-out for one log level. */
@@ -399,7 +412,7 @@ export function modelOverrides(env: Env): ReadonlyMap<string, string> {
     const model = separator === -1 ? '' : text.slice(separator + 1).trim();
     if (key.length === 0 || model.length === 0) {
       throw new Error(
-        `MODEL_OVERRIDES entry "${text}" must read promptGroupOrPromptName=modelId. Set it in wrangler.toml [vars] (production) or in .dev.vars (local dev — see .dev.vars.example).`,
+        `MODEL_OVERRIDES entry "${text}" must read promptGroupOrPromptName=modelId. ${SET_IN_VARS}`,
       );
     }
     if (overrides.has(key)) {
@@ -512,18 +525,46 @@ export function demoAuditStatusSigningSecret(env: Env): string {
   return strongSigningSecret(env, 'DEMO_AUDIT_STATUS_SIGNING_SECRET');
 }
 
-/** Exact website audit-status callback URL. */
-export function demoAuditStatusUrl(env: Env): string {
-  const value = requireVar(env, 'DEMO_AUDIT_STATUS_URL');
-  const url = new URL(value);
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
-    throw new Error('DEMO_AUDIT_STATUS_URL must use HTTPS except on loopback development hosts.');
+/**
+ * The origins a website-signed activation may name as its status-callback
+ * destination. Each entry is a bare `scheme://host[:port]` origin and must use
+ * HTTPS; plain HTTP is accepted only on a loopback host outside production, the
+ * same deployed-versus-local distinction the paid-provider guard applies.
+ */
+export function demoAuditStatusOrigins(env: Env): readonly string[] {
+  const origins = requireVar(env, 'DEMO_AUDIT_STATUS_ORIGINS')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  if (origins.length === 0) {
+    throw new Error(
+      `DEMO_AUDIT_STATUS_ORIGINS must list at least one callback origin. ${SET_IN_VARS}`,
+    );
   }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error('DEMO_AUDIT_STATUS_URL cannot contain credentials, a query, or a fragment.');
+  for (const origin of origins) {
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      throw new Error(
+        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must be an absolute origin. ${SET_IN_VARS}`,
+      );
+    }
+    if (url.origin !== origin) {
+      throw new Error(
+        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must be a bare scheme://host[:port] origin. ${SET_IN_VARS}`,
+      );
+    }
+    if (
+      url.protocol !== 'https:' &&
+      !(url.protocol === 'http:' && isLoopbackHost(url) && !isProductionDeployment(env))
+    ) {
+      throw new Error(
+        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must use HTTPS; plain HTTP is accepted only on a loopback host outside production. ${SET_IN_VARS}`,
+      );
+    }
   }
-  return url.toString();
+  return origins;
 }
 
 /** Strongly consistent authority for one-time activation, quotas, and file ownership. */

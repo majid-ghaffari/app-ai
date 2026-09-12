@@ -115,7 +115,10 @@ OPENAI_API_BASE = "https://api.openai.com"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # ── Studio demo (scoped extension sessions) ──
-DEMO_AUDIT_STATUS_URL = "https://limespot.com/personalization-audit/api/status"
+# Origins a website-signed activation may name in its statusCallbackUrl claim.
+# The website signs the exact callback path into the token; this list is the set
+# of hosts app-ai will deliver a status event to.
+DEMO_AUDIT_STATUS_ORIGINS = "https://limespot.com"
 DEMO_SESSION_TTL_SECONDS = "1800"
 DEMO_MAX_UPLOADS = "40"
 DEMO_MAX_MESSAGES = "3"

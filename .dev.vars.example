@@ -149,9 +149,13 @@ DEMO_ACTIVATION_SIGNING_SECRET=
 DEMO_SESSION_SIGNING_SECRET=
 DEMO_AUDIT_STATUS_SIGNING_SECRET=
 
-# REQUIRED. Exact website endpoint that receives signed audit-attempt status
-# callbacks. HTTPS except on loopback development hosts.
-DEMO_AUDIT_STATUS_URL=http://127.0.0.1:5173/personalization-audit/api/status
+# REQUIRED. Comma-separated origins a website-signed activation may name in its
+# statusCallbackUrl claim, which carries the exact status-callback path. Each
+# entry is a bare scheme://host[:port] origin and uses HTTPS; plain HTTP is
+# accepted only on a loopback host outside production. The website serves its
+# development activation surface on both loopback spellings and signs the
+# callback from whichever the browser used, so both are listed here.
+DEMO_AUDIT_STATUS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 
 # REQUIRED. Scoped demo limits. Production values are declared in wrangler.toml.
 DEMO_SESSION_TTL_SECONDS=1800

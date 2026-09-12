@@ -42,6 +42,7 @@ Payload for a public, one-store activation:
     "type": "store-origin",
     "storeOrigin": "https://merchant.example"
   },
+  "statusCallbackUrl": "https://limespot.com/studio/activate/api/status",
   "issuedAt": 1787270400,
   "expiresAt": 1787271000
 }
@@ -61,10 +62,21 @@ Payload for LimeSpot's sales/demo staff:
   "email": "<staff mailbox on the entitling domain>",
   "emailVerified": true,
   "entitlement": { "type": "limespot-staff-multi-store" },
+  "statusCallbackUrl": "https://limespot.com/studio/activate/api/status",
   "issuedAt": 1787270400,
   "expiresAt": 1787271000
 }
 ```
+
+`statusCallbackUrl` is where app-ai mirrors this audit's attempt status. It is REQUIRED: an
+activation naming no destination is refused like any other malformed claim. The website owns its own
+routing table, so the exact callback path travels in the signed token; app-ai owns where a callback
+may be sent. The claim must be an absolute URL carrying no credentials, query, or fragment, and its
+origin must appear in `DEMO_AUDIT_STATUS_ORIGINS` — a comma-separated list of bare
+`scheme://host[:port]` origins in `wrangler.toml` `[vars]`, HTTPS except for a loopback host outside
+production, which local development uses. Production allowlists `https://limespot.com` alone. The
+allowlist is what keeps a leaked website signing key from turning the callback outbox into a request
+generator aimed at a host of the attacker's choosing.
 
 `issuedAt` and `expiresAt` are integer epoch seconds. The token must be currently
 valid and its declared lifetime cannot exceed 15 minutes. `auditIdentifier` is bounded to 128
@@ -177,10 +189,16 @@ per-session app-ai quotas alone are not a global budget.
 ## Website status mirror
 
 App-ai is the enforcement authority for attempt state. It mirrors every transition to the website
-through an ordered Durable Object outbox. The exact callback is:
+through an ordered Durable Object outbox. The validated `statusCallbackUrl` is stored on the demo
+session at exchange, so every event in a run reaches the same destination — a run outlives the
+short-lived activation token that named it, and no later event re-reads the token. A re-exchange
+under the same `auditIdentifier` re-resolves the claim of the newest activation and the retained
+outbox drains to that destination, and narrowing `DEMO_AUDIT_STATUS_ORIGINS` does not reach a URL
+already stored on a live session — it governs the next exchange, not the sessions already running.
+The exact callback is:
 
 ```text
-POST https://limespot.com/personalization-audit/api/status
+POST <the activation's statusCallbackUrl, for example https://limespot.com/studio/activate/api/status>
 Content-Type: application/json
 X-LimeSpot-Audit-Timestamp: <current integer epoch second>
 X-LimeSpot-Audit-Signature: v1=<base64url HMAC-SHA256(secret, timestamp + "." + rawBody)>
@@ -230,7 +248,14 @@ session alarm cannot safely delete it unilaterally. Public privacy copy and the 
 policy must describe this distinction. Provider-side deletion/retention is an operational production
 policy, not a capability claimed by the demo session TTL.
 
-Production provisioning requires all three encrypted secrets plus the exact HTTPS
-`DEMO_AUDIT_STATUS_URL` before the route is usable. `npm run deploy:dry-run` validates the class
+Production provisioning requires all three encrypted secrets plus the HTTPS
+`DEMO_AUDIT_STATUS_ORIGINS` allowlist before the route is usable. `npm run deploy:dry-run` validates the class
 export, binding, migration, and revision-stamped production launcher without deploying or invoking
 Anthropic.
+
+**Cross-repo deploy ordering (HARD): app-ai deploys BEFORE the website activation issuer.** The
+claim set is matched exactly on both sides, so there is no shape both accept: a worker that requires
+`statusCallbackUrl` refuses a token without it, and a worker that does not know the claim refuses a
+token carrying it as an unexpected key. app-ai therefore deploys first, while the website mints no
+activation tokens and nothing can be refused; the website issuer follows; the audit request path is
+enabled last. Enabling the website issuer ahead of the worker would 401 every exchange.

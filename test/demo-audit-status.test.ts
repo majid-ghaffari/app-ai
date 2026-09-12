@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { deliverDemoAuditStatusEvent } from '../src/lib/demo-audit-status';
-import { ENV } from './helpers';
+import { DEMO_STATUS_CALLBACK_URL, ENV } from './helpers';
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('demo audit status callback', () => {
-  it('signs the exact immutable JSON body and required headers', async () => {
+  it("posts the session's signed callback URL with the exact immutable JSON body and headers", async () => {
     const event = {
       version: 1 as const,
       eventIdentifier: 'event-1',
@@ -22,10 +22,12 @@ describe('demo audit status callback', () => {
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(null, { status: 204 }));
 
-    await expect(deliverDemoAuditStatusEvent(event, ENV)).resolves.toBe(true);
+    await expect(deliverDemoAuditStatusEvent(event, DEMO_STATUS_CALLBACK_URL, ENV)).resolves.toBe(
+      true,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe(ENV.DEMO_AUDIT_STATUS_URL);
+    expect(url).toBe(DEMO_STATUS_CALLBACK_URL);
     const body = JSON.stringify(event);
     expect(init?.body).toBe(body);
     const headers = new Headers(init?.headers);
@@ -52,6 +54,7 @@ describe('demo audit status callback', () => {
           status: 'failed',
           occurredAt: 1_777_000_001,
         },
+        DEMO_STATUS_CALLBACK_URL,
         ENV,
       ),
     ).resolves.toBe(false);

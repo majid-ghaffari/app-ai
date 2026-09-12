@@ -29,3 +29,13 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Continuation values stay opaque. An adapter may set `requiredOnNextTurn` when
   its state must be echoed after an ordinary terminal assistant turn; handlers
   only seal/carry the value and never interpret the provider payload.
+- `demo-auth.ts` resolves every dependency an exchange needs — the session
+  signing key, the callback signing key, and the activation's allowlisted
+  `statusCallbackUrl` — BEFORE it consumes the one-time activation, so a
+  deployment error cannot burn an otherwise valid link. Delivery outages belong
+  to the Durable Object outbox, not to the exchange.
+- `resolveStatusCallbackUrl` is where app-ai keeps the decision the website does
+  not own: the signed claim carries the path, and only an absolute URL with no
+  credentials, query, or fragment whose origin is in `DEMO_AUDIT_STATUS_ORIGINS`
+  reaches the outbox, so a leaked website signing key cannot aim it at a host of
+  its own choosing.
