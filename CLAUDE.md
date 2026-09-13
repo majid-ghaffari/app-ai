@@ -357,7 +357,7 @@ An optional **live token-savings diagnostic** (`scripts/verify-caching.mjs`, `np
 Pull requests here get an automated bot reviewer, and every pull request is driven to clean before it
 is considered ready. The loop that does it — trigger, poll, triage each comment as solve or reject,
 reply to every comment, resolve every addressed thread, re-run the repo's gates, re-trigger, repeat —
-lives once in the workspace's shared agent skill `../.agents/skills/limespot-pr-review-handle/SKILL.md`,
+lives once in the workspace's shared agent skill `../.agents/skills/pr-review-handle/SKILL.md`,
 along with what counts as terminal. This repository restates none of it and adds only what is specific
 to it:
 

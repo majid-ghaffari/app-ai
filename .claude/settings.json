@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "limespot": {
+      "source": {
+        "source": "github",
+        "repo": "limespot/root"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "limespot@limespot": true
+  }
+}

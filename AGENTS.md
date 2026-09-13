@@ -10,8 +10,16 @@ a hint it may skip, while this text is always in context. Codex also stops walki
 
 Depth lives in the workspace repository's `_standards/*.md`, read on demand — `engineering`,
 `testing`, `documentation-and-comments`, `git-and-approval`, `architecture`, `naming`, `security`,
-`web-ui`. From inside this repository they resolve at `../_standards/`. Shared agent skills are
-canonical in `../.agents/skills/<skill-name>/SKILL.md`, which Codex reads directly.
+`web-ui`. From inside this repository they resolve at `../_standards/`.
+
+Shared agent skills are canonical in `../.agents/skills/<skill-name>/SKILL.md`, but Codex does not
+see that tree from inside this repository, because it stops walking at this repository's `.git`.
+The skills reach Codex as copies in `~/.agents/skills/`, placed there by
+`../_enforcement/install-agent-skills.sh` — run once per clone and refreshed by the workspace
+repository's post-merge hook. Claude Code receives the same skills as the `limespot@limespot`
+plugin this repository declares in `.claude/settings.json`, installed once per machine with
+`claude plugin install limespot@limespot` and listed as `/limespot:pr-review`,
+`/limespot:pr-review-handle`, and `/limespot:pr-finalize`.
 
 What is specific to this repository — its gate commands, its commit-message and authorship rules,
 its deploy targets — lives in this repository's own `CLAUDE.md`, and this file never restates it.
@@ -26,7 +34,15 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
 3. **No issue/ticket numbers or change-tracking in code, docs, or any `CLAUDE.md`.** No `pulse#`,
    `support#`, bare `#N`, PR/phase numbers, or dates on architectural statements — git history and
    the PR hold that. Cross-reference by stable identifier (doc path + section, or type/method name).
-   (`_standards/documentation-and-comments.md`)
+   A commit message is the one place an issue number belongs, and it sits on line 3 — the subject, a
+   blank line, then `Closes <owner>/<repo>#<n>` on the single commit that completes the issue or
+   `Related to <owner>/<repo>#<n>` on every other commit that contributes to it, one per line and
+   consecutive, before any prose. Nothing else, and issue-less work invents no reference.
+   **One issue arrives as exactly one commit.** A review-round fix, or any later pass over the same
+   issue, is folded into that commit with `git commit --fixup=<sha>` and an autosquash rebase —
+   never stacked as another — and a branch adds at most one issue-less cleanup commit. Only the
+   operator, for one named branch, keeps an issue spread across commits.
+   (`_standards/documentation-and-comments.md`, `_standards/git-and-approval.md`)
 4. **No AI or assistant attribution, anywhere.** No `Co-Authored-By:` naming a model or a tool, no
    session or generation links, no "generated with" tagline — not in commit messages, pull request
    bodies, or review comments. Each repository's own `CLAUDE.md` names the human co-author trailer
@@ -52,3 +68,8 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
    workload, or route. Infrastructure changes flow through the committed GitOps configuration, never
    an imperative command. A broad implementation or testing authorization does not override this.
    (`_standards/git-and-approval.md`)
+8. **Code carries no comments.** The one exception is an XML or JSDoc descriptor on a type or a
+   public member, and only where the contract is not evident from the name and signature — never
+   inside a method body, never a change log, never a restatement of the line below it. Everything
+   explanatory belongs in the `CLAUDE.md` files and the `docs/` pages beside them, where a reader
+   finds it without reading the code. (`_standards/documentation-and-comments.md`)
