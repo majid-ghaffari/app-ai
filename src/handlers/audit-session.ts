@@ -1,11 +1,11 @@
-/** POST /demo/session/exchange — trade a website activation token for a scoped demo session. */
+/** POST /audit/session/exchange — trade a website activation token for a scoped audit session. */
 
 import type { Env } from '../config';
-import { exchangeDemoActivation } from '../lib/demo-auth';
+import { exchangeAuditActivation } from '../lib/audit-auth';
 import { jsonResponse, WorkerError, type CorsHeaders } from '../lib/responses';
 
-/** Handle a demo-session exchange without exposing signing material to the extension. */
-export async function handleDemoSessionExchange(
+/** Handle an audit-session exchange without exposing signing material to the extension. */
+export async function handleAuditSessionExchange(
   request: Request,
   env: Env,
   corsHeaders: CorsHeaders,
@@ -25,6 +25,6 @@ export async function handleDemoSessionExchange(
       exceptionType: 'ArgumentException',
     });
   }
-  const session = await exchangeDemoActivation(body.activationToken, body.storeUrl, env);
+  const session = await exchangeAuditActivation(body.activationToken, body.storeUrl, env);
   return jsonResponse(session, corsHeaders, 201);
 }

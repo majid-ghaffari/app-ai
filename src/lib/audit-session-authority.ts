@@ -9,17 +9,13 @@
  */
 
 import {
-  demoMaxMessages,
-  demoMaxTotalUploadBytes,
-  demoMaxUploads,
-  demoSessionAuthority,
+  auditMaxMessages,
+  auditMaxTotalUploadBytes,
+  auditMaxUploads,
+  auditSessionAuthority,
   type Env,
 } from '../config';
-import {
-  deliverDemoAuditStatusEvent,
-  type DemoAuditStatus,
-  type DemoAuditStatusEvent,
-} from './demo-audit-status';
+import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { WorkerError } from './responses';
 
 const SESSION_STORAGE_KEY = 'session';
@@ -49,7 +45,7 @@ interface SessionRecord {
   readonly fileIdentifiers: readonly string[];
   readonly pending: Readonly<Record<string, PendingReservation>>;
   readonly completedReservations: readonly string[];
-  readonly statusOutbox: readonly DemoAuditStatusEvent[];
+  readonly statusOutbox: readonly AuditStatusEvent[];
 }
 
 interface ExchangeInput {
@@ -79,8 +75,8 @@ interface FinalizeInput {
   readonly fileIdentifier?: string;
 }
 
-/** Data required to create one atomic demo-session record. */
-export interface DemoAuthorityExchange {
+/** Data required to create one atomic audit-session record. */
+export interface AuditAuthorityExchange {
   readonly auditIdentifier: string;
   readonly activationIdentifier: string;
   readonly attemptLimit: 2 | null;
@@ -92,7 +88,7 @@ export interface DemoAuthorityExchange {
 }
 
 /** Reservation returned before app-ai performs an upload or inference call. */
-export interface DemoAuthorityReservation {
+export interface AuditAuthorityReservation {
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly reservationIdentifier: string;
@@ -100,8 +96,8 @@ export interface DemoAuthorityReservation {
 }
 
 /** Atomically consume an activation and create the audit's one active session. */
-export async function createDemoAuthoritySession(
-  input: DemoAuthorityExchange,
+export async function createAuditAuthoritySession(
+  input: AuditAuthorityExchange,
   env: Env,
 ): Promise<void> {
   const response = await authorityStub(input.auditIdentifier, env).fetch(
@@ -110,50 +106,50 @@ export async function createDemoAuthoritySession(
   if (response.status === 409) {
     throw new WorkerError('The activation token has already been used.', {
       status: 409,
-      exceptionType: 'DemoActivationConsumedException',
+      exceptionType: 'AuditActivationConsumedException',
     });
   }
   if (response.status === 423) {
     throw new WorkerError('This audit already has an active browser session.', {
       status: 409,
-      exceptionType: 'DemoAuditSessionActiveException',
+      exceptionType: 'AuditSessionActiveException',
     });
   }
   if (response.status === 429) throw quotaError('This public audit has no attempts remaining.');
   if (response.status === 403) {
     throw new WorkerError('The audit identity does not match its existing authority.', {
       status: 403,
-      exceptionType: 'DemoScopeException',
+      exceptionType: 'AuditScopeException',
     });
   }
   assertAuthoritySuccess(response);
 }
 
 /** Atomically reserve quota and validate file ownership before paid upstream work. */
-export async function reserveDemoAuthorityRequest(
+export async function reserveAuditAuthorityRequest(
   input: Omit<ReserveInput, 'reservationIdentifier'>,
   env: Env,
-): Promise<DemoAuthorityReservation> {
+): Promise<AuditAuthorityReservation> {
   const reservationIdentifier = crypto.randomUUID();
   const response = await authorityStub(input.auditIdentifier, env).fetch(
     internalRequest(input.storeOrigin, '/reserve', { ...input, reservationIdentifier }),
   );
   if (response.status === 401) {
-    throw demoAuthorizationError('The demo session is missing, expired, or no longer valid.');
+    throw auditAuthorizationError('The audit session is missing, expired, or no longer valid.');
   }
   if (response.status === 403) {
-    throw new WorkerError('The inference request references a file outside this demo session.', {
+    throw new WorkerError('The inference request references a file outside this audit session.', {
       status: 403,
-      exceptionType: 'DemoScopeException',
+      exceptionType: 'AuditScopeException',
     });
   }
   if (response.status === 409) {
     throw new WorkerError('Another audit attempt is already in progress.', {
       status: 409,
-      exceptionType: 'DemoAttemptInProgressException',
+      exceptionType: 'AuditAttemptInProgressException',
     });
   }
-  if (response.status === 429) throw quotaError('The demo session quota has been reached.');
+  if (response.status === 429) throw quotaError('The audit session quota has been reached.');
   assertAuthoritySuccess(response);
   return {
     auditIdentifier: input.auditIdentifier,
@@ -164,8 +160,8 @@ export async function reserveDemoAuthorityRequest(
 }
 
 /** Commit a successful paid operation or release its reservation after failure. */
-export async function finalizeDemoAuthorityRequest(
-  authorization: DemoAuthorityReservation,
+export async function finalizeAuditAuthorityRequest(
+  authorization: AuditAuthorityReservation,
   storeOrigin: string,
   succeeded: boolean,
   fileIdentifier: string | undefined,
@@ -183,7 +179,7 @@ export async function finalizeDemoAuthorityRequest(
 }
 
 /** Durable Object implementation exported by the Worker entry module. */
-export class DemoSessionAuthority implements DurableObject {
+export class AuditSessionAuthority implements DurableObject {
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
@@ -268,15 +264,15 @@ export class DemoSessionAuthority implements DurableObject {
         const pendingUploads = pending.filter((item) => item.kind === 'upload');
         const pendingBytes = pendingUploads.reduce((total, item) => total + item.uploadBytes, 0);
         if (
-          session.uploadCount + pendingUploads.length >= demoMaxUploads(this.env) ||
+          session.uploadCount + pendingUploads.length >= auditMaxUploads(this.env) ||
           session.totalUploadBytes + pendingBytes + input.uploadBytes >
-            demoMaxTotalUploadBytes(this.env)
+            auditMaxTotalUploadBytes(this.env)
         ) {
           return 429;
         }
       } else {
         if (pending.some((item) => item.kind === 'message')) return 409;
-        if (session.messageCount >= demoMaxMessages(this.env)) return 429;
+        if (session.messageCount >= auditMaxMessages(this.env)) return 429;
         const attemptNumber = session.completedAttempts + 1;
         if (session.attemptLimit !== null && attemptNumber > session.attemptLimit) return 429;
         const owned = new Set(session.fileIdentifiers);
@@ -388,7 +384,7 @@ export class DemoSessionAuthority implements DurableObject {
       const session = await this.state.storage.get<SessionRecord>(SESSION_STORAGE_KEY);
       const event = session?.statusOutbox[0];
       if (!session || !event) return;
-      if (!(await deliverDemoAuditStatusEvent(event, session.statusCallbackUrl, this.env))) return;
+      if (!(await deliverAuditStatusEvent(event, session.statusCallbackUrl, this.env))) return;
       await this.state.storage.transaction(async (storage) => {
         const current = await storage.get<SessionRecord>(SESSION_STORAGE_KEY);
         if (!current || current.statusOutbox[0]?.eventIdentifier !== event.eventIdentifier) return;
@@ -438,8 +434,8 @@ function releaseExpiredSession(session: SessionRecord, now: number): SessionReco
 function statusEvent(
   session: SessionRecord,
   attemptNumber: number,
-  status: DemoAuditStatus,
-): DemoAuditStatusEvent {
+  status: AuditStatus,
+): AuditStatusEvent {
   return {
     version: 1,
     eventIdentifier: crypto.randomUUID(),
@@ -453,7 +449,7 @@ function statusEvent(
 }
 
 function authorityStub(auditIdentifier: string, env: Env): DurableObjectStub {
-  const namespace = demoSessionAuthority(env);
+  const namespace = auditSessionAuthority(env);
   return namespace.get(namespace.idFromName(auditIdentifier));
 }
 
@@ -485,19 +481,19 @@ function matchesSession(session: SessionRecord, input: ReserveInput): boolean {
 
 function assertAuthoritySuccess(response: Response): void {
   if (response.ok) return;
-  throw new WorkerError('The demo-session authority rejected the request.', {
+  throw new WorkerError('The audit-session authority rejected the request.', {
     status: 500,
-    exceptionType: 'DemoSessionAuthorityException',
+    exceptionType: 'AuditSessionAuthorityException',
     messageDetail: `Internal authority status ${response.status}`,
   });
 }
 
-function demoAuthorizationError(message: string): WorkerError {
-  return new WorkerError(message, { status: 401, exceptionType: 'DemoAuthorizationException' });
+function auditAuthorizationError(message: string): WorkerError {
+  return new WorkerError(message, { status: 401, exceptionType: 'AuditAuthorizationException' });
 }
 
 function quotaError(message: string): WorkerError {
-  return new WorkerError(message, { status: 429, exceptionType: 'DemoQuotaException' });
+  return new WorkerError(message, { status: 429, exceptionType: 'AuditQuotaException' });
 }
 
 function epochSeconds(): number {

@@ -428,13 +428,13 @@ export async function fileTenantScope(contextId: string | null, env: Env): Promi
 }
 
 /**
- * Key a validated scoped demo session into its own tenant pseudonym. A demo
+ * Key a validated scoped audit session into its own tenant pseudonym. An audit
  * session authenticates by bearer token and carries no merchant context-ID, so
- * its uploads live in a namespace of their own: a reference minted for a demo
+ * its uploads live in a namespace of their own: a reference minted for an audit
  * session can never be replayed by a merchant tenant, nor the reverse.
  */
-export async function demoFileTenantScope(sessionIdentifier: string, env: Env): Promise<string> {
-  return await tenantPseudonym(`demo-session:${sessionIdentifier}`, env);
+export async function auditFileTenantScope(sessionIdentifier: string, env: Env): Promise<string> {
+  return await tenantPseudonym(`audit-session:${sessionIdentifier}`, env);
 }
 
 async function tenantPseudonym(identity: string, env: Env): Promise<string> {

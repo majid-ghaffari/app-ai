@@ -42,7 +42,7 @@ local_protocol = "http"
 #
 # [vars] below is grouped by the same concerns, in the same order, as
 # .dev.vars.example: worker identity, model routing, one section per provider,
-# the scoped demo, and logging. Production SECRETS are set via the Cloudflare
+# the scoped audit, and logging. Production SECRETS are set via the Cloudflare
 # Dashboard (encrypted secrets), never in this file, and belong to those same
 # sections:
 #
@@ -63,10 +63,10 @@ local_protocol = "http"
 #       Rotation: Personalizer accepts two active tokens per caller (current +
 #       next), so flip this secret after Personalizer has the next value.
 #
-#   Studio demo:
-#     DEMO_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
-#     DEMO_SESSION_SIGNING_SECRET — app-ai-only key for exchanged demo sessions.
-#     DEMO_AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
+#   Studio audit:
+#     AUDIT_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
+#     AUDIT_SESSION_SIGNING_SECRET — app-ai-only key for exchanged audit sessions.
+#     AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
 #
 #   Logging:
 #     LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
@@ -114,17 +114,17 @@ OPENAI_API_BASE = "https://api.openai.com"
 # ── Gemini ──
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-# ── Studio demo (scoped extension sessions) ──
+# ── Studio audit (scoped extension sessions) ──
 # Origins a website-signed activation may name in its statusCallbackUrl claim.
 # The website signs the exact callback path into the token; this list is the set
 # of hosts app-ai will deliver a status event to.
-DEMO_AUDIT_STATUS_ORIGINS = "https://limespot.com"
-DEMO_SESSION_TTL_SECONDS = "1800"
-DEMO_MAX_UPLOADS = "40"
-DEMO_MAX_MESSAGES = "3"
-DEMO_MAX_UPLOAD_BYTES = "8000000"
-DEMO_MAX_TOTAL_UPLOAD_BYTES = "64000000"
-DEMO_MAX_MESSAGE_BYTES = "1000000"
+AUDIT_STATUS_ORIGINS = "https://limespot.com"
+AUDIT_SESSION_TTL_SECONDS = "1800"
+AUDIT_MAX_UPLOADS = "40"
+AUDIT_MAX_MESSAGES = "3"
+AUDIT_MAX_UPLOAD_BYTES = "8000000"
+AUDIT_MAX_TOTAL_UPLOAD_BYTES = "64000000"
+AUDIT_MAX_MESSAGE_BYTES = "1000000"
 
 # ── Logging ──
 # Logging is level-routed entirely by configuration. Production sends durable QC
@@ -159,9 +159,20 @@ id = "eb048ab9979f46ce93d8b0dfcdb9d58f"
 preview_id = "b524e2d6d53d482ead49f7ea60881dbd"
 
 [[durable_objects.bindings]]
-name = "DEMO_SESSIONS"
-class_name = "DemoSessionAuthority"
+name = "AUDIT_SESSIONS"
+class_name = "AuditSessionAuthority"
 
+# Applied migrations are an append-only ledger: Cloudflare matches the deployed
+# script's recorded tag against this list, so an already-applied entry keeps the
+# tag and the class name it was applied under, verbatim and forever. The class is
+# named AuditSessionAuthority today; the entry below records that it was created
+# as DemoSessionAuthority, and the rename entry after it carries every existing
+# instance's storage — the per-lead completed-attempt ledger included — onto the
+# new class. Editing either entry orphans that storage irrecoverably.
 [[migrations]]
 tag = "demo-sessions-v1"
 new_sqlite_classes = ["DemoSessionAuthority"]
+
+[[migrations]]
+tag = "audit-sessions-v2"
+renamed_classes = [{ from = "DemoSessionAuthority", to = "AuditSessionAuthority" }]

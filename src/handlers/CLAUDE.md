@@ -93,7 +93,7 @@ or changes the inference response.
   configured onto another provider. Nothing enumerates a provider account — one
   account holds every tenant's uploads, so `GET /files` is not a route and falls
   through to the router's 404.
-- The demo exchange and `ls_demo_…` bearer branch are the deliberate alternate
+- The audit exchange and `ls_audit_…` bearer branch are the deliberate alternate
   auth path. They never call Brain and can dispatch only `POST /files` and
   `POST /messages` for its explicit onboarding proposal and QC prompt allowlist.
 - AI tools are consumed ONLY through the toolset registry

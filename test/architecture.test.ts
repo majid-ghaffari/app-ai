@@ -151,8 +151,8 @@ describe('fitness: secrets never enter logs or model context', () => {
     'apiKey',
     'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
     'serviceToken',
-    'DEMO_ACTIVATION_SIGNING_SECRET',
-    'DEMO_SESSION_SIGNING_SECRET',
+    'AUDIT_ACTIVATION_SIGNING_SECRET',
+    'AUDIT_SESSION_SIGNING_SECRET',
   ];
 
   it('no log/console call references a credential identifier', () => {

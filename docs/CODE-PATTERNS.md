@@ -129,19 +129,19 @@ constant, it belongs in configuration (next section). Inline `4`s and
 Every URL and every architecturally sensible deploy-time tunable lives in
 CONFIGURATION, not in code:
 
-| Channel                                | What                                                                                                                                                                                         |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/provider origins, CORS allowlist, demo status-callback origin allowlist, master subscriber, tier→model bindings and their `MODEL_OVERRIDES` exceptions) |
-| Cloudflare Dashboard encrypted secrets | Every provider API key, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET`, and the three key-separated `DEMO_*_SIGNING_SECRET` values                                       |
-| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`                                                                                                               |
-| `.dev.vars.example` (committed)        | Every binding the worker reads, grouped, marked REQUIRED or OPTIONAL; secrets blank, non-secrets at their working local value                                                                |
+| Channel                                | What                                                                                                                                                                                          |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| wrangler.toml `[vars]`                 | Production non-secrets (Personalizer/provider origins, CORS allowlist, audit status-callback origin allowlist, master subscriber, tier→model bindings and their `MODEL_OVERRIDES` exceptions) |
+| Cloudflare Dashboard encrypted secrets | Every provider API key, `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET`, and the three key-separated `AUDIT_*_SIGNING_SECRET` values                                       |
+| `.dev.vars` (gitignored)               | Local dev values + the local secrets — overrides `[vars]` under `wrangler dev`                                                                                                                |
+| `.dev.vars.example` (committed)        | Every binding the worker reads, grouped, marked REQUIRED or OPTIONAL; secrets blank, non-secrets at their working local value                                                                 |
 
 ### The rules
 
 1. **One typed `Env`.** `src/config.ts` declares the single `Env` interface
    and the accessors (`personalizerApiUrl`, the provider base/key accessors,
    `personalizerIntegrationBridgeToken`, `tokenEncryptionSecret`, `credentialedOrigins`,
-   the `demo*` accessors, `masterSubscriberId`, `modelOverrides`, and
+   the `audit*` accessors, `masterSubscriberId`, `modelOverrides`, and
    `resolveModel` — which maps a group's capability tier to `MODEL_FAST` /
    `MODEL_BALANCED` / `MODEL_FRONTIER`). Nothing
    else reads `env.X` for a required variable. The Node scripts (`scripts/`)
@@ -164,8 +164,8 @@ CONFIGURATION, not in code:
    absence no-ops to a plain direct upload, stated in `src/lib/file-dedup.ts` and
    the docs — not a hidden default. Public prompt-aware references are
    self-contained authenticated ciphertext under the required `TOKEN_ENCRYPTION_SECRET`,
-   and sealing configuration is validated before provider I/O. `DEMO_SESSIONS` is
-   required when the scoped demo exchange or bearer path is used and fails closed
+   and sealing configuration is validated before provider I/O. `AUDIT_SESSIONS` is
+   required when the scoped audit exchange or bearer path is used and fails closed
    when absent.
 4. **Contract constants stay in code.** Do NOT config-ify values that are
    frozen contracts or protocol facts: wire field names, tool names, HTTP

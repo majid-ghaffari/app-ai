@@ -35,22 +35,22 @@ export const ENV: Env = {
   MODEL_FAST: 'claude-haiku-4-5',
   MODEL_BALANCED: 'claude-sonnet-5',
   MODEL_FRONTIER: 'claude-opus-4-8',
-  DEMO_ACTIVATION_SIGNING_SECRET: 'test-activation-signing-secret-with-32-bytes',
-  DEMO_SESSION_SIGNING_SECRET: 'test-session-signing-secret-distinct-32-bytes',
-  DEMO_AUDIT_STATUS_SIGNING_SECRET: 'test-audit-status-signing-secret-distinct-32-bytes',
-  DEMO_AUDIT_STATUS_ORIGINS: 'https://limespot.test',
-  DEMO_SESSION_TTL_SECONDS: '1800',
-  DEMO_MAX_UPLOADS: '40',
-  DEMO_MAX_MESSAGES: '3',
-  DEMO_MAX_UPLOAD_BYTES: '8000000',
-  DEMO_MAX_TOTAL_UPLOAD_BYTES: '64000000',
-  DEMO_MAX_MESSAGE_BYTES: '1000000',
+  AUDIT_ACTIVATION_SIGNING_SECRET: 'test-activation-signing-secret-with-32-bytes',
+  AUDIT_SESSION_SIGNING_SECRET: 'test-session-signing-secret-distinct-32-bytes',
+  AUDIT_STATUS_SIGNING_SECRET: 'test-audit-status-signing-secret-distinct-32-bytes',
+  AUDIT_STATUS_ORIGINS: 'https://limespot.test',
+  AUDIT_SESSION_TTL_SECONDS: '1800',
+  AUDIT_MAX_UPLOADS: '40',
+  AUDIT_MAX_MESSAGES: '3',
+  AUDIT_MAX_UPLOAD_BYTES: '8000000',
+  AUDIT_MAX_TOTAL_UPLOAD_BYTES: '64000000',
+  AUDIT_MAX_MESSAGE_BYTES: '1000000',
 };
 
 export const CORS = { 'Access-Control-Allow-Origin': '*' };
 
-/** A callback path under the one origin `ENV.DEMO_AUDIT_STATUS_ORIGINS` allowlists. */
-export const DEMO_STATUS_CALLBACK_URL = 'https://limespot.test/studio/activate/api/status';
+/** A callback path under the one origin `ENV.AUDIT_STATUS_ORIGINS` allowlists. */
+export const AUDIT_STATUS_CALLBACK_URL = 'https://limespot.test/studio/activate/api/status';
 
 /** Brain AI-tool capabilities used by tests that intentionally exercise the full data-tool set. */
 export const AVAILABLE_AI_TOOLS = [

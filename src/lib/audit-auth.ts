@@ -1,51 +1,51 @@
 /**
- * Scoped authorization for extension-driven Studio demos.
+ * Scoped authorization for extension-driven Studio audits.
  *
  * A website-issued, email-verified activation JWT is exchanged once for a
  * short-lived app-ai-signed session. The session is origin-bound and can call
  * only the onboarding proposal upload/inference surface. Strongly consistent
- * reservations and owned file identifiers live in DemoSessionAuthority.
+ * reservations and owned file identifiers live in AuditSessionAuthority.
  */
 
 import {
-  demoActivationSigningSecret,
-  demoAuditStatusOrigins,
-  demoAuditStatusSigningSecret,
-  demoMaxMessageBytes,
-  demoMaxUploadBytes,
-  demoSessionSigningSecret,
-  demoSessionTtlSeconds,
+  auditActivationSigningSecret,
+  auditStatusOrigins,
+  auditStatusSigningSecret,
+  auditMaxMessageBytes,
+  auditMaxUploadBytes,
+  auditSessionSigningSecret,
+  auditSessionTtlSeconds,
   type Env,
 } from '../config';
 import {
-  createDemoAuthoritySession,
-  finalizeDemoAuthorityRequest,
-  reserveDemoAuthorityRequest,
-  type DemoAuthorityReservation,
-} from './demo-session-authority';
+  createAuditAuthoritySession,
+  finalizeAuditAuthorityRequest,
+  reserveAuditAuthorityRequest,
+  type AuditAuthorityReservation,
+} from './audit-session-authority';
 import { WorkerError } from './responses';
 
 const TOKEN_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 const TOKEN_VERSION = 1;
 const ACTIVATION_ISSUER = 'limespot-website';
-const DEMO_ISSUER = 'app-ai';
+const AUDIT_ISSUER = 'app-ai';
 const ACTIVATION_AUDIENCE = 'app-ai';
-const DEMO_AUDIENCE = 'studio-extension';
-const DEMO_TOKEN_PREFIX = 'ls_demo_';
+const AUDIT_AUDIENCE = 'studio-extension';
+const AUDIT_TOKEN_PREFIX = 'ls_audit_';
 const MAX_TOKEN_LENGTH = 8192;
 const MAX_IDENTIFIER_LENGTH = 256;
 /** A sealed public file reference is authenticated ciphertext, so it is far longer than an id. */
 const MAX_FILE_REFERENCE_LENGTH = 4096;
 const MAX_ACTIVATION_LIFETIME_SECONDS = 900;
 const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
-const ALLOWED_DEMO_UPLOAD_PROMPTS = new Set([
+const ALLOWED_AUDIT_UPLOAD_PROMPTS = new Set([
   'onboarding-batch-all',
   'onboarding-batch',
   'onboarding-review-all',
   'onboarding-review-gate-all',
   'onboarding-currency-recovery',
 ]);
-const ALLOWED_DEMO_INFERENCE_PROMPTS = new Set(['onboarding-batch-all', 'onboarding-batch']);
+const ALLOWED_AUDIT_INFERENCE_PROMPTS = new Set(['onboarding-batch-all', 'onboarding-batch']);
 
 interface ActivationClaims {
   readonly version: typeof TOKEN_VERSION;
@@ -65,11 +65,11 @@ interface ActivationClaims {
   readonly expiresAt: number;
 }
 
-interface DemoSessionClaims {
+interface AuditSessionClaims {
   readonly version: typeof TOKEN_VERSION;
-  readonly kind: 'demo-session';
-  readonly issuer: typeof DEMO_ISSUER;
-  readonly audience: typeof DEMO_AUDIENCE;
+  readonly kind: 'audit-session';
+  readonly issuer: typeof AUDIT_ISSUER;
+  readonly audience: typeof AUDIT_AUDIENCE;
   readonly sessionIdentifier: string;
   readonly auditIdentifier: string;
   readonly attemptLimit: 2 | null;
@@ -78,29 +78,29 @@ interface DemoSessionClaims {
   readonly expiresAt: number;
 }
 
-/** Verified demo authorization threaded through the router. */
-export interface DemoAuthorization {
+/** Verified audit authorization threaded through the router. */
+export interface AuditAuthorization {
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
-  readonly reservation: DemoAuthorityReservation;
+  readonly reservation: AuditAuthorityReservation;
 }
 
 /** Successful activation exchange returned to the extension background worker. */
-export interface DemoSessionExchange {
+export interface AuditSessionExchange {
   readonly sessionIdentifier: string;
   readonly accessToken: string;
   readonly expiresAt: number;
 }
 
-/** Exchange one verified activation token for a scoped demo session. */
-export async function exchangeDemoActivation(
+/** Exchange one verified activation token for a scoped audit session. */
+export async function exchangeAuditActivation(
   activationToken: string,
   storeUrl: string,
   env: Env,
-): Promise<DemoSessionExchange> {
-  const activation = await verifyToken(activationToken, demoActivationSigningSecret(env));
+): Promise<AuditSessionExchange> {
+  const activation = await verifyToken(activationToken, auditActivationSigningSecret(env));
   if (!isActivationClaims(activation)) {
-    throw unauthorized('The activation token is not valid for a demo exchange.');
+    throw unauthorized('The activation token is not valid for an audit exchange.');
   }
   assertTemporalClaims(activation.issuedAt, activation.expiresAt);
   if (activation.expiresAt - activation.issuedAt > MAX_ACTIVATION_LIFETIME_SECONDS) {
@@ -109,16 +109,16 @@ export async function exchangeDemoActivation(
   const storeOrigin = normalizeStoreOrigin(storeUrl);
   assertActivationEntitlement(activation, storeOrigin);
   const statusCallbackUrl = resolveStatusCallbackUrl(activation.statusCallbackUrl, env);
-  const sessionSigningSecret = demoSessionSigningSecret(env);
-  demoAuditStatusSigningSecret(env);
+  const sessionSigningSecret = auditSessionSigningSecret(env);
+  auditStatusSigningSecret(env);
   const now = epochSeconds();
-  const expiresAt = now + demoSessionTtlSeconds(env);
+  const expiresAt = now + auditSessionTtlSeconds(env);
   const sessionIdentifier = await opaqueSessionIdentifier(activation.tokenIdentifier);
-  const claims: DemoSessionClaims = {
+  const claims: AuditSessionClaims = {
     version: TOKEN_VERSION,
-    kind: 'demo-session',
-    issuer: DEMO_ISSUER,
-    audience: DEMO_AUDIENCE,
+    kind: 'audit-session',
+    issuer: AUDIT_ISSUER,
+    audience: AUDIT_AUDIENCE,
     sessionIdentifier,
     auditIdentifier: activation.auditIdentifier,
     attemptLimit: activation.attemptLimit,
@@ -126,7 +126,7 @@ export async function exchangeDemoActivation(
     issuedAt: now,
     expiresAt,
   };
-  await createDemoAuthoritySession(
+  await createAuditAuthoritySession(
     {
       sessionIdentifier,
       auditIdentifier: activation.auditIdentifier,
@@ -140,32 +140,32 @@ export async function exchangeDemoActivation(
   );
   return {
     sessionIdentifier,
-    accessToken: `${DEMO_TOKEN_PREFIX}${await signToken(claims, sessionSigningSecret)}`,
+    accessToken: `${AUDIT_TOKEN_PREFIX}${await signToken(claims, sessionSigningSecret)}`,
     expiresAt: expiresAt * 1000,
   };
 }
 
-/** Authenticate and atomically reserve one demo upload or inference request. */
-export async function authorizeDemoRequest(
+/** Authenticate and atomically reserve one audit upload or inference request. */
+export async function authorizeAuditRequest(
   request: Request,
   env: Env,
-): Promise<DemoAuthorization | null> {
+): Promise<AuditAuthorization | null> {
   const authorizationHeader = request.headers.get('Authorization');
   if (!authorizationHeader) return null;
   const match = authorizationHeader.match(/^Bearer (\S+)$/);
-  if (!match?.[1]?.startsWith(DEMO_TOKEN_PREFIX)) return null;
+  if (!match?.[1]?.startsWith(AUDIT_TOKEN_PREFIX)) return null;
 
   const claims = await verifyToken(
-    match[1].slice(DEMO_TOKEN_PREFIX.length),
-    demoSessionSigningSecret(env),
+    match[1].slice(AUDIT_TOKEN_PREFIX.length),
+    auditSessionSigningSecret(env),
   );
-  if (!isDemoSessionClaims(claims)) throw unauthorized('The demo session token is invalid.');
+  if (!isAuditSessionClaims(claims)) throw unauthorized('The audit session token is invalid.');
   assertTemporalClaims(claims.issuedAt, claims.expiresAt);
   assertRequestStoreOrigin(request, claims.storeOrigin);
 
   const url = new URL(request.url);
   if (request.method !== 'POST' || (url.pathname !== '/files' && url.pathname !== '/messages')) {
-    throw forbidden('Demo sessions can access only proposal uploads and inference.');
+    throw forbidden('Audit sessions can access only proposal uploads and inference.');
   }
 
   let kind: 'upload' | 'message';
@@ -182,42 +182,42 @@ export async function authorizeDemoRequest(
     const files = formData.getAll('file');
     if (
       prompts.length === 0 ||
-      prompts.length > ALLOWED_DEMO_UPLOAD_PROMPTS.size ||
+      prompts.length > ALLOWED_AUDIT_UPLOAD_PROMPTS.size ||
       new Set(prompts).size !== prompts.length ||
       prompts.some(
-        (prompt) => typeof prompt !== 'string' || !ALLOWED_DEMO_UPLOAD_PROMPTS.has(prompt),
+        (prompt) => typeof prompt !== 'string' || !ALLOWED_AUDIT_UPLOAD_PROMPTS.has(prompt),
       )
     ) {
-      throw forbidden('This upload destination is not available to demo sessions.');
+      throw forbidden('This upload destination is not available to audit sessions.');
     }
     const file = files[0] as File | string | undefined;
     if (files.length !== 1 || !file || typeof file === 'string') {
-      throw invalidArgument('A demo upload must contain one file.');
+      throw invalidArgument('An audit upload must contain one file.');
     }
-    if (file.size > demoMaxUploadBytes(env)) {
-      throw quotaExceeded('The demo file is larger than the allowed upload size.');
+    if (file.size > auditMaxUploadBytes(env)) {
+      throw quotaExceeded('The audit file is larger than the allowed upload size.');
     }
     uploadBytes = file.size;
   } else {
     kind = 'message';
     const prompt = request.headers.get('X-Personalizer-System-Prompt');
-    if (!prompt || !ALLOWED_DEMO_INFERENCE_PROMPTS.has(prompt)) {
-      throw forbidden('This system prompt is not available to demo sessions.');
+    if (!prompt || !ALLOWED_AUDIT_INFERENCE_PROMPTS.has(prompt)) {
+      throw forbidden('This system prompt is not available to audit sessions.');
     }
     const bytes = new Uint8Array(await request.clone().arrayBuffer());
-    if (bytes.byteLength > demoMaxMessageBytes(env)) {
-      throw quotaExceeded('The demo inference request is larger than the allowed size.');
+    if (bytes.byteLength > auditMaxMessageBytes(env)) {
+      throw quotaExceeded('The audit inference request is larger than the allowed size.');
     }
     let body: unknown;
     try {
       body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
     } catch {
-      throw invalidArgument('The demo inference request body must be valid JSON.');
+      throw invalidArgument('The audit inference request body must be valid JSON.');
     }
-    referencedFileIdentifiers = validateDemoMessage(body);
+    referencedFileIdentifiers = validateAuditMessage(body);
   }
 
-  const reservation = await reserveDemoAuthorityRequest(
+  const reservation = await reserveAuditAuthorityRequest(
     {
       sessionIdentifier: claims.sessionIdentifier,
       auditIdentifier: claims.auditIdentifier,
@@ -236,9 +236,9 @@ export async function authorizeDemoRequest(
   };
 }
 
-/** Commit successful demo usage or release its atomic reservation after failure. */
-export async function finalizeDemoUsage(
-  authorization: DemoAuthorization,
+/** Commit successful audit usage or release its atomic reservation after failure. */
+export async function finalizeAuditUsage(
+  authorization: AuditAuthorization,
   response: Response,
   env: Env,
 ): Promise<void> {
@@ -246,21 +246,21 @@ export async function finalizeDemoUsage(
   if (response.ok && authorization.reservation.kind === 'upload') {
     const result = (await response.clone().json()) as { id?: unknown };
     if (typeof result.id !== 'string' || result.id.length === 0) {
-      await finalizeDemoAuthorityRequest(
+      await finalizeAuditAuthorityRequest(
         authorization.reservation,
         authorization.storeOrigin,
         false,
         undefined,
         env,
       );
-      throw new WorkerError('A successful demo upload returned no file identifier.', {
+      throw new WorkerError('A successful audit upload returned no file identifier.', {
         status: 502,
         exceptionType: 'InvalidUpstreamResponseException',
       });
     }
     fileIdentifier = result.id;
   }
-  await finalizeDemoAuthorityRequest(
+  await finalizeAuditAuthorityRequest(
     authorization.reservation,
     authorization.storeOrigin,
     response.ok,
@@ -269,9 +269,12 @@ export async function finalizeDemoUsage(
   );
 }
 
-/** Release a reservation when demo dispatch throws before it can return a response. */
-export async function releaseDemoUsage(authorization: DemoAuthorization, env: Env): Promise<void> {
-  await finalizeDemoAuthorityRequest(
+/** Release a reservation when audit dispatch throws before it can return a response. */
+export async function releaseAuditUsage(
+  authorization: AuditAuthorization,
+  env: Env,
+): Promise<void> {
+  await finalizeAuditAuthorityRequest(
     authorization.reservation,
     authorization.storeOrigin,
     false,
@@ -290,11 +293,11 @@ async function signToken(claims: object, secret: string): Promise<string> {
 
 async function verifyToken(token: string, secret: string): Promise<unknown> {
   if (token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
-    throw unauthorized('The demo token is malformed.');
+    throw unauthorized('The audit token is malformed.');
   }
   const parts = token.split('.');
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
-    throw unauthorized('The demo token is malformed.');
+    throw unauthorized('The audit token is malformed.');
   }
   let headerBytes: Uint8Array;
   let payloadBytes: Uint8Array;
@@ -304,20 +307,20 @@ async function verifyToken(token: string, secret: string): Promise<unknown> {
     payloadBytes = base64UrlDecode(parts[1]);
     actual = base64UrlDecode(parts[2]);
   } catch {
-    throw unauthorized('The demo token encoding is invalid.');
+    throw unauthorized('The audit token encoding is invalid.');
   }
   const unsigned = `${parts[0]}.${parts[1]}`;
   const expected = await hmac(unsigned, secret);
   if (!constantTimeEqual(expected, actual)) {
-    throw unauthorized('The demo token signature is invalid.');
+    throw unauthorized('The audit token signature is invalid.');
   }
   try {
     const header = JSON.parse(new TextDecoder().decode(headerBytes)) as unknown;
-    if (!matchesTokenHeader(header)) throw unauthorized('The demo token header is invalid.');
+    if (!matchesTokenHeader(header)) throw unauthorized('The audit token header is invalid.');
     return JSON.parse(new TextDecoder().decode(payloadBytes)) as unknown;
   } catch (error) {
     if (error instanceof WorkerError) throw error;
-    throw unauthorized('The demo token payload is invalid.');
+    throw unauthorized('The audit token payload is invalid.');
   }
 }
 
@@ -421,13 +424,13 @@ function isLimeSpotStaffEmail(email: string): boolean {
   );
 }
 
-function isDemoSessionClaims(value: unknown): value is DemoSessionClaims {
+function isAuditSessionClaims(value: unknown): value is AuditSessionClaims {
   const claims = asRecord(value);
   return (
     claims?.version === TOKEN_VERSION &&
-    claims.kind === 'demo-session' &&
-    claims.issuer === DEMO_ISSUER &&
-    claims.audience === DEMO_AUDIENCE &&
+    claims.kind === 'audit-session' &&
+    claims.issuer === AUDIT_ISSUER &&
+    claims.audience === AUDIT_AUDIENCE &&
     isBoundedIdentifier(claims.sessionIdentifier) &&
     isAuditIdentifier(claims.auditIdentifier) &&
     isAttemptLimit(claims.attemptLimit) &&
@@ -457,20 +460,20 @@ function isAttemptLimit(value: unknown): value is 2 | null {
   return value === 2 || value === null;
 }
 
-function validateDemoMessage(value: unknown): string[] {
+function validateAuditMessage(value: unknown): string[] {
   const body = asRecord(value);
   if (!body || !Array.isArray(body.messages) || body.messages.length !== 1) {
-    throw invalidArgument('A demo inference must contain exactly one user message.');
+    throw invalidArgument('An audit inference must contain exactly one user message.');
   }
   const message = asRecord(body.messages[0]);
   if (!message || message.role !== 'user' || !Array.isArray(message.content)) {
-    throw invalidArgument('A demo inference must contain exactly one structured user message.');
+    throw invalidArgument('An audit inference must contain exactly one structured user message.');
   }
   const fileIdentifiers: string[] = [];
   for (const rawBlock of message.content) {
     const block = asRecord(rawBlock);
     if (!block || (block.type !== 'text' && block.type !== 'image' && block.type !== 'document')) {
-      throw forbidden('Demo inference content may contain only text and owned file blocks.');
+      throw forbidden('Audit inference content may contain only text and owned file blocks.');
     }
     if (block.type === 'text') {
       if (typeof block.text !== 'string') throw invalidArgument('A text block must contain text.');
@@ -478,7 +481,7 @@ function validateDemoMessage(value: unknown): string[] {
     }
     const source = asRecord(block.source);
     if (source?.type !== 'file' || !isBoundedFileReference(source.file_id)) {
-      throw forbidden('Demo image and document blocks must reference an uploaded file.');
+      throw forbidden('Audit image and document blocks must reference an uploaded file.');
     }
     fileIdentifiers.push(source.file_id);
   }
@@ -495,7 +498,7 @@ function resolveStatusCallbackUrl(claimed: string, env: Env): string {
   if (url.username || url.password || url.search || url.hash) {
     throw unauthorized('The activation token status callback URL is invalid.');
   }
-  if (!demoAuditStatusOrigins(env).includes(url.origin)) {
+  if (!auditStatusOrigins(env).includes(url.origin)) {
     throw unauthorized('The activation token status callback origin is not permitted.');
   }
   return url.toString();
@@ -521,16 +524,16 @@ function normalizeStoreOrigin(storeUrl: string): string {
 }
 
 function assertRequestStoreOrigin(request: Request, storeOrigin: string): void {
-  const claimedOrigin = request.headers.get('X-LimeSpot-Demo-Store-Origin');
+  const claimedOrigin = request.headers.get('X-LimeSpot-Audit-Store-Origin');
   if (claimedOrigin !== storeOrigin) {
-    throw forbidden('The demo request does not match its activated storefront origin.');
+    throw forbidden('The audit request does not match its activated storefront origin.');
   }
 }
 
 function assertTemporalClaims(issuedAt: number, expiresAt: number): void {
   const now = epochSeconds();
   if (issuedAt > now || expiresAt <= issuedAt || expiresAt <= now) {
-    throw unauthorized('The demo token or session timing is invalid.');
+    throw unauthorized('The audit token or session timing is invalid.');
   }
 }
 
@@ -597,11 +600,11 @@ function epochSeconds(): number {
 }
 
 function unauthorized(message: string): WorkerError {
-  return new WorkerError(message, { status: 401, exceptionType: 'DemoAuthorizationException' });
+  return new WorkerError(message, { status: 401, exceptionType: 'AuditAuthorizationException' });
 }
 
 function forbidden(message: string): WorkerError {
-  return new WorkerError(message, { status: 403, exceptionType: 'DemoScopeException' });
+  return new WorkerError(message, { status: 403, exceptionType: 'AuditScopeException' });
 }
 
 function invalidArgument(message: string): WorkerError {
@@ -609,5 +612,5 @@ function invalidArgument(message: string): WorkerError {
 }
 
 function quotaExceeded(message: string): WorkerError {
-  return new WorkerError(message, { status: 429, exceptionType: 'DemoQuotaException' });
+  return new WorkerError(message, { status: 429, exceptionType: 'AuditQuotaException' });
 }

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import worker from '../src/index';
-import { DemoSessionAuthority } from '../src/lib/demo-session-authority';
+import { AuditSessionAuthority } from '../src/lib/audit-session-authority';
 import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
 import type { Env } from '../src/config';
 import {
   anthropicFileRecord,
   anthropicMessage,
-  DEMO_STATUS_CALLBACK_URL,
+  AUDIT_STATUS_CALLBACK_URL,
   ENV,
   stubFetch,
   fetchedUrls,
@@ -23,7 +23,7 @@ interface NamedDurableObjectId {
   readonly name: string;
 }
 
-const AUTHORITIES_BY_ENV = new WeakMap<Env, Map<string, DemoSessionAuthority>>();
+const AUTHORITIES_BY_ENV = new WeakMap<Env, Map<string, AuditSessionAuthority>>();
 
 class MemoryDurableStorage {
   private readonly values = new Map<string, unknown>();
@@ -59,7 +59,7 @@ class MemoryDurableStorage {
 }
 
 function durableEnv(overrides: Partial<Env> = {}): Env {
-  const authorities = new Map<string, DemoSessionAuthority>();
+  const authorities = new Map<string, AuditSessionAuthority>();
   const resolveEnv = (): Env => env;
   const namespace = {
     idFromName(name: string): DurableObjectId {
@@ -71,7 +71,7 @@ function durableEnv(overrides: Partial<Env> = {}): Env {
       if (!authority) {
         const storage = new MemoryDurableStorage();
         const state = { storage } as unknown as DurableObjectState;
-        authority = new DemoSessionAuthority(state, resolveEnv());
+        authority = new AuditSessionAuthority(state, resolveEnv());
         authorities.set(name, authority);
       }
       return {
@@ -80,12 +80,12 @@ function durableEnv(overrides: Partial<Env> = {}): Env {
       } as unknown as DurableObjectStub;
     },
   } as unknown as DurableObjectNamespace;
-  const env: Env = { ...ENV, ...overrides, DEMO_SESSIONS: namespace };
+  const env: Env = { ...ENV, ...overrides, AUDIT_SESSIONS: namespace };
   AUTHORITIES_BY_ENV.set(env, authorities);
   return env;
 }
 
-function authorityFor(env: Env, auditIdentifier: string): DemoSessionAuthority {
+function authorityFor(env: Env, auditIdentifier: string): AuditSessionAuthority {
   const authority = AUTHORITIES_BY_ENV.get(env)?.get(auditIdentifier);
   if (!authority) throw new Error(`Missing test authority for ${auditIdentifier}`);
   return authority;
@@ -98,7 +98,7 @@ async function activationToken(
   email = 'merchant@example.com',
   auditIdentifier = `audit-${tokenIdentifier}`,
   attemptLimit?: 2 | null,
-  statusCallbackUrl: string = DEMO_STATUS_CALLBACK_URL,
+  statusCallbackUrl: string = AUDIT_STATUS_CALLBACK_URL,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const staff = (entitlement as { type?: unknown }).type === 'limespot-staff-multi-store';
@@ -123,7 +123,7 @@ async function activationToken(
 }
 
 async function signWebsiteActivation(claims: object, env: Env): Promise<string> {
-  const secret = env.DEMO_ACTIVATION_SIGNING_SECRET;
+  const secret = env.AUDIT_ACTIVATION_SIGNING_SECRET;
   if (!secret) throw new Error('test activation signing secret is missing');
   const encode = (value: object): string => {
     const bytes = new TextEncoder().encode(JSON.stringify(value));
@@ -159,7 +159,7 @@ async function exchange(
 ): Promise<{ accessToken: string; sessionIdentifier: string }> {
   const resolvedToken = token ?? (await activationToken(env));
   const response = await worker.fetch(
-    new Request('https://app-ai.test/demo/session/exchange', {
+    new Request('https://app-ai.test/audit/session/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'https://www.limespot.com' },
       body: JSON.stringify({
@@ -173,7 +173,7 @@ async function exchange(
   return response.json() as Promise<{ accessToken: string; sessionIdentifier: string }>;
 }
 
-function demoHeaders(
+function auditHeaders(
   accessToken: string,
   prompt?: string,
   jsonContent = true,
@@ -181,7 +181,7 @@ function demoHeaders(
   return {
     Authorization: `Bearer ${accessToken}`,
     Origin: STORE_ORIGIN,
-    'X-LimeSpot-Demo-Store-Origin': STORE_ORIGIN,
+    'X-LimeSpot-Audit-Store-Origin': STORE_ORIGIN,
     ...(prompt
       ? {
           ...(jsonContent ? { 'Content-Type': 'application/json' } : {}),
@@ -209,7 +209,7 @@ function uploadRequest(
   for (const prompt of prompts) formData.append('prompt', prompt);
   return new Request('https://app-ai.test/files', {
     method: 'POST',
-    headers: demoHeaders(accessToken),
+    headers: auditHeaders(accessToken),
     body: formData,
   });
 }
@@ -217,7 +217,7 @@ function uploadRequest(
 function messageRequest(accessToken: string, fileIdentifiers: readonly string[]): Request {
   return new Request('https://app-ai.test/messages', {
     method: 'POST',
-    headers: demoHeaders(accessToken, 'onboarding-batch-all'),
+    headers: auditHeaders(accessToken, 'onboarding-batch-all'),
     body: JSON.stringify({
       model: 'caller-chosen-expensive-model',
       tools: [{ name: 'caller_tool' }],
@@ -243,13 +243,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('demo session authorization', () => {
+describe('audit session authorization', () => {
   it('exchanges an email-verified activation exactly once and scopes a prefixed session', async () => {
     const env = durableEnv();
     const token = await activationToken(env, 'activation-one');
     const request = () =>
       worker.fetch(
-        new Request('https://app-ai.test/demo/session/exchange', {
+        new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ activationToken: token, storeUrl: `${STORE_ORIGIN}/x` }),
@@ -261,13 +261,15 @@ describe('demo session authorization', () => {
     expect(first.status).toBe(201);
     expect(await first.json()).toMatchObject({
       sessionIdentifier: expect.any(String),
-      accessToken: expect.stringMatching(/^ls_demo_/u),
+      accessToken: expect.stringMatching(/^ls_audit_/u),
       expiresAt: expect.any(Number),
     });
 
     const second = await request();
     expect(second.status).toBe(409);
-    expect(await second.json()).toMatchObject({ ExceptionType: 'DemoActivationConsumedException' });
+    expect(await second.json()).toMatchObject({
+      ExceptionType: 'AuditActivationConsumedException',
+    });
   });
 
   it('requires a bounded, bare, signed callback URL whose origin this deployment allowlists', async () => {
@@ -293,7 +295,7 @@ describe('demo session authorization', () => {
     });
     const exchangeClaims = async (payload: Record<string, unknown>): Promise<Response> =>
       worker.fetch(
-        new Request('https://app-ai.test/demo/session/exchange', {
+        new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -306,7 +308,7 @@ describe('demo session authorization', () => {
 
     const absent = await exchangeClaims(claims('callback-absent'));
     expect(absent.status).toBe(401);
-    expect(await absent.json()).toMatchObject({ ExceptionType: 'DemoAuthorizationException' });
+    expect(await absent.json()).toMatchObject({ ExceptionType: 'AuditAuthorizationException' });
 
     const foreignHost = await exchangeClaims(
       claims('callback-foreign', 'https://evil.example/studio/activate/api/status'),
@@ -337,27 +339,27 @@ describe('demo session authorization', () => {
     expect(credentialed.status).toBe(401);
 
     const queried = await exchangeClaims(
-      claims('callback-query', `${DEMO_STATUS_CALLBACK_URL}?next=1`),
+      claims('callback-query', `${AUDIT_STATUS_CALLBACK_URL}?next=1`),
     );
     expect(queried.status).toBe(401);
 
     const fragmented = await exchangeClaims(
-      claims('callback-fragment', `${DEMO_STATUS_CALLBACK_URL}#f`),
+      claims('callback-fragment', `${AUDIT_STATUS_CALLBACK_URL}#f`),
     );
     expect(fragmented.status).toBe(401);
 
     const overlong = await exchangeClaims(
       claims(
         'callback-overlong',
-        `${DEMO_STATUS_CALLBACK_URL}/${'p'.repeat(
-          MAX_STATUS_CALLBACK_URL_LENGTH - DEMO_STATUS_CALLBACK_URL.length,
+        `${AUDIT_STATUS_CALLBACK_URL}/${'p'.repeat(
+          MAX_STATUS_CALLBACK_URL_LENGTH - AUDIT_STATUS_CALLBACK_URL.length,
         )}`,
       ),
     );
     expect(overlong.status).toBe(401);
 
     const allowlisted = await exchangeClaims(
-      claims('callback-allowlisted', DEMO_STATUS_CALLBACK_URL),
+      claims('callback-allowlisted', AUDIT_STATUS_CALLBACK_URL),
     );
     expect(allowlisted.status).toBe(201);
   });
@@ -366,7 +368,7 @@ describe('demo session authorization', () => {
     const env = durableEnv();
     const publicToken = await activationToken(env, 'public-origin');
     const publicMismatch = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -385,7 +387,7 @@ describe('demo session authorization', () => {
       'merchant@example.com',
     );
     const invalidStaffResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -404,7 +406,7 @@ describe('demo session authorization', () => {
       'sales@limespot.com',
     );
     const staffResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -423,7 +425,7 @@ describe('demo session authorization', () => {
       'sales@limespot.com',
     );
     const insecureResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -442,7 +444,7 @@ describe('demo session authorization', () => {
       'sales@limespot.com',
     );
     const loopbackResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -463,7 +465,7 @@ describe('demo session authorization', () => {
       null,
     );
     const unmeteredPublicResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activationToken: unmeteredPublic, storeUrl: STORE_ORIGIN }),
@@ -481,7 +483,7 @@ describe('demo session authorization', () => {
       2,
     );
     const cappedStaffResponse = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activationToken: cappedStaff, storeUrl: STORE_ORIGIN }),
@@ -494,7 +496,7 @@ describe('demo session authorization', () => {
   it('preserves one public audit authority across reissued activation tokens', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
-    const env = durableEnv({ DEMO_SESSION_TTL_SECONDS: '1' });
+    const env = durableEnv({ AUDIT_SESSION_TTL_SECONDS: '1' });
     const auditIdentifier = 'audit-stable-public';
     const firstToken = await activationToken(
       env,
@@ -516,7 +518,7 @@ describe('demo session authorization', () => {
     expect((await exchange(env, secondToken)).sessionIdentifier).toBeTypeOf('string');
 
     const replay = await worker.fetch(
-      new Request('https://app-ai.test/demo/session/exchange', {
+      new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activationToken: firstToken, storeUrl: STORE_ORIGIN }),
@@ -554,8 +556,8 @@ describe('demo session authorization', () => {
       new Request('https://app-ai.test/messages', {
         method: 'POST',
         headers: {
-          ...demoHeaders(session.accessToken, 'onboarding-batch-all'),
-          'X-LimeSpot-Demo-Store-Origin': 'https://evil.test',
+          ...auditHeaders(session.accessToken, 'onboarding-batch-all'),
+          'X-LimeSpot-Audit-Store-Origin': 'https://evil.test',
         },
         body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
       }),
@@ -565,28 +567,28 @@ describe('demo session authorization', () => {
 
     const list = await worker.fetch(
       new Request('https://app-ai.test/files', {
-        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+        headers: auditHeaders(session.accessToken, 'onboarding-batch-all'),
       }),
       env,
     );
     expect(list.status).toBe(403);
 
-    // The demo scope is POST /files + POST /messages and nothing else, so the
+    // The audit scope is POST /files + POST /messages and nothing else, so the
     // master-only routing diagnostics are refused at the scope check — the
     // handler, and the master comparison inside it, are never reached.
     const diagnostics = await worker.fetch(
       new Request('https://app-ai.test/prompts', {
-        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+        headers: auditHeaders(session.accessToken, 'onboarding-batch-all'),
       }),
       env,
     );
     expect(diagnostics.status).toBe(403);
-    expect(await diagnostics.json()).toMatchObject({ ExceptionType: 'DemoScopeException' });
+    expect(await diagnostics.json()).toMatchObject({ ExceptionType: 'AuditScopeException' });
 
     const wrongPrompt = await worker.fetch(
       new Request('https://app-ai.test/messages', {
         method: 'POST',
-        headers: demoHeaders(session.accessToken, 'visual-verify'),
+        headers: auditHeaders(session.accessToken, 'visual-verify'),
         body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
       }),
       env,
@@ -598,7 +600,7 @@ describe('demo session authorization', () => {
     const headerOnly = await worker.fetch(
       new Request('https://app-ai.test/files', {
         method: 'POST',
-        headers: demoHeaders(session.accessToken, 'onboarding-batch-all', false),
+        headers: auditHeaders(session.accessToken, 'onboarding-batch-all', false),
         body: headerOnlyUpload,
       }),
       env,
@@ -630,7 +632,7 @@ describe('demo session authorization', () => {
     const duplicateFileResponse = await worker.fetch(
       new Request('https://app-ai.test/files', {
         method: 'POST',
-        headers: demoHeaders(session.accessToken),
+        headers: auditHeaders(session.accessToken),
         body: duplicateFiles,
       }),
       env,
@@ -640,7 +642,7 @@ describe('demo session authorization', () => {
   });
 
   it('serializes parallel uploads so every returned file remains owned by the session', async () => {
-    const env = durableEnv({ DEMO_MAX_UPLOADS: '8' });
+    const env = durableEnv({ AUDIT_MAX_UPLOADS: '8' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     let uploadSequence = 0;
@@ -680,7 +682,7 @@ describe('demo session authorization', () => {
   });
 
   it('accepts all four repeated multipart upload destinations while inference remains proposal-only', async () => {
-    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const env = durableEnv({ AUDIT_MAX_UPLOADS: '1' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(
@@ -697,7 +699,7 @@ describe('demo session authorization', () => {
     const reviewInference = await worker.fetch(
       new Request('https://app-ai.test/messages', {
         method: 'POST',
-        headers: demoHeaders(session.accessToken, 'onboarding-review-all'),
+        headers: auditHeaders(session.accessToken, 'onboarding-review-all'),
         body: JSON.stringify({ messages: [{ role: 'user', content: [] }] }),
       }),
       env,
@@ -711,7 +713,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
       if (url.endsWith('/v1/files')) {
         return new Response(JSON.stringify(anthropicFileRecord('file-owned')), {
           status: 200,
@@ -733,7 +735,7 @@ describe('demo session authorization', () => {
     const inline = await worker.fetch(
       new Request('https://app-ai.test/messages', {
         method: 'POST',
-        headers: demoHeaders(session.accessToken, 'onboarding-batch-all'),
+        headers: auditHeaders(session.accessToken, 'onboarding-batch-all'),
         body: JSON.stringify({
           messages: [
             {
@@ -756,9 +758,9 @@ describe('demo session authorization', () => {
     expect(forwarded.output_config).toEqual({ effort: 'medium' });
   });
 
-  it('seals demo uploads into a session namespace no merchant or other session can open', async () => {
-    // The router keys a demo session's file tenant scope off the session
-    // identifier, so a demo upload lives in a namespace of its own: it carries
+  it('seals audit uploads into a session namespace no merchant or other session can open', async () => {
+    // The router keys an audit session's file tenant scope off the session
+    // identifier, so an audit upload lives in a namespace of its own: it carries
     // no context-ID, and a merchant tenant is not the tenant that made it.
     const env = durableEnv();
     const session = await exchange(env);
@@ -766,7 +768,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
       if (url.includes('/v2/administrator-authentication/validate-context-id')) {
         return new Response(JSON.stringify({ SubscriberID: 42, SubscriberTitle: 'Store' }), {
           status: 200,
@@ -774,7 +776,7 @@ describe('demo session authorization', () => {
         });
       }
       if (url.endsWith('/v1/files')) {
-        return new Response(JSON.stringify(anthropicFileRecord('file-demo-owned')), {
+        return new Response(JSON.stringify(anthropicFileRecord('file-audit-owned')), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -786,7 +788,7 @@ describe('demo session authorization', () => {
     });
     const uploaded = await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env);
     expect(uploaded.status).toBe(200);
-    const demoReference = ((await uploaded.json()) as { id: string }).id;
+    const auditReference = ((await uploaded.json()) as { id: string }).id;
 
     const merchant = await worker.fetch(
       new Request('https://app-ai.test/messages', {
@@ -801,7 +803,7 @@ describe('demo session authorization', () => {
           messages: [
             {
               role: 'user',
-              content: [{ type: 'image', source: { type: 'file', file_id: demoReference } }],
+              content: [{ type: 'image', source: { type: 'file', file_id: auditReference } }],
             },
           ],
         }),
@@ -814,10 +816,10 @@ describe('demo session authorization', () => {
       ExceptionType: 'UnauthorizedAccessException',
     });
 
-    // A second demo session is a second namespace, so the reference is not
+    // A second audit session is a second namespace, so the reference is not
     // reachable from it either.
     const foreignSession = await worker.fetch(
-      messageRequest(otherSession.accessToken, [demoReference]),
+      messageRequest(otherSession.accessToken, [auditReference]),
       env,
     );
     expect(foreignSession.status).toBe(403);
@@ -825,12 +827,12 @@ describe('demo session authorization', () => {
     // The owning session still runs, so the refusals are the tenant boundary
     // rather than a reference that never worked.
     expect(
-      (await worker.fetch(messageRequest(session.accessToken, [demoReference]), env)).status,
+      (await worker.fetch(messageRequest(session.accessToken, [auditReference]), env)).status,
     ).toBe(200);
   });
 
   it('atomically enforces upload quotas and releases reservations after upstream failure', async () => {
-    const env = durableEnv({ DEMO_MAX_UPLOADS: '1', DEMO_MAX_TOTAL_UPLOAD_BYTES: '20' });
+    const env = durableEnv({ AUDIT_MAX_UPLOADS: '1', AUDIT_MAX_TOTAL_UPLOAD_BYTES: '20' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock
@@ -859,7 +861,7 @@ describe('demo session authorization', () => {
   });
 
   it('releases upload quota when the upstream fetch throws so the request can be retried', async () => {
-    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const env = durableEnv({ AUDIT_MAX_UPLOADS: '1' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock.mockRejectedValueOnce(new Error('network socket closed')).mockResolvedValueOnce(
@@ -885,7 +887,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) {
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -917,7 +919,7 @@ describe('demo session authorization', () => {
   });
 
   it('releases an upload reservation when the tenant sealing key is rejected before dispatch', async () => {
-    const env = durableEnv({ DEMO_MAX_UPLOADS: '1' });
+    const env = durableEnv({ AUDIT_MAX_UPLOADS: '1' });
     const session = await exchange(env);
     const { TOKEN_ENCRYPTION_SECRET: _absent, ...missingSecretEnv } = env;
     const fetchMock = stubFetch();
@@ -955,7 +957,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) {
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -1001,7 +1003,7 @@ describe('demo session authorization', () => {
     let inference = 0;
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) {
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
@@ -1059,7 +1061,7 @@ describe('demo session authorization', () => {
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === DEMO_STATUS_CALLBACK_URL) {
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
         callbackBodies.push(String(init?.body));
         return new Response(null, { status: callbackAvailable ? 204 : 503 });
       }
@@ -1088,7 +1090,7 @@ describe('demo session authorization', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
     const env = durableEnv({
-      DEMO_AUDIT_STATUS_ORIGINS: `${ENV.DEMO_AUDIT_STATUS_ORIGINS},https://mirror.limespot.test`,
+      AUDIT_STATUS_ORIGINS: `${ENV.AUDIT_STATUS_ORIGINS},https://mirror.limespot.test`,
     });
     const signedCallbackUrl = 'https://mirror.limespot.test/studio/activate/api/status';
     const session = await exchange(
@@ -1122,7 +1124,7 @@ describe('demo session authorization', () => {
     expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
 
     expect(callbackTargets).toEqual(Array.from({ length: 4 }, () => signedCallbackUrl));
-    expect(callbackTargets).not.toContain(DEMO_STATUS_CALLBACK_URL);
+    expect(callbackTargets).not.toContain(AUDIT_STATUS_CALLBACK_URL);
     vi.useRealTimers();
   });
 });

@@ -125,7 +125,7 @@ describe('composeToolsets — credential seam', () => {
     fetchMock.mockResolvedValue(
       new Response(
         JSON.stringify({
-          SubscriberTitle: 'Demo store',
+          SubscriberTitle: 'Test store',
           Platform: 'Shopify',
           Currency: 'USD',
           Pages: [],
@@ -148,7 +148,7 @@ describe('composeToolsets — credential seam', () => {
     fetchMock.mockResolvedValue(
       new Response(
         JSON.stringify({
-          SubscriberTitle: 'Demo store',
+          SubscriberTitle: 'Test store',
           Platform: 'Shopify',
           Currency: 'USD',
           Pages: [],

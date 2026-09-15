@@ -96,27 +96,27 @@ curl http://localhost:8787/health
 
 ## API Endpoints
 
-Normal protected endpoints require `X-Personalizer-Context-ID`. The extension demo has a separate one-time activation/session path documented in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
+Normal protected endpoints require `X-Personalizer-Context-ID`. The extension audit has a separate one-time activation/session path documented in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
 
-| Method | Endpoint                 | Description                             | Auth Required  |
-| ------ | ------------------------ | --------------------------------------- | -------------- |
-| GET    | `/health`                | Health check                            | No             |
-| POST   | `/demo/session/exchange` | Exchange a website activation JWT       | Activation JWT |
-| POST   | `/files`                 | Prompt-aware direct provider upload     | Yes            |
-| DELETE | `/files/{id}`            | Delete one opaque file reference        | Yes            |
-| POST   | `/messages`              | Registered prompt completion            | Yes            |
-| POST   | `/chat`                  | Studio AI chat agent loop (SSE + tools) | Yes            |
-| GET    | `/prompts`               | Prompt/model routing diagnostics        | Master only    |
+| Method | Endpoint                  | Description                             | Auth Required  |
+| ------ | ------------------------- | --------------------------------------- | -------------- |
+| GET    | `/health`                 | Health check                            | No             |
+| POST   | `/audit/session/exchange` | Exchange a website activation JWT       | Activation JWT |
+| POST   | `/files`                  | Prompt-aware direct provider upload     | Yes            |
+| DELETE | `/files/{id}`             | Delete one opaque file reference        | Yes            |
+| POST   | `/messages`               | Registered prompt completion            | Yes            |
+| POST   | `/chat`                   | Studio AI chat agent loop (SSE + tools) | Yes            |
+| GET    | `/prompts`                | Prompt/model routing diagnostics        | Master only    |
 
 A master context-ID reaches `GET /prompts` through the `X-Personalizer-Context-ID`
 header or a `personalizerContextId` query parameter; every other route reads the
 header only.
 
-Scoped `ls_demo_…` sessions may use only `POST /files` and proposal-only `POST
+Scoped `ls_audit_…` sessions may use only `POST /files` and proposal-only `POST
 /messages`. They are bound to the activated store, atomically quota-controlled
-by an audit-keyed `DemoSessionAuthority`, never call Brain, and cannot delete files or use
+by an audit-keyed `AuditSessionAuthority`, never call Brain, and cannot delete files or use
 `/chat`. The exact public/staff entitlement claims, headers, limits, and signed website-status
-callback contract are in [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
+callback contract are in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
 
 ### `POST /files` — prompt-aware direct upload
 
@@ -159,7 +159,7 @@ It validates the context-ID like every other protected route and then requires
 the resolved `SubscriberID` to equal `MASTER_SUBSCRIBER_ID`. Any other validated
 merchant receives the router's unknown-route answer (404
 `RecordNotFoundException`) byte for byte, so the endpoint cannot be confirmed to
-exist. Scoped demo sessions never reach it.
+exist. Scoped audit sessions never reach it.
 
 It takes that context-ID from either of two positions, and the master gate is
 identical in both:
@@ -307,7 +307,7 @@ variable, no fallback defaults.
   `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, `MASTER_SUBSCRIBER_ID`, the
   tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` / `MODEL_FRONTIER` and their sparse
   per-prompt `MODEL_OVERRIDES` exceptions, plus `LOG_TARGETS_*` and
-  `LOG_SEQ_INGEST_URL`, `DEMO_AUDIT_STATUS_ORIGINS`, plus the `DEMO_*` session/quota limits (values pinned by `test/config.test.ts`)
+  `LOG_SEQ_INGEST_URL`, `AUDIT_STATUS_ORIGINS`, plus the `AUDIT_*` session/quota limits (values pinned by `test/config.test.ts`)
 - Secrets set via Cloudflare Dashboard:
   - Workers > app-ai > Settings > Variables > Encrypt
   - Add `CLAUDE_API_KEY` as encrypted secret
@@ -318,9 +318,9 @@ variable, no fallback defaults.
     references and continuation tokens)
   - Add `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` as encrypted secret (the platform toolsets'
     caller-auth token toward Personalizer's integration bridge)
-  - Add distinct `DEMO_ACTIVATION_SIGNING_SECRET`, `DEMO_SESSION_SIGNING_SECRET`, and
-    `DEMO_AUDIT_STATUS_SIGNING_SECRET` values containing at least 32 random bytes each; allowlist
-    the website's callback origins in `DEMO_AUDIT_STATUS_ORIGINS`
+  - Add distinct `AUDIT_ACTIVATION_SIGNING_SECRET`, `AUDIT_SESSION_SIGNING_SECRET`, and
+    `AUDIT_STATUS_SIGNING_SECRET` values containing at least 32 random bytes each; allowlist
+    the website's callback origins in `AUDIT_STATUS_ORIGINS`
   - Optionally add `LOG_SEQ_API_KEY` when the Seq endpoint requires authentication
 
 ### Updating System Prompts
@@ -460,8 +460,8 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
    - Workers > app-ai > Settings > Variables > Encrypt
    - Add secrets with keys `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
      `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET` (32 random bytes
-     encoded as base64), `DEMO_ACTIVATION_SIGNING_SECRET`,
-     `DEMO_SESSION_SIGNING_SECRET`, and `DEMO_AUDIT_STATUS_SIGNING_SECRET`
+     encoded as base64), `AUDIT_ACTIVATION_SIGNING_SECRET`,
+     `AUDIT_SESSION_SIGNING_SECRET`, and `AUDIT_STATUS_SIGNING_SECRET`
 
 Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it
@@ -504,7 +504,7 @@ Every environment provides the full variable set — `ENVIRONMENT`,
 `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`,
 `GEMINI_API_BASE`, `CREDENTIALED_ORIGINS`, the tier→model bindings `MODEL_FAST` / `MODEL_BALANCED` /
 `MODEL_FRONTIER`, and the provider API keys + `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN` +
-`TOKEN_ENCRYPTION_SECRET` + three demo signing secrets, the `DEMO_AUDIT_STATUS_ORIGINS` allowlist,
+`TOKEN_ENCRYPTION_SECRET` + three audit signing secrets, the `AUDIT_STATUS_ORIGINS` allowlist,
 six `LOG_TARGETS_*` routes, and
 `LOG_SEQ_INGEST_URL` whenever any route selects Seq. `LOG_SEQ_API_KEY` is optional.
 `src/config.ts` throws on malformed or missing required configuration.
@@ -540,9 +540,9 @@ are mirrored to Seq by the example local routes.
 3. **Authentication**
 
    - Normal protected endpoints validate the context ID against Personalizer
-     before dispatch (`lib/auth.ts`). Demo exchange/session requests use the
+     before dispatch (`lib/auth.ts`). Audit exchange/session requests use the
      key-separated, one-time, scope/quota-controlled contract in
-     [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md).
+     [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
    - Every error response uses Brain's wire shape
      (`{ "Message": ..., "ExceptionType": ..., "MessageDetail": ... }`) — app-ai
      errors are structurally identical to Brain errors, so clients keep one
@@ -575,7 +575,7 @@ Before deploying:
 - [ ] CORS origins restricted to production domains
 - [ ] No sensitive data in logs
 - [ ] Context validation working
-- [ ] `DEMO_SESSIONS` binding/migration, all three demo signing secrets, and the status-callback origin allowlist provisioned
+- [ ] `AUDIT_SESSIONS` binding/migration, all three audit signing secrets, and the status-callback origin allowlist provisioned
 - [ ] Website/app-ai activation claims and signed status callback pass cross-repository contract tests
 - [ ] Website verification/rate limits/daily cap and the provider budget kill switch tested
 - [ ] Dependencies updated
@@ -690,7 +690,7 @@ wrangler whoami          # Check authentication
   credential seam + security standards, the platform toolsets
 - [docs/ARCHITECTURE-MAP.md](docs/ARCHITECTURE-MAP.md) — the folder-by-folder map of `src/` and
   the registered-prompt table
-- [docs/DEMO-AUTH.md](docs/DEMO-AUTH.md) — extension demo claims, entitlement, scope, quotas,
+- [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md) — extension audit claims, entitlement, scope, quotas,
   and the signed website status callback
 - [docs/PROMPT-GROUPS.md](docs/PROMPT-GROUPS.md) —
   the prompt inventory and evidence-reuse graph
@@ -702,7 +702,7 @@ wrangler whoami          # Check authentication
 ---
 
 **Platform:** Cloudflare Workers (V8 Isolates)
-**Live surface:** `/files` + `/messages` serve the scoped extension demo sessions in
+**Live surface:** `/files` + `/messages` serve the scoped extension audit sessions in
 production; production Studio carries no app-ai client, and a Studio build that ships
 one reaches `/files`, `/messages`, and `/chat`.
 **Deploy:** pushing `main` deploys to production — an operator action carrying its own deploy

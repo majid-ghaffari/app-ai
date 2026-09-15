@@ -490,24 +490,24 @@ Every attempt produces content-free structured telemetry for model/prompt/effort
 token/cache usage, stop reason, evidence counts, revision/pass, attempt kind, and lib capture/upload
 spans. The operational SLO and release-eval contract live in `docs/QC-OBSERVABILITY.md`.
 
-### 22. Extension demos use key-separated JWTs and strongly consistent state
+### 22. Extension audits use key-separated JWTs and strongly consistent state
 
-The extension demo is an alternate auth path for stores without a LimeSpot Context-ID. A website
+The extension audit is an alternate auth path for stores without a LimeSpot Context-ID. A website
 activation assertion is signed with a website/app-ai shared key, consumed once, and exchanged for an
-app-ai-only `ls_demo_…` session signed with a distinct key. Public assertions name one exact store
+app-ai-only `ls_audit_…` session signed with a distinct key. Public assertions name one exact store
 origin; only a signed, email-verified `@limespot.com` staff entitlement can choose another store.
 The extension background worker supplies its validated active-tab origin because MV3 request Origin
 is the extension, not the storefront. Exact claims and sender responsibilities are frozen in
-[DEMO-AUTH.md](DEMO-AUTH.md).
+[AUDIT-AUTH.md](AUDIT-AUTH.md).
 
 Cloudflare KV is not used for activation consumption, quotas, file ownership, or attempt counting: it
 is eventually consistent, has no compare-and-swap operation, and loses concurrent read-modify-write
 updates when the onboarding conductor uploads many screenshot tiles in parallel.
-`DemoSessionAuthority` is one deterministically addressed Durable Object per signed stable
+`AuditSessionAuthority` is one deterministically addressed Durable Object per signed stable
 `auditIdentifier`. It consumes activation identifiers, permits one live session, atomically reserves
 paid work, owns provider file IDs, and preserves the public two-completion count across expired
 sessions and reissued links. Failed inference releases the attempt number; only successful proposal
-inference consumes it. Demo scope remains four onboarding upload destinations and two proposal
+inference consumes it. Audit scope remains four onboarding upload destinations and two proposal
 inference prompts; the server forces registry model/budget/effort and never calls Brain.
 
 Per-session byte/upload/message ceilings are app-ai's paid-work guard. Cross-session activation,
@@ -517,7 +517,7 @@ with a third, purpose-specific secret and retries them from an ordered Durable O
 D1 is an idempotent operational mirror, while app-ai remains the attempt enforcement authority. The
 website owns its routing table, so the callback destination is a required `statusCallbackUrl` claim
 on the activation rather than app-ai configuration; app-ai keeps the decision of where a callback may
-go as the `DEMO_AUDIT_STATUS_ORIGINS` allowlist, and stores the validated URL on the session because a
+go as the `AUDIT_STATUS_ORIGINS` allowlist, and stores the validated URL on the session because a
 run outlives the token that named it. The
 Durable Object binding and first migration are part of `wrangler.toml`, while all signing keys remain
 encrypted secrets.
@@ -590,7 +590,7 @@ policy after multipart parsing and before provider I/O, collapses same-route
 destinations, and starts distinct route uploads concurrently. It returns random
 `file_ref_v1_*` tokens carrying authenticated encrypted route metadata under
 `TOKEN_ENCRYPTION_SECRET`, bound to a keyed tenant pseudonym: the validated context ID for a merchant, and
-the demo session identifier for a scoped demo session, which carries no context ID
+the audit session identifier for a scoped audit session, which carries no context ID
 and therefore uploads into a namespace of its own.
 Self-contained tokens avoid Workers KV's eventual-consistency window in the
 immediate upload→inference flow; `FILES_KV` is best-effort dedup only. File bytes

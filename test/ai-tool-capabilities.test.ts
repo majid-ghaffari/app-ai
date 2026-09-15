@@ -53,7 +53,7 @@ const VALID_TOOL_RESULTS: Record<string, unknown> = {
     },
   ],
   get_store_config: {
-    SubscriberTitle: 'Demo store',
+    SubscriberTitle: 'Test store',
     Platform: 'Shopify',
     Currency: 'USD',
     Pages: [{ HostPage: 'Home', BoxTypes: ['TopPicks'] }],
@@ -69,7 +69,7 @@ describe('AI-tool capability contract', () => {
   ])('fails closed when the contract version is %s', async (_label, contractVersion) => {
     const validation: ContextValidation = {
       SubscriberID: 7,
-      SubscriberTitle: 'Demo store',
+      SubscriberTitle: 'Test store',
       AvailableAiTools: ['get_store_analytics'],
       ...(contractVersion === undefined ? {} : { AiToolsContractVersion: contractVersion }),
     };
@@ -85,7 +85,7 @@ describe('AI-tool capability contract', () => {
     const fetchMock = workerFlow(
       {
         SubscriberID: 7,
-        SubscriberTitle: 'Demo store',
+        SubscriberTitle: 'Test store',
         AiToolsContractVersion: 1,
         AvailableAiTools: ['get_store_analytics', 'future_tool'],
       },
@@ -102,7 +102,7 @@ describe('AI-tool capability contract', () => {
     const fetchMock = workerFlow(
       {
         SubscriberID: 7,
-        SubscriberTitle: 'Demo store',
+        SubscriberTitle: 'Test store',
         AiToolsContractVersion: 1,
         AvailableAiTools: ['get_store_analytics'],
       },
@@ -210,7 +210,7 @@ describe('AI-tool response boundary', () => {
 function versionOneValidation(toolName: string): ContextValidation {
   return {
     SubscriberID: 7,
-    SubscriberTitle: 'Demo store',
+    SubscriberTitle: 'Test store',
     AiToolsContractVersion: 1,
     AvailableAiTools: [toolName],
   };

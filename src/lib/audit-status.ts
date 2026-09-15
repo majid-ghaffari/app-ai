@@ -1,19 +1,19 @@
 /** Authenticated app-ai to website audit-attempt status callbacks. */
 
-import { demoAuditStatusSigningSecret, type Env } from '../config';
+import { auditStatusSigningSecret, type Env } from '../config';
 
 const CALLBACK_TIMEOUT_MILLISECONDS = 5_000;
 
-export type DemoAuditStatus = 'started' | 'completed' | 'failed';
+export type AuditStatus = 'started' | 'completed' | 'failed';
 
-export interface DemoAuditStatusEvent {
+export interface AuditStatusEvent {
   readonly version: 1;
   readonly eventIdentifier: string;
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
   readonly attemptNumber: number;
-  readonly status: DemoAuditStatus;
+  readonly status: AuditStatus;
   readonly occurredAt: number;
 }
 
@@ -22,15 +22,15 @@ export interface DemoAuditStatusEvent {
  * and this deployment allowlisted. Callers retain it for retry unless this
  * returns true.
  */
-export async function deliverDemoAuditStatusEvent(
-  event: DemoAuditStatusEvent,
+export async function deliverAuditStatusEvent(
+  event: AuditStatusEvent,
   statusCallbackUrl: string,
   env: Env,
 ): Promise<boolean> {
   try {
     const body = JSON.stringify(event);
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signature = await sign(`${timestamp}.${body}`, demoAuditStatusSigningSecret(env));
+    const signature = await sign(`${timestamp}.${body}`, auditStatusSigningSecret(env));
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CALLBACK_TIMEOUT_MILLISECONDS);
     try {

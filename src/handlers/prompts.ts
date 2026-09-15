@@ -14,7 +14,7 @@
  * check. A validated NON-master merchant gets the router's unknown-route answer
  * (404 `RecordNotFoundException`), identical byte for byte to a route that does
  * not exist, so the endpoint cannot even be confirmed to be there. The scoped
- * demo bearer never reaches this handler: its branch dispatches only
+ * audit bearer never reaches this handler: its branch dispatches only
  * `POST /files` and `POST /messages`.
  *
  * This is also the ONE route whose context-ID may arrive in the URL instead of

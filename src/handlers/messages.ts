@@ -87,7 +87,7 @@ export async function handleMessages(
   env: Env,
   corsHeaders: CorsHeaders,
   logging: LoggingRuntime = createLoggingRuntime(env),
-  options: { readonly demo?: boolean; readonly tenantScope?: string } = {},
+  options: { readonly audit?: boolean; readonly tenantScope?: string } = {},
 ): Promise<Response> {
   const requestStartedAt = Date.now();
   const selector = request.headers.get('X-Personalizer-System-Prompt');
@@ -105,11 +105,11 @@ export async function handleMessages(
     log.info('Request received');
     const body = (await request.json()) as Record<string, unknown>;
     const { apiKey: _apiKey, ...clientBody } = body;
-    // Demo sessions carry a narrower server-owned request contract: only the
+    // Audit sessions carry a narrower server-owned request contract: only the
     // validated evidence messages survive. The registry supplies prompt, model,
     // budget, and effort, and caller-supplied tools or provider knobs never
     // reach the paid upstream API.
-    const safeBody: Record<string, unknown> = options.demo
+    const safeBody: Record<string, unknown> = options.audit
       ? { ...(clientBody.messages === undefined ? {} : { messages: clientBody.messages }) }
       : clientBody;
 
@@ -148,7 +148,7 @@ export async function handleMessages(
     // A registered route resolves before attachment/file/provider I/O. Missing
     // configuration therefore fails closed rather than restoring caller model authority.
     const entry = getSystemPrompt(selector, env);
-    validateRulesetVersion(request, entry, log, options.demo === true);
+    validateRulesetVersion(request, entry, log, options.audit === true);
     const tenantScope =
       options.tenantScope ??
       (await fileTenantScope(request.headers.get('X-Personalizer-Context-ID'), env));
@@ -183,7 +183,7 @@ export async function handleMessages(
       log,
       tenantScope,
       continuation,
-      { effort, injectBrainDefaults: options.demo !== true },
+      { effort, injectBrainDefaults: options.audit !== true },
     );
 
     if (!NON_BLOCKING_VISUAL_PROMPTS.has(selector)) {
@@ -473,7 +473,7 @@ function validateRulesetVersion(
   const header = request.headers.get('X-Personalizer-Ruleset-Version');
   if (header == null) {
     if (requireHeader) {
-      throw new WorkerError('The demo request is missing its onboarding ruleset version.', {
+      throw new WorkerError('The audit request is missing its onboarding ruleset version.', {
         status: 409,
         exceptionType: 'RulesetVersionMismatchException',
         messageDetail: `X-Personalizer-Ruleset-Version is required; server expects '${entry.rulesetVersion}'`,

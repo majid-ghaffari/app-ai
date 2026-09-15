@@ -5,28 +5,28 @@
  * holds every provider API key server-side, and runs each inference through
  * the provider-neutral runtime in src/inference/. Routes:
  *
- *   GET    /health                — liveness (no auth)
- *   POST   /demo/session/exchange — one-time website activation exchange
- *                                   (authenticated by the website's JWT)
- *   POST   /files                 — prompt-aware direct upload to each declared
- *                                   prompt's provider file route; returns
- *                                   sealed opaque references
- *   DELETE /files/{id}            — delete the provider object a sealed
- *                                   reference names
- *   POST   /messages              — single-shot inference for the header-selected
- *                                   registered prompt (absent/unknown selector →
- *                                   the bounded raw Anthropic proxy)
- *   POST   /chat                  — Studio AI agent loop (SSE + tool-use)
- *   GET    /prompts               — master-only prompt/model routing diagnostics
- *                                   (context-ID by header or query parameter)
+ *   GET    /health                 — liveness (no auth)
+ *   POST   /audit/session/exchange — one-time website activation exchange
+ *                                    (authenticated by the website's JWT)
+ *   POST   /files                  — prompt-aware direct upload to each declared
+ *                                    prompt's provider file route; returns
+ *                                    sealed opaque references
+ *   DELETE /files/{id}             — delete the provider object a sealed
+ *                                    reference names
+ *   POST   /messages               — single-shot inference for the header-selected
+ *                                    registered prompt (absent/unknown selector →
+ *                                    the bounded raw Anthropic proxy)
+ *   POST   /chat                   — Studio AI agent loop (SSE + tool-use)
+ *   GET    /prompts                — master-only prompt/model routing diagnostics
+ *                                    (context-ID by header or query parameter)
  *
- * Every route except /health and the demo exchange requires a validated
+ * Every route except /health and the audit exchange requires a validated
  * context-ID; POST /files and POST /messages alone also accept a scoped
- * `ls_demo_…` bearer. There is no GET /files: nothing enumerates a provider
+ * `ls_audit_…` bearer. There is no GET /files: nothing enumerates a provider
  * account, so it reaches the 404 below.
  *
  * This file is the router only: it builds CORS headers, handles the OPTIONS
- * preflight, selects scoped demo auth or normal Context-ID auth, and dispatches
+ * preflight, selects scoped audit auth or normal Context-ID auth, and dispatches
  * to a handler. All logic lives in handlers/, inference/, lib/, and toolsets/.
  * Configuration is read exclusively through src/config.ts (typed `Env`,
  * fail-fast on a missing variable — the catch below maps that to the
@@ -50,11 +50,11 @@ import { handleHealth } from './handlers/health';
 import { handleFileUpload, handleDeleteFile } from './handlers/files';
 import { handleMessages } from './handlers/messages';
 import { handleChat } from './handlers/chat';
-import { handleDemoSessionExchange } from './handlers/demo-session';
+import { handleAuditSessionExchange } from './handlers/audit-session';
 import { handlePrompts, promptsDiagnosticsContextId } from './handlers/prompts';
-import { authorizeDemoRequest, finalizeDemoUsage, releaseDemoUsage } from './lib/demo-auth';
-import { demoFileTenantScope } from './inference/file-references';
-export { DemoSessionAuthority } from './lib/demo-session-authority';
+import { authorizeAuditRequest, finalizeAuditUsage, releaseAuditUsage } from './lib/audit-auth';
+import { auditFileTenantScope } from './inference/file-references';
+export { AuditSessionAuthority } from './lib/audit-session-authority';
 import type { Env } from './config';
 
 export default {
@@ -99,26 +99,26 @@ async function handleRequest(
     if (pathname === '/health' && method === 'GET') {
       return handleHealth(corsHeaders, env, logging);
     }
-    if (pathname === '/demo/session/exchange' && method === 'POST') {
-      return await handleDemoSessionExchange(request, env, corsHeaders);
+    if (pathname === '/audit/session/exchange' && method === 'POST') {
+      return await handleAuditSessionExchange(request, env, corsHeaders);
     }
 
-    const demoAuthorization = await authorizeDemoRequest(request, env);
-    if (demoAuthorization) {
+    const auditAuthorization = await authorizeAuditRequest(request, env);
+    if (auditAuthorization) {
       let response: Response;
       try {
-        // A demo session authenticates by bearer token and carries no merchant
+        // An audit session authenticates by bearer token and carries no merchant
         // context-ID, so its provider files are sealed into a tenant namespace of
         // its own — never reachable from a merchant tenant, nor the reverse. The
         // sealing key that derives that namespace is configuration, and a
         // rejected one throws here, inside the guard that releases the
         // reservation the authorization just took.
-        const tenantScope = await demoFileTenantScope(demoAuthorization.sessionIdentifier, env);
+        const tenantScope = await auditFileTenantScope(auditAuthorization.sessionIdentifier, env);
         if (pathname === '/files' && method === 'POST') {
           response = await handleFileUpload(request, env, corsHeaders, logging, { tenantScope });
         } else if (pathname === '/messages' && method === 'POST') {
           response = await handleMessages(request, env, corsHeaders, logging, {
-            demo: true,
+            audit: true,
             tenantScope,
           });
         } else {
@@ -132,10 +132,10 @@ async function handleRequest(
       } catch (error) {
         // A reserved request must never remain pending until session expiry merely because a
         // handler threw instead of returning its normal error Response.
-        await releaseDemoUsage(demoAuthorization, env);
+        await releaseAuditUsage(auditAuthorization, env);
         throw error;
       }
-      await finalizeDemoUsage(demoAuthorization, response, env);
+      await finalizeAuditUsage(auditAuthorization, response, env);
       return response;
     }
 

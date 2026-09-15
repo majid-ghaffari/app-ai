@@ -16,7 +16,7 @@
  * changes behavior explicitly and documentedly (lib/file-dedup.ts gracefully
  * no-ops to a plain upload); prompt-aware public references are self-contained
  * authenticated ciphertext under the required `TOKEN_ENCRYPTION_SECRET`, so they never
- * depend on KV consistency. `DEMO_SESSIONS` is required when the demo
+ * depend on KV consistency. `AUDIT_SESSIONS` is required when the audit
  * exchange/bearer feature is exercised and fails closed when absent.
  *
  * The `Env` interface below is the single source of truth for the worker's
@@ -153,31 +153,31 @@ export interface Env {
    */
   readonly RECOMMENDATIONS_DEFAULTS_URL?: string;
   /** HMAC key shared only by the website activation issuer and app-ai. SECRET. */
-  readonly DEMO_ACTIVATION_SIGNING_SECRET?: string;
-  /** HMAC key used only by app-ai to sign exchanged demo sessions. SECRET. */
-  readonly DEMO_SESSION_SIGNING_SECRET?: string;
+  readonly AUDIT_ACTIVATION_SIGNING_SECRET?: string;
+  /** HMAC key used only by app-ai to sign exchanged audit sessions. SECRET. */
+  readonly AUDIT_SESSION_SIGNING_SECRET?: string;
   /** HMAC key shared with the website only for audit-status callbacks. SECRET. */
-  readonly DEMO_AUDIT_STATUS_SIGNING_SECRET?: string;
+  readonly AUDIT_STATUS_SIGNING_SECRET?: string;
   /**
    * Comma-separated origins a website-signed activation may name in its
    * `statusCallbackUrl` claim. The website owns the callback path and signs it
    * into the token; this deployment owns the set of hosts it may be sent to.
    */
-  readonly DEMO_AUDIT_STATUS_ORIGINS?: string;
+  readonly AUDIT_STATUS_ORIGINS?: string;
   /** Strongly consistent authority for activation consumption, quotas, and file ownership. */
-  readonly DEMO_SESSIONS?: DurableObjectNamespace;
-  /** Lifetime of an exchanged demo session in seconds. */
-  readonly DEMO_SESSION_TTL_SECONDS?: string;
-  /** Maximum successful file uploads in one demo session. */
-  readonly DEMO_MAX_UPLOADS?: string;
-  /** Maximum successful inference requests in one demo session. */
-  readonly DEMO_MAX_MESSAGES?: string;
-  /** Maximum bytes accepted by one demo file upload. */
-  readonly DEMO_MAX_UPLOAD_BYTES?: string;
-  /** Maximum aggregate uploaded bytes reserved or completed by one demo session. */
-  readonly DEMO_MAX_TOTAL_UPLOAD_BYTES?: string;
-  /** Maximum JSON request bytes accepted by one demo inference. */
-  readonly DEMO_MAX_MESSAGE_BYTES?: string;
+  readonly AUDIT_SESSIONS?: DurableObjectNamespace;
+  /** Lifetime of an exchanged audit session in seconds. */
+  readonly AUDIT_SESSION_TTL_SECONDS?: string;
+  /** Maximum successful file uploads in one audit session. */
+  readonly AUDIT_MAX_UPLOADS?: string;
+  /** Maximum successful inference requests in one audit session. */
+  readonly AUDIT_MAX_MESSAGES?: string;
+  /** Maximum bytes accepted by one audit file upload. */
+  readonly AUDIT_MAX_UPLOAD_BYTES?: string;
+  /** Maximum aggregate uploaded bytes reserved or completed by one audit session. */
+  readonly AUDIT_MAX_TOTAL_UPLOAD_BYTES?: string;
+  /** Maximum JSON request bytes accepted by one audit inference. */
+  readonly AUDIT_MAX_MESSAGE_BYTES?: string;
 }
 
 /** Required string variables; optional bindings and LOG_SEQ_API_KEY are intentionally excluded. */
@@ -201,16 +201,16 @@ type RequiredVarName =
   | 'MODEL_BALANCED'
   | 'MODEL_FRONTIER'
   | 'CLAUDE_API_KEY'
-  | 'DEMO_ACTIVATION_SIGNING_SECRET'
-  | 'DEMO_SESSION_SIGNING_SECRET'
-  | 'DEMO_AUDIT_STATUS_SIGNING_SECRET'
-  | 'DEMO_AUDIT_STATUS_ORIGINS'
-  | 'DEMO_SESSION_TTL_SECONDS'
-  | 'DEMO_MAX_UPLOADS'
-  | 'DEMO_MAX_MESSAGES'
-  | 'DEMO_MAX_UPLOAD_BYTES'
-  | 'DEMO_MAX_TOTAL_UPLOAD_BYTES'
-  | 'DEMO_MAX_MESSAGE_BYTES'
+  | 'AUDIT_ACTIVATION_SIGNING_SECRET'
+  | 'AUDIT_SESSION_SIGNING_SECRET'
+  | 'AUDIT_STATUS_SIGNING_SECRET'
+  | 'AUDIT_STATUS_ORIGINS'
+  | 'AUDIT_SESSION_TTL_SECONDS'
+  | 'AUDIT_MAX_UPLOADS'
+  | 'AUDIT_MAX_MESSAGES'
+  | 'AUDIT_MAX_UPLOAD_BYTES'
+  | 'AUDIT_MAX_TOTAL_UPLOAD_BYTES'
+  | 'AUDIT_MAX_MESSAGE_BYTES'
   | 'OPENAI_API_KEY'
   | 'GEMINI_API_KEY'
   | 'TOKEN_ENCRYPTION_SECRET';
@@ -222,9 +222,9 @@ const SECRET_VAR_NAMES: readonly RequiredVarName[] = [
   'GEMINI_API_KEY',
   'TOKEN_ENCRYPTION_SECRET',
   'PERSONALIZER_INTEGRATION_BRIDGE_TOKEN',
-  'DEMO_ACTIVATION_SIGNING_SECRET',
-  'DEMO_SESSION_SIGNING_SECRET',
-  'DEMO_AUDIT_STATUS_SIGNING_SECRET',
+  'AUDIT_ACTIVATION_SIGNING_SECRET',
+  'AUDIT_SESSION_SIGNING_SECRET',
+  'AUDIT_STATUS_SIGNING_SECRET',
 ];
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -511,18 +511,18 @@ export function credentialedOrigins(env: Env): readonly string[] {
 }
 
 /** Website/app-ai HMAC key used only to verify activation tokens. */
-export function demoActivationSigningSecret(env: Env): string {
-  return strongSigningSecret(env, 'DEMO_ACTIVATION_SIGNING_SECRET');
+export function auditActivationSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'AUDIT_ACTIVATION_SIGNING_SECRET');
 }
 
-/** App-ai-only HMAC key used to sign and verify exchanged demo sessions. */
-export function demoSessionSigningSecret(env: Env): string {
-  return strongSigningSecret(env, 'DEMO_SESSION_SIGNING_SECRET');
+/** App-ai-only HMAC key used to sign and verify exchanged audit sessions. */
+export function auditSessionSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'AUDIT_SESSION_SIGNING_SECRET');
 }
 
 /** Website/app-ai HMAC key used only to authenticate audit-status callbacks. */
-export function demoAuditStatusSigningSecret(env: Env): string {
-  return strongSigningSecret(env, 'DEMO_AUDIT_STATUS_SIGNING_SECRET');
+export function auditStatusSigningSecret(env: Env): string {
+  return strongSigningSecret(env, 'AUDIT_STATUS_SIGNING_SECRET');
 }
 
 /**
@@ -531,15 +531,13 @@ export function demoAuditStatusSigningSecret(env: Env): string {
  * HTTPS; plain HTTP is accepted only on a loopback host outside production, the
  * same deployed-versus-local distinction the paid-provider guard applies.
  */
-export function demoAuditStatusOrigins(env: Env): readonly string[] {
-  const origins = requireVar(env, 'DEMO_AUDIT_STATUS_ORIGINS')
+export function auditStatusOrigins(env: Env): readonly string[] {
+  const origins = requireVar(env, 'AUDIT_STATUS_ORIGINS')
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
   if (origins.length === 0) {
-    throw new Error(
-      `DEMO_AUDIT_STATUS_ORIGINS must list at least one callback origin. ${SET_IN_VARS}`,
-    );
+    throw new Error(`AUDIT_STATUS_ORIGINS must list at least one callback origin. ${SET_IN_VARS}`);
   }
   for (const origin of origins) {
     let url: URL;
@@ -547,12 +545,12 @@ export function demoAuditStatusOrigins(env: Env): readonly string[] {
       url = new URL(origin);
     } catch {
       throw new Error(
-        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must be an absolute origin. ${SET_IN_VARS}`,
+        `AUDIT_STATUS_ORIGINS entry "${origin}" must be an absolute origin. ${SET_IN_VARS}`,
       );
     }
     if (url.origin !== origin) {
       throw new Error(
-        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must be a bare scheme://host[:port] origin. ${SET_IN_VARS}`,
+        `AUDIT_STATUS_ORIGINS entry "${origin}" must be a bare scheme://host[:port] origin. ${SET_IN_VARS}`,
       );
     }
     if (
@@ -560,7 +558,7 @@ export function demoAuditStatusOrigins(env: Env): readonly string[] {
       !(url.protocol === 'http:' && isLoopbackHost(url) && !isProductionDeployment(env))
     ) {
       throw new Error(
-        `DEMO_AUDIT_STATUS_ORIGINS entry "${origin}" must use HTTPS; plain HTTP is accepted only on a loopback host outside production. ${SET_IN_VARS}`,
+        `AUDIT_STATUS_ORIGINS entry "${origin}" must use HTTPS; plain HTTP is accepted only on a loopback host outside production. ${SET_IN_VARS}`,
       );
     }
   }
@@ -568,49 +566,49 @@ export function demoAuditStatusOrigins(env: Env): readonly string[] {
 }
 
 /** Strongly consistent authority for one-time activation, quotas, and file ownership. */
-export function demoSessionAuthority(env: Env): DurableObjectNamespace {
-  if (env.DEMO_SESSIONS) return env.DEMO_SESSIONS;
+export function auditSessionAuthority(env: Env): DurableObjectNamespace {
+  if (env.AUDIT_SESSIONS) return env.AUDIT_SESSIONS;
   throw new Error(
-    'Missing required configuration binding DEMO_SESSIONS. Bind the DemoSessionAuthority Durable Object in wrangler.toml.',
+    'Missing required configuration binding AUDIT_SESSIONS. Bind the AuditSessionAuthority Durable Object in wrangler.toml.',
   );
 }
 
-/** Exchanged demo-session lifetime in seconds. */
-export function demoSessionTtlSeconds(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_SESSION_TTL_SECONDS');
+/** Exchanged audit-session lifetime in seconds. */
+export function auditSessionTtlSeconds(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_SESSION_TTL_SECONDS');
 }
 
-/** Maximum successful uploads in one demo session. */
-export function demoMaxUploads(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_MAX_UPLOADS');
+/** Maximum successful uploads in one audit session. */
+export function auditMaxUploads(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_UPLOADS');
 }
 
-/** Maximum successful inference calls in one demo session. */
-export function demoMaxMessages(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_MAX_MESSAGES');
+/** Maximum successful inference calls in one audit session. */
+export function auditMaxMessages(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_MESSAGES');
 }
 
-/** Maximum byte length of one demo upload. */
-export function demoMaxUploadBytes(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_MAX_UPLOAD_BYTES');
+/** Maximum byte length of one audit upload. */
+export function auditMaxUploadBytes(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_UPLOAD_BYTES');
 }
 
-/** Maximum aggregate uploaded bytes reserved or completed by one demo session. */
-export function demoMaxTotalUploadBytes(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_MAX_TOTAL_UPLOAD_BYTES');
+/** Maximum aggregate uploaded bytes reserved or completed by one audit session. */
+export function auditMaxTotalUploadBytes(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_TOTAL_UPLOAD_BYTES');
 }
 
-/** Maximum serialized JSON bytes accepted by one demo inference request. */
-export function demoMaxMessageBytes(env: Env): number {
-  return positiveIntegerVar(env, 'DEMO_MAX_MESSAGE_BYTES');
+/** Maximum serialized JSON bytes accepted by one audit inference request. */
+export function auditMaxMessageBytes(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_MESSAGE_BYTES');
 }
 
 function strongSigningSecret(
   env: Env,
   name:
-    | 'DEMO_ACTIVATION_SIGNING_SECRET'
-    | 'DEMO_SESSION_SIGNING_SECRET'
-    | 'DEMO_AUDIT_STATUS_SIGNING_SECRET',
+    | 'AUDIT_ACTIVATION_SIGNING_SECRET'
+    | 'AUDIT_SESSION_SIGNING_SECRET'
+    | 'AUDIT_STATUS_SIGNING_SECRET',
 ): string {
   const secret = requireVar(env, name);
   if (new TextEncoder().encode(secret).byteLength < 32) {
@@ -623,12 +621,12 @@ function positiveIntegerVar(
   env: Env,
   name:
     | 'MASTER_SUBSCRIBER_ID'
-    | 'DEMO_SESSION_TTL_SECONDS'
-    | 'DEMO_MAX_UPLOADS'
-    | 'DEMO_MAX_MESSAGES'
-    | 'DEMO_MAX_UPLOAD_BYTES'
-    | 'DEMO_MAX_TOTAL_UPLOAD_BYTES'
-    | 'DEMO_MAX_MESSAGE_BYTES',
+    | 'AUDIT_SESSION_TTL_SECONDS'
+    | 'AUDIT_MAX_UPLOADS'
+    | 'AUDIT_MAX_MESSAGES'
+    | 'AUDIT_MAX_UPLOAD_BYTES'
+    | 'AUDIT_MAX_TOTAL_UPLOAD_BYTES'
+    | 'AUDIT_MAX_MESSAGE_BYTES',
 ): number {
   const raw = requireVar(env, name);
   const value = Number(raw);

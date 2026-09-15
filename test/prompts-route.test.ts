@@ -205,7 +205,7 @@ describe('GET /prompts — master gate', () => {
       ENV.CLAUDE_API_KEY,
       ENV.OPENAI_API_KEY,
       ENV.PERSONALIZER_INTEGRATION_BRIDGE_TOKEN,
-      ENV.DEMO_SESSION_SIGNING_SECRET,
+      ENV.AUDIT_SESSION_SIGNING_SECRET,
     ]) {
       if (!secret) throw new Error('the Env fixture must carry every secret');
       expect(serialized).not.toContain(secret);

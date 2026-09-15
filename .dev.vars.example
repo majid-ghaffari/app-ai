@@ -11,7 +11,7 @@
 #
 # The sections below are the concerns the worker is configured by, in order:
 # worker identity, model routing, one section per provider, the local inference
-# channel, sealed-token and service credentials, the scoped demo, logging, the
+# channel, sealed-token and service credentials, the scoped audit, logging, the
 # wrangler.toml bindings, and the optional source overrides.
 
 # ── Worker identity ──────────────────────────────────────────────────────────
@@ -140,14 +140,14 @@ TOKEN_ENCRYPTION_SECRET=
 # Personalizer's IntegrationBridge caller map.
 PERSONALIZER_INTEGRATION_BRIDGE_TOKEN=
 
-# ── Studio demo (scoped extension sessions) ──────────────────────────────────
+# ── Studio audit (scoped extension sessions) ──────────────────────────────────
 #
 # REQUIRED SECRETS — three DISTINCT values of at least 32 random bytes each. The
 # activation and audit-status keys are shared with limespot.com for separate
 # purposes; the session key stays app-ai-only.
-DEMO_ACTIVATION_SIGNING_SECRET=
-DEMO_SESSION_SIGNING_SECRET=
-DEMO_AUDIT_STATUS_SIGNING_SECRET=
+AUDIT_ACTIVATION_SIGNING_SECRET=
+AUDIT_SESSION_SIGNING_SECRET=
+AUDIT_STATUS_SIGNING_SECRET=
 
 # REQUIRED. Comma-separated origins a website-signed activation may name in its
 # statusCallbackUrl claim, which carries the exact status-callback path. Each
@@ -155,15 +155,15 @@ DEMO_AUDIT_STATUS_SIGNING_SECRET=
 # accepted only on a loopback host outside production. The website serves its
 # development activation surface on both loopback spellings and signs the
 # callback from whichever the browser used, so both are listed here.
-DEMO_AUDIT_STATUS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
+AUDIT_STATUS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 
-# REQUIRED. Scoped demo limits. Production values are declared in wrangler.toml.
-DEMO_SESSION_TTL_SECONDS=1800
-DEMO_MAX_UPLOADS=40
-DEMO_MAX_MESSAGES=3
-DEMO_MAX_UPLOAD_BYTES=8000000
-DEMO_MAX_TOTAL_UPLOAD_BYTES=64000000
-DEMO_MAX_MESSAGE_BYTES=1000000
+# REQUIRED. Scoped audit limits. Production values are declared in wrangler.toml.
+AUDIT_SESSION_TTL_SECONDS=1800
+AUDIT_MAX_UPLOADS=40
+AUDIT_MAX_MESSAGES=3
+AUDIT_MAX_UPLOAD_BYTES=8000000
+AUDIT_MAX_TOTAL_UPLOAD_BYTES=64000000
+AUDIT_MAX_MESSAGE_BYTES=1000000
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -189,8 +189,8 @@ LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
 # FILES_KV      — OPTIONAL metadata-only KV namespace for best-effort file
 #                 dedup. Its absence no-ops to a plain direct upload; public
 #                 reference correctness never depends on it.
-# DEMO_SESSIONS — REQUIRED Durable Object namespace backing the demo session
-#                 authority. The scoped demo routes fail closed without it.
+# AUDIT_SESSIONS — REQUIRED Durable Object namespace backing the audit session
+#                 authority. The scoped audit routes fail closed without it.
 
 # ── Optional overrides ───────────────────────────────────────────────────────
 

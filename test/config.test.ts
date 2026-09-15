@@ -3,7 +3,7 @@
  * required variable read fails fast with an error naming the variable and
  * where to set it; FILES_KV alone is optional for internal dedup. Sealed public
  * file references use a required encryption key instead of KV consistency, and
- * demo configuration is fail-fast when the scoped demo route is used.
+ * audit configuration is fail-fast when the scoped audit route is used.
  *
  * Also pins the PRODUCTION configuration values in wrangler.toml `[vars]` —
  * the deployed wire contract (Brain routing, model choices) is config, so
@@ -25,17 +25,17 @@ import {
   openaiApiKey,
   tokenEncryptionSecret,
   credentialedOrigins,
-  demoActivationSigningSecret,
-  demoAuditStatusOrigins,
-  demoAuditStatusSigningSecret,
-  demoMaxMessageBytes,
-  demoMaxMessages,
-  demoMaxTotalUploadBytes,
-  demoMaxUploadBytes,
-  demoMaxUploads,
-  demoSessionAuthority,
-  demoSessionSigningSecret,
-  demoSessionTtlSeconds,
+  auditActivationSigningSecret,
+  auditStatusOrigins,
+  auditStatusSigningSecret,
+  auditMaxMessageBytes,
+  auditMaxMessages,
+  auditMaxTotalUploadBytes,
+  auditMaxUploadBytes,
+  auditMaxUploads,
+  auditSessionAuthority,
+  auditSessionSigningSecret,
+  auditSessionTtlSeconds,
   missingRequiredSecretNames,
   resolveModel,
   type Env,
@@ -57,16 +57,16 @@ describe('config accessors — present values', () => {
     expect(openaiApiKey(ENV)).toBe('test-openai-key');
     expect(tokenEncryptionSecret(ENV)).toBe(ENV.TOKEN_ENCRYPTION_SECRET);
     expect(personalizerIntegrationBridgeToken(ENV)).toBe('svc-token-256bit-opaque');
-    expect(demoActivationSigningSecret(ENV)).toBe(ENV.DEMO_ACTIVATION_SIGNING_SECRET);
-    expect(demoSessionSigningSecret(ENV)).toBe(ENV.DEMO_SESSION_SIGNING_SECRET);
-    expect(demoAuditStatusSigningSecret(ENV)).toBe(ENV.DEMO_AUDIT_STATUS_SIGNING_SECRET);
-    expect(demoAuditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
-    expect(demoSessionTtlSeconds(ENV)).toBe(1800);
-    expect(demoMaxUploads(ENV)).toBe(40);
-    expect(demoMaxMessages(ENV)).toBe(3);
-    expect(demoMaxUploadBytes(ENV)).toBe(8000000);
-    expect(demoMaxTotalUploadBytes(ENV)).toBe(64000000);
-    expect(demoMaxMessageBytes(ENV)).toBe(1000000);
+    expect(auditActivationSigningSecret(ENV)).toBe(ENV.AUDIT_ACTIVATION_SIGNING_SECRET);
+    expect(auditSessionSigningSecret(ENV)).toBe(ENV.AUDIT_SESSION_SIGNING_SECRET);
+    expect(auditStatusSigningSecret(ENV)).toBe(ENV.AUDIT_STATUS_SIGNING_SECRET);
+    expect(auditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
+    expect(auditSessionTtlSeconds(ENV)).toBe(1800);
+    expect(auditMaxUploads(ENV)).toBe(40);
+    expect(auditMaxMessages(ENV)).toBe(3);
+    expect(auditMaxUploadBytes(ENV)).toBe(8000000);
+    expect(auditMaxTotalUploadBytes(ENV)).toBe(64000000);
+    expect(auditMaxMessageBytes(ENV)).toBe(1000000);
   });
 
   it.each([
@@ -94,33 +94,33 @@ describe('config accessors — present values', () => {
     expect(resolveModel(ENV, 'frontier')).toBe(ENV.MODEL_FRONTIER);
   });
 
-  it('accepts only bare origins in DEMO_AUDIT_STATUS_ORIGINS, HTTPS off the loopback', () => {
+  it('accepts only bare origins in AUDIT_STATUS_ORIGINS, HTTPS off the loopback', () => {
     expect(
-      demoAuditStatusOrigins({
+      auditStatusOrigins({
         ...ENV,
-        DEMO_AUDIT_STATUS_ORIGINS: ' https://limespot.com , http://127.0.0.1:5173 ,, ',
+        AUDIT_STATUS_ORIGINS: ' https://limespot.com , http://127.0.0.1:5173 ,, ',
       }),
     ).toEqual(['https://limespot.com', 'http://127.0.0.1:5173']);
-    expect(() => demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: ' , ' })).toThrow(
+    expect(() => auditStatusOrigins({ ...ENV, AUDIT_STATUS_ORIGINS: ' , ' })).toThrow(
       /must list at least one callback origin/,
     );
     expect(() =>
-      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: '/studio/activate/api/status' }),
+      auditStatusOrigins({ ...ENV, AUDIT_STATUS_ORIGINS: '/studio/activate/api/status' }),
     ).toThrow(/must be an absolute origin/);
     expect(() =>
-      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: 'https://limespot.com/studio' }),
+      auditStatusOrigins({ ...ENV, AUDIT_STATUS_ORIGINS: 'https://limespot.com/studio' }),
     ).toThrow(/must be a bare scheme:\/\/host/);
     expect(() =>
-      demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: 'http://limespot.com' }),
+      auditStatusOrigins({ ...ENV, AUDIT_STATUS_ORIGINS: 'http://limespot.com' }),
     ).toThrow(/must use HTTPS/);
   });
 
   it('refuses a loopback HTTP callback origin in a production deployment', () => {
     expect(() =>
-      demoAuditStatusOrigins({
+      auditStatusOrigins({
         ...ENV,
         ENVIRONMENT: 'production',
-        DEMO_AUDIT_STATUS_ORIGINS: 'http://127.0.0.1:5173',
+        AUDIT_STATUS_ORIGINS: 'http://127.0.0.1:5173',
       }),
     ).toThrow(/must use HTTPS/);
   });
@@ -132,7 +132,7 @@ describe('config accessors — present values', () => {
       'https://limespot.com/studio',
       'http://limespot.com',
     ]) {
-      expect(() => demoAuditStatusOrigins({ ...ENV, DEMO_AUDIT_STATUS_ORIGINS: value })).toThrow(
+      expect(() => auditStatusOrigins({ ...ENV, AUDIT_STATUS_ORIGINS: value })).toThrow(
         /Set it in wrangler\.toml \[vars\] \(production\) or in \.dev\.vars/,
       );
     }
@@ -212,35 +212,33 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     );
   });
 
-  it('demo secrets require separate strong encrypted values', () => {
-    expect(() => demoActivationSigningSecret(EMPTY_ENV)).toThrow(
-      /DEMO_ACTIVATION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+  it('audit secrets require separate strong encrypted values', () => {
+    expect(() => auditActivationSigningSecret(EMPTY_ENV)).toThrow(
+      /AUDIT_ACTIVATION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
     );
-    expect(() => demoSessionSigningSecret(EMPTY_ENV)).toThrow(
-      /DEMO_SESSION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+    expect(() => auditSessionSigningSecret(EMPTY_ENV)).toThrow(
+      /AUDIT_SESSION_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
     );
-    expect(() => demoAuditStatusSigningSecret(EMPTY_ENV)).toThrow(
-      /DEMO_AUDIT_STATUS_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
+    expect(() => auditStatusSigningSecret(EMPTY_ENV)).toThrow(
+      /AUDIT_STATUS_SIGNING_SECRET.*encrypted secret.*\.dev\.vars/,
     );
-    expect(() => demoAuditStatusOrigins(EMPTY_ENV)).toThrow(
-      /DEMO_AUDIT_STATUS_ORIGINS.*wrangler\.toml/,
-    );
+    expect(() => auditStatusOrigins(EMPTY_ENV)).toThrow(/AUDIT_STATUS_ORIGINS.*wrangler\.toml/);
     expect(() =>
-      demoActivationSigningSecret({ DEMO_ACTIVATION_SIGNING_SECRET: 'too-short' }),
+      auditActivationSigningSecret({ AUDIT_ACTIVATION_SIGNING_SECRET: 'too-short' }),
     ).toThrow(/at least 32 bytes/);
   });
 
-  it('demo numeric limits and the Durable Object binding fail fast', () => {
-    expect(() => demoSessionTtlSeconds(EMPTY_ENV)).toThrow(/DEMO_SESSION_TTL_SECONDS/);
-    expect(() => demoMaxUploads({ ...ENV, DEMO_MAX_UPLOADS: '0' })).toThrow(
-      /DEMO_MAX_UPLOADS must be a positive integer/,
+  it('audit numeric limits and the Durable Object binding fail fast', () => {
+    expect(() => auditSessionTtlSeconds(EMPTY_ENV)).toThrow(/AUDIT_SESSION_TTL_SECONDS/);
+    expect(() => auditMaxUploads({ ...ENV, AUDIT_MAX_UPLOADS: '0' })).toThrow(
+      /AUDIT_MAX_UPLOADS must be a positive integer/,
     );
-    expect(() => demoMaxMessages({ ...ENV, DEMO_MAX_MESSAGES: '1.5' })).toThrow(
-      /DEMO_MAX_MESSAGES must be a positive integer/,
+    expect(() => auditMaxMessages({ ...ENV, AUDIT_MAX_MESSAGES: '1.5' })).toThrow(
+      /AUDIT_MAX_MESSAGES must be a positive integer/,
     );
-    expect(() => demoMaxTotalUploadBytes(EMPTY_ENV)).toThrow(/DEMO_MAX_TOTAL_UPLOAD_BYTES/);
-    expect(() => demoMaxMessageBytes(EMPTY_ENV)).toThrow(/DEMO_MAX_MESSAGE_BYTES/);
-    expect(() => demoSessionAuthority(EMPTY_ENV)).toThrow(/binding DEMO_SESSIONS/);
+    expect(() => auditMaxTotalUploadBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_TOTAL_UPLOAD_BYTES/);
+    expect(() => auditMaxMessageBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_MESSAGE_BYTES/);
+    expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
   });
 
   it('credentialedOrigins names CREDENTIALED_ORIGINS', () => {
@@ -494,16 +492,27 @@ describe('production [vars] — the deployed configuration values', () => {
   });
 
   it('allowlists only the limespot.com origin for signed status callbacks', () => {
-    expect(productionVars()).toContain('DEMO_AUDIT_STATUS_ORIGINS = "https://limespot.com"');
+    expect(productionVars()).toContain('AUDIT_STATUS_ORIGINS = "https://limespot.com"');
   });
 
-  it('binds the strongly consistent demo-session authority with its migration', () => {
+  it('binds the strongly consistent audit-session authority with its migration', () => {
     const manifest = Object.values(wranglerFiles)[0] ?? '';
-    expect(manifest).toContain('name = "DEMO_SESSIONS"');
-    expect(manifest).toContain('class_name = "DemoSessionAuthority"');
-    expect(manifest).toContain('new_sqlite_classes = ["DemoSessionAuthority"]');
+    expect(manifest).toContain('name = "AUDIT_SESSIONS"');
+    expect(manifest).toContain('class_name = "AuditSessionAuthority"');
     expect(manifest).not.toMatch(/^new_classes\s*=/m);
-    expect(manifest).not.toContain('DEMO_SESSIONS_KV');
+    expect(manifest).not.toContain('AUDIT_SESSIONS_KV');
+  });
+
+  it('keeps the applied migration ledger intact and renames the class through it', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    const creation = manifest.indexOf('tag = "demo-sessions-v1"');
+    const rename = manifest.indexOf('tag = "audit-sessions-v2"');
+    expect(creation).toBeGreaterThan(-1);
+    expect(manifest).toContain('new_sqlite_classes = ["DemoSessionAuthority"]');
+    expect(rename).toBeGreaterThan(creation);
+    expect(manifest).toContain(
+      'renamed_classes = [{ from = "DemoSessionAuthority", to = "AuditSessionAuthority" }]',
+    );
   });
 
   it('declares every required variable except the secrets (encrypted, dashboard-managed)', () => {
@@ -525,22 +534,22 @@ describe('production [vars] — the deployed configuration values', () => {
       'LOG_TARGETS_ERROR',
       'LOG_TARGETS_FATAL',
       'LOG_SEQ_INGEST_URL',
-      'DEMO_AUDIT_STATUS_ORIGINS',
-      'DEMO_SESSION_TTL_SECONDS',
-      'DEMO_MAX_UPLOADS',
-      'DEMO_MAX_MESSAGES',
-      'DEMO_MAX_UPLOAD_BYTES',
-      'DEMO_MAX_TOTAL_UPLOAD_BYTES',
-      'DEMO_MAX_MESSAGE_BYTES',
+      'AUDIT_STATUS_ORIGINS',
+      'AUDIT_SESSION_TTL_SECONDS',
+      'AUDIT_MAX_UPLOADS',
+      'AUDIT_MAX_MESSAGES',
+      'AUDIT_MAX_UPLOAD_BYTES',
+      'AUDIT_MAX_TOTAL_UPLOAD_BYTES',
+      'AUDIT_MAX_MESSAGE_BYTES',
     ]) {
       expect(vars).toContain(`${name} = `);
     }
     expect(vars).not.toContain('CLAUDE_API_KEY');
     expect(vars).not.toContain('OPENAI_API_KEY');
     expect(vars).not.toContain('PERSONALIZER_INTEGRATION_BRIDGE_TOKEN');
-    expect(vars).not.toContain('DEMO_ACTIVATION_SIGNING_SECRET');
-    expect(vars).not.toContain('DEMO_SESSION_SIGNING_SECRET');
-    expect(vars).not.toContain('DEMO_AUDIT_STATUS_SIGNING_SECRET');
+    expect(vars).not.toContain('AUDIT_ACTIVATION_SIGNING_SECRET');
+    expect(vars).not.toContain('AUDIT_SESSION_SIGNING_SECRET');
+    expect(vars).not.toContain('AUDIT_STATUS_SIGNING_SECRET');
     expect(vars).not.toContain('TOKEN_ENCRYPTION_SECRET');
     // Derived, so a secret added to src/config.ts cannot quietly appear in [vars].
     for (const secret of declaredSecretNames()) {
