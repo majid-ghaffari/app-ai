@@ -100,7 +100,7 @@ export async function exchangeAuditActivation(
 ): Promise<AuditSessionExchange> {
   const activation = await verifyToken(activationToken, auditActivationSigningSecret(env));
   if (!isActivationClaims(activation)) {
-    throw unauthorized('The activation token is not valid for an audit exchange.');
+    throw unauthorized('The activation token is not valid for a grader exchange.');
   }
   assertTemporalClaims(activation.issuedAt, activation.expiresAt);
   if (activation.expiresAt - activation.issuedAt > MAX_ACTIVATION_LIFETIME_SECONDS) {
@@ -159,7 +159,7 @@ export async function authorizeAuditRequest(
     match[1].slice(AUDIT_TOKEN_PREFIX.length),
     auditSessionSigningSecret(env),
   );
-  if (!isAuditSessionClaims(claims)) throw unauthorized('The audit session token is invalid.');
+  if (!isAuditSessionClaims(claims)) throw unauthorized('The grader session token is invalid.');
   assertTemporalClaims(claims.issuedAt, claims.expiresAt);
   assertRequestStoreOrigin(request, claims.storeOrigin);
 
@@ -188,31 +188,31 @@ export async function authorizeAuditRequest(
         (prompt) => typeof prompt !== 'string' || !ALLOWED_AUDIT_UPLOAD_PROMPTS.has(prompt),
       )
     ) {
-      throw forbidden('This upload destination is not available to audit sessions.');
+      throw forbidden('This upload destination is not available to grader sessions.');
     }
     const file = files[0] as File | string | undefined;
     if (files.length !== 1 || !file || typeof file === 'string') {
-      throw invalidArgument('An audit upload must contain one file.');
+      throw invalidArgument('A grader upload must contain one file.');
     }
     if (file.size > auditMaxUploadBytes(env)) {
-      throw quotaExceeded('The audit file is larger than the allowed upload size.');
+      throw quotaExceeded('The grader file is larger than the allowed upload size.');
     }
     uploadBytes = file.size;
   } else {
     kind = 'message';
     const prompt = request.headers.get('X-Personalizer-System-Prompt');
     if (!prompt || !ALLOWED_AUDIT_INFERENCE_PROMPTS.has(prompt)) {
-      throw forbidden('This system prompt is not available to audit sessions.');
+      throw forbidden('This system prompt is not available to grader sessions.');
     }
     const bytes = new Uint8Array(await request.clone().arrayBuffer());
     if (bytes.byteLength > auditMaxMessageBytes(env)) {
-      throw quotaExceeded('The audit inference request is larger than the allowed size.');
+      throw quotaExceeded('The grader inference request is larger than the allowed size.');
     }
     let body: unknown;
     try {
       body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
     } catch {
-      throw invalidArgument('The audit inference request body must be valid JSON.');
+      throw invalidArgument('The grader inference request body must be valid JSON.');
     }
     referencedFileIdentifiers = validateAuditMessage(body);
   }
@@ -253,7 +253,7 @@ export async function finalizeAuditUsage(
         undefined,
         env,
       );
-      throw new WorkerError('A successful audit upload returned no file identifier.', {
+      throw new WorkerError('A successful grader upload returned no file identifier.', {
         status: 502,
         exceptionType: 'InvalidUpstreamResponseException',
       });
@@ -293,11 +293,11 @@ async function signToken(claims: object, secret: string): Promise<string> {
 
 async function verifyToken(token: string, secret: string): Promise<unknown> {
   if (token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
-    throw unauthorized('The audit token is malformed.');
+    throw unauthorized('The grader token is malformed.');
   }
   const parts = token.split('.');
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
-    throw unauthorized('The audit token is malformed.');
+    throw unauthorized('The grader token is malformed.');
   }
   let headerBytes: Uint8Array;
   let payloadBytes: Uint8Array;
@@ -307,20 +307,20 @@ async function verifyToken(token: string, secret: string): Promise<unknown> {
     payloadBytes = base64UrlDecode(parts[1]);
     actual = base64UrlDecode(parts[2]);
   } catch {
-    throw unauthorized('The audit token encoding is invalid.');
+    throw unauthorized('The grader token encoding is invalid.');
   }
   const unsigned = `${parts[0]}.${parts[1]}`;
   const expected = await hmac(unsigned, secret);
   if (!constantTimeEqual(expected, actual)) {
-    throw unauthorized('The audit token signature is invalid.');
+    throw unauthorized('The grader token signature is invalid.');
   }
   try {
     const header = JSON.parse(new TextDecoder().decode(headerBytes)) as unknown;
-    if (!matchesTokenHeader(header)) throw unauthorized('The audit token header is invalid.');
+    if (!matchesTokenHeader(header)) throw unauthorized('The grader token header is invalid.');
     return JSON.parse(new TextDecoder().decode(payloadBytes)) as unknown;
   } catch (error) {
     if (error instanceof WorkerError) throw error;
-    throw unauthorized('The audit token payload is invalid.');
+    throw unauthorized('The grader token payload is invalid.');
   }
 }
 
@@ -463,11 +463,11 @@ function isAttemptLimit(value: unknown): value is 2 | null {
 function validateAuditMessage(value: unknown): string[] {
   const body = asRecord(value);
   if (!body || !Array.isArray(body.messages) || body.messages.length !== 1) {
-    throw invalidArgument('An audit inference must contain exactly one user message.');
+    throw invalidArgument('A grader inference must contain exactly one user message.');
   }
   const message = asRecord(body.messages[0]);
   if (!message || message.role !== 'user' || !Array.isArray(message.content)) {
-    throw invalidArgument('An audit inference must contain exactly one structured user message.');
+    throw invalidArgument('A grader inference must contain exactly one structured user message.');
   }
   const fileIdentifiers: string[] = [];
   for (const rawBlock of message.content) {
@@ -526,14 +526,14 @@ function normalizeStoreOrigin(storeUrl: string): string {
 function assertRequestStoreOrigin(request: Request, storeOrigin: string): void {
   const claimedOrigin = request.headers.get('X-LimeSpot-Audit-Store-Origin');
   if (claimedOrigin !== storeOrigin) {
-    throw forbidden('The audit request does not match its activated storefront origin.');
+    throw forbidden('The grader request does not match its activated storefront origin.');
   }
 }
 
 function assertTemporalClaims(issuedAt: number, expiresAt: number): void {
   const now = epochSeconds();
   if (issuedAt > now || expiresAt <= issuedAt || expiresAt <= now) {
-    throw unauthorized('The audit token or session timing is invalid.');
+    throw unauthorized('The grader token or session timing is invalid.');
   }
 }
 

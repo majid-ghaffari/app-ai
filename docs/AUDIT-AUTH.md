@@ -42,7 +42,7 @@ Payload for a public, one-store activation:
     "type": "store-origin",
     "storeOrigin": "https://merchant.example"
   },
-  "statusCallbackUrl": "https://limespot.com/studio/activate/api/status",
+  "statusCallbackUrl": "https://limespot.com/extension/activate/api/status",
   "issuedAt": 1787270400,
   "expiresAt": 1787271000
 }
@@ -62,7 +62,7 @@ Payload for LimeSpot's sales/audit staff:
   "email": "<staff mailbox on the entitling domain>",
   "emailVerified": true,
   "entitlement": { "type": "limespot-staff-multi-store" },
-  "statusCallbackUrl": "https://limespot.com/studio/activate/api/status",
+  "statusCallbackUrl": "https://limespot.com/extension/activate/api/status",
   "issuedAt": 1787270400,
   "expiresAt": 1787271000
 }
@@ -198,7 +198,7 @@ already stored on a live session — it governs the next exchange, not the sessi
 The exact callback is:
 
 ```text
-POST <the activation's statusCallbackUrl, for example https://limespot.com/studio/activate/api/status>
+POST <the activation's statusCallbackUrl, for example https://limespot.com/extension/activate/api/status>
 Content-Type: application/json
 X-LimeSpot-Audit-Timestamp: <current integer epoch second>
 X-LimeSpot-Audit-Signature: v1=<base64url HMAC-SHA256(secret, timestamp + "." + rawBody)>

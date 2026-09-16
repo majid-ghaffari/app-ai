@@ -473,7 +473,7 @@ function validateRulesetVersion(
   const header = request.headers.get('X-Personalizer-Ruleset-Version');
   if (header == null) {
     if (requireHeader) {
-      throw new WorkerError('The audit request is missing its onboarding ruleset version.', {
+      throw new WorkerError('The grader request is missing its onboarding ruleset version.', {
         status: 409,
         exceptionType: 'RulesetVersionMismatchException',
         messageDetail: `X-Personalizer-Ruleset-Version is required; server expects '${entry.rulesetVersion}'`,

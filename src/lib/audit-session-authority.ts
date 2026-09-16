@@ -110,14 +110,14 @@ export async function createAuditAuthoritySession(
     });
   }
   if (response.status === 423) {
-    throw new WorkerError('This audit already has an active browser session.', {
+    throw new WorkerError('This grader already has an active browser session.', {
       status: 409,
       exceptionType: 'AuditSessionActiveException',
     });
   }
-  if (response.status === 429) throw quotaError('This public audit has no attempts remaining.');
+  if (response.status === 429) throw quotaError('This public grader has no attempts remaining.');
   if (response.status === 403) {
-    throw new WorkerError('The audit identity does not match its existing authority.', {
+    throw new WorkerError('The grader identity does not match its existing authority.', {
       status: 403,
       exceptionType: 'AuditScopeException',
     });
@@ -135,21 +135,21 @@ export async function reserveAuditAuthorityRequest(
     internalRequest(input.storeOrigin, '/reserve', { ...input, reservationIdentifier }),
   );
   if (response.status === 401) {
-    throw auditAuthorizationError('The audit session is missing, expired, or no longer valid.');
+    throw auditAuthorizationError('The grader session is missing, expired, or no longer valid.');
   }
   if (response.status === 403) {
-    throw new WorkerError('The inference request references a file outside this audit session.', {
+    throw new WorkerError('The inference request references a file outside this grader session.', {
       status: 403,
       exceptionType: 'AuditScopeException',
     });
   }
   if (response.status === 409) {
-    throw new WorkerError('Another audit attempt is already in progress.', {
+    throw new WorkerError('Another grader attempt is already in progress.', {
       status: 409,
       exceptionType: 'AuditAttemptInProgressException',
     });
   }
-  if (response.status === 429) throw quotaError('The audit session quota has been reached.');
+  if (response.status === 429) throw quotaError('The grader session quota has been reached.');
   assertAuthoritySuccess(response);
   return {
     auditIdentifier: input.auditIdentifier,
@@ -481,7 +481,7 @@ function matchesSession(session: SessionRecord, input: ReserveInput): boolean {
 
 function assertAuthoritySuccess(response: Response): void {
   if (response.ok) return;
-  throw new WorkerError('The audit-session authority rejected the request.', {
+  throw new WorkerError('The grader-session authority rejected the request.', {
     status: 500,
     exceptionType: 'AuditSessionAuthorityException',
     messageDetail: `Internal authority status ${response.status}`,

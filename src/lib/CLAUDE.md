@@ -39,3 +39,8 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   credentials, query, or fragment whose origin is in `AUDIT_STATUS_ORIGINS`
   reaches the outbox, so a leaked website signing key cannot aim it at a host of
   its own choosing.
+- `audit` is the technical name at every layer — the `/audit/session/exchange`
+  route, the `X-LimeSpot-Audit-*` headers, the `AUDIT_*` bindings, the
+  `ls_audit_` bearer, the `AuditSessionAuthority` Durable Object, and these file
+  names. The human-readable text of an error body names the feature `grader`,
+  because a person reads it.
