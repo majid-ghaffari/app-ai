@@ -205,6 +205,18 @@ describe('prompts module', () => {
     expect(entry.prompt).toMatch(/one to three short paragraphs/);
   });
 
+  it('pins the merchant-facing assistant and platform names', () => {
+    const chat = getSystemPrompt('chat', ENV).prompt;
+    const onboardingChat = getSystemPrompt('onboarding-chat', ENV).prompt;
+    const billing = getSystemPrompt('billing-assistant', ENV).prompt;
+    const prompts = [chat, onboardingChat, billing].join('\n');
+
+    expect(chat).toMatch(/^You are the LimeSpot Assistant\./);
+    expect(onboardingChat).toMatch(/^You are the LimeSpot Assistant\./);
+    expect(billing).toMatch(/rest of LimeSpot Growth Agents after activation/);
+    expect(prompts).not.toMatch(/LimeSpot Studio AI assistant|rest of LimeSpot Studio/);
+  });
+
   it('throws on an unknown prompt name', () => {
     expect(() => getSystemPrompt('nope', ENV)).toThrow('System prompt not found: nope');
   });

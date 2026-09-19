@@ -4,7 +4,9 @@
 
 `billing-assistant` powers a conversation inside LimeSpot subscription experiences. It
 answers concise questions about the plan currently displayed to the merchant without exposing tools
-or changing account state.
+or changing account state. An unrelated question is redirected to the rest of LimeSpot Growth
+Agents after activation; Studio names only the on-storefront editor and is not the surrounding
+platform.
 
 ## Runtime contract
 
@@ -42,4 +44,4 @@ override the system rules.
 ## Verification
 
 `test/chat.test.ts` pins the registry metadata and the prompt's grounding, no-secrets, no-mutation,
-and concise-output requirements.
+concise-output requirements, Growth Agents handoff, and absence of the retired product names.

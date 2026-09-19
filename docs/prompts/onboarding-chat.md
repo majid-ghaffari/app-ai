@@ -102,4 +102,6 @@ The client-tool wiring is pinned by `test/chat.test.ts` → _"onboarding-chat cl
 - emits a `tool_call` SSE event and NO `tool_result` (the worker never executes the tool);
 - makes exactly ONE Anthropic fetch and NO Brain `/v2/ai-tools/` call.
 
+The _"pins the merchant-facing assistant and platform names"_ case freezes this prompt's `LimeSpot Assistant` identity and rejects the retired product names.
+
 There is no separate output-JSON schema pin — the reply is prose + an optional directive envelope, not a fixed JSON object, so directive shapes are enforced by the prompt text and the lib-side executor, not a snapshot.

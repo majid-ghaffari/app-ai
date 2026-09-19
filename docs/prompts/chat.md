@@ -99,6 +99,7 @@ The prompt's contract is pinned by [`test/chat.test.ts`](../../test/chat.test.ts
 - _"chat prompt reasons over currentExperience grounding"_ — the system text names `currentExperience` and `itemsPerPage`.
 - _"chat prompt documents the setAppearance directive + its whitelist"_ — asserts `setAppearance`, the `page` / `patch` arg shape, the "2-up" mapping, and the whitelisted patch keys (`Style`, `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`) — which must agree with the lib-side contract.
 - _"chat prompt documents the toggleBox directive"_ — asserts `toggleBox`, the `box` / `on` arg shape, add/remove intent, and box-type keys (`BoughtTogether`, `RecentViews`) that agree with lib's `ONBOARDING_BOX_TO_BRAIN`.
+- _"pins the merchant-facing assistant and platform names"_ — freezes this prompt's `LimeSpot Assistant` identity and rejects the retired product names.
 - The `tool definitions` block pins the frozen five-tool order (`get_store_analytics`, `list_segments`, `list_campaigns`, `get_store_config`, `get_entity_context`) and `get_entity_context`'s `input_schema`, plus the full `/chat` agent-loop + SSE behavior these tools drive.
 
 The registry resolution (`studio-data-agent`, `usesTools: true`, frontier profile, non-empty prompt) is covered alongside the other registered prompts. There is no output-JSON schema snapshot — the reply is prose + an optional directive envelope, so directive shapes are enforced by the prompt text and the lib-side executor, not a fixed JSON object.
