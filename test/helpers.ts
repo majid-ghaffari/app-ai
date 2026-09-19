@@ -9,6 +9,12 @@ import * as anthropic from '../src/inference/adapters/anthropic-wire';
 import { fileTenantScope, mintOpaqueFileReference } from '../src/inference/file-references';
 import type { Env } from '../src/config';
 
+const auditSessionFetch = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
+const auditSessionNamespace = {
+  idFromName: vi.fn().mockReturnValue({}),
+  get: vi.fn().mockReturnValue({ fetch: auditSessionFetch }),
+} as unknown as DurableObjectNamespace;
+
 /** A complete Env fixture — all required config variables set. */
 export const ENV: Env = {
   ENVIRONMENT: 'test',
@@ -35,6 +41,12 @@ export const ENV: Env = {
   MODEL_FAST: 'claude-haiku-4-5',
   MODEL_BALANCED: 'claude-sonnet-5',
   MODEL_FRONTIER: 'claude-opus-4-8',
+  MODEL_OVERRIDES: 'free-render-verification=@cf/qwen/qwen3.8-27b',
+  FREE_VISUAL_VERIFY_ENABLED: 'true',
+  FREE_VISUAL_VERIFY_DAILY_LIMIT: '8',
+  INFERENCE_QUOTA_INTERNAL_ORIGIN: 'https://inference-quota.internal',
+  AI: { run: vi.fn() },
+  AUDIT_SESSIONS: auditSessionNamespace,
   AUDIT_ACTIVATION_SIGNING_SECRET: 'test-activation-signing-secret-with-32-bytes',
   AUDIT_SESSION_SIGNING_SECRET: 'test-session-signing-secret-distinct-32-bytes',
   AUDIT_STATUS_SIGNING_SECRET: 'test-audit-status-signing-secret-distinct-32-bytes',

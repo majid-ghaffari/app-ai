@@ -54,6 +54,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Every transport error, abort, timeout, HTTP failure, and invalid response is
   normalized as `InferenceFailure` before leaving an adapter.
 - Production code remains dependency-free and uses Web `fetch` plus local types.
+- The Cloudflare adapter accepts one inline image, emits Qwen's OpenAI-compatible
+  multimodal message shape, disables thinking, propagates request cancellation,
+  enforces the documented text/token/PNG byte-and-dimension free-allocation bounds,
+  reserves the protected daily quota only after validation, and reads raw binding
+  responses so provider status and error codes survive normalization.
 - Paid local/test provider calls require the explicit channel opt-in documented
   in the root and `docs/TESTING.md`.
 - OpenAI is factory-selectable for deterministic adapter tests and the explicit
@@ -111,3 +116,9 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Gemini reports a cache hit INSIDE `promptTokenCount`, the opposite of
   Anthropic's disjoint accounting, so `cachedInputTokens` is a subset of
   `inputTokens` for this provider.
+- Cloudflare Workers AI serves only the protected visual-verification group, which
+  fails closed unless it resolves to exact model `@cf/qwen/qwen3.8-27b`. Its adapter accepts one inline base64 image plus text, performs one
+  non-streaming binding call, and returns the existing canonical result. It has
+  no tools, continuation, direct uploads, streaming, or reasoning controls. Its
+  inline image uses the documented data URI and provider failures preserve their
+  HTTP status and internal code; only 408, 429, and transport failures are retryable.

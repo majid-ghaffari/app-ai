@@ -12,7 +12,7 @@
  * (`src/inference/model-catalog.ts`). Naming one whose adapter is absent fails
  * at adapter selection, before provider I/O.
  */
-export type ProviderName = 'anthropic' | 'openai' | 'gemini';
+export type ProviderName = 'anthropic' | 'openai' | 'gemini' | 'cloudflare';
 
 /** Production providers and local development fulfillers that can produce results. */
 export type InferenceBackendName = ProviderName | 'claude-code' | 'codex';
@@ -21,7 +21,8 @@ export type InferenceBackendName = ProviderName | 'claude-code' | 'codex';
 export type ProviderApiFamily =
   | 'anthropic-messages'
   | 'openai-responses'
-  | 'gemini-generate-content';
+  | 'gemini-generate-content'
+  | 'cloudflare-workers-ai';
 
 /** Provider-neutral output effort requested by a prompt contract. */
 export type SemanticEffort = 'low' | 'medium' | 'high' | 'xhigh';

@@ -17,6 +17,7 @@ import {
 } from '../config';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { WorkerError } from './responses';
+import { reserveFreeVisualVerificationSlot } from './inference-quota-authority';
 
 const SESSION_STORAGE_KEY = 'session';
 const CALLBACK_RETRY_MILLISECONDS = 60_000;
@@ -73,6 +74,10 @@ interface FinalizeInput {
   readonly reservationIdentifier: string;
   readonly succeeded: boolean;
   readonly fileIdentifier?: string;
+}
+
+interface FreeVisualVerificationReserveInput {
+  readonly limit: number;
 }
 
 /** Data required to create one atomic audit-session record. */
@@ -191,6 +196,11 @@ export class AuditSessionAuthority implements DurableObject {
     if (path === '/exchange') return this.exchange(await readInput<ExchangeInput>(request));
     if (path === '/reserve') return this.reserve(await readInput<ReserveInput>(request));
     if (path === '/finalize') return this.finalize(await readInput<FinalizeInput>(request));
+    if (path === '/reserve-free-visual-verification') {
+      return this.reserveFreeVisualVerification(
+        await readInput<FreeVisualVerificationReserveInput>(request),
+      );
+    }
     return internalResponse(404);
   }
 
@@ -312,6 +322,14 @@ export class AuditSessionAuthority implements DurableObject {
       await this.scheduleAlarm();
     }
     return internalResponse(status);
+  }
+
+  private async reserveFreeVisualVerification(
+    input: FreeVisualVerificationReserveInput,
+  ): Promise<Response> {
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0) return internalResponse(400);
+    const accepted = await reserveFreeVisualVerificationSlot(this.state.storage, input.limit);
+    return internalResponse(accepted ? 201 : 429);
   }
 
   private async finalize(input: FinalizeInput): Promise<Response> {

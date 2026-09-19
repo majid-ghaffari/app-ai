@@ -89,12 +89,13 @@ describe('GET /prompts — master gate', () => {
     expect(body.prompts.map((prompt) => prompt.name)).toEqual([...listPromptNames()]);
     for (const prompt of body.prompts) {
       expect(prompt.valid, `${prompt.name}: ${prompt.error ?? ''}`).toBe(true);
-      expect(prompt.provider).toBe('anthropic');
-      expect(prompt.apiFamily).toBe('anthropic-messages');
-      expect(prompt.filePolicy).toBe('anthropic-provider-files');
+      const free = prompt.name === 'visual-verify-free';
+      expect(prompt.provider).toBe(free ? 'cloudflare' : 'anthropic');
+      expect(prompt.apiFamily).toBe(free ? 'cloudflare-workers-ai' : 'anthropic-messages');
+      expect(prompt.filePolicy).toBe(free ? 'cloudflare-inline' : 'anthropic-provider-files');
       expect(['fast', 'balanced', 'frontier']).toContain(prompt.tier);
       expect(prompt.requirements.length).toBeGreaterThan(0);
-      expect(prompt.inlineCacheBreakpoints).toBe(true);
+      expect(prompt.inlineCacheBreakpoints).toBe(!free);
       expect(prompt.error).toBeUndefined();
     }
     const placement = body.prompts.find((prompt) => prompt.name === 'placement');

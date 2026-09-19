@@ -642,9 +642,11 @@ registered `/messages` and `/chat` use the canonical service. Absent/unknown
 `/messages` selectors retain a bounded raw Anthropic compatibility path inside
 the Anthropic adapter so the external envelope stays unchanged.
 
-The configured tier bindings resolve every group to Anthropic. The adapter
-fixture matrix and architecture fitness tests pin the boundary, so another
-provider is a configuration change rather than a change to the seam.
+The configured tier bindings resolve ordinary groups to Anthropic. The protected
+`free-render-verification` group alone resolves to the exact bounded Cloudflare
+Workers AI model. The adapter fixture matrix and architecture fitness tests pin
+the boundary, so another provider is a configuration change rather than a change
+to the seam.
 
 The canonical custom-tool contract preserves strict execution and current
 provider-neutral controls while provider-hosted tools carry adapter-owned opaque

@@ -1,6 +1,6 @@
 # App AI Service
 
-Cloudflare Worker that provides context-validated, prompt-grouped inference for LimeSpot applications. Production routes currently use Anthropic; OpenAI Responses and Gemini `generateContent` adapters are implemented as dormant candidates pending evaluations.
+Cloudflare Worker that provides context-validated, prompt-grouped inference for LimeSpot applications. Production routes use Anthropic except the protected-CI visual judge, which uses the configured Cloudflare Workers AI vision binding within its free daily allocation. OpenAI Responses and Gemini `generateContent` adapters are implemented as dormant candidates pending evaluations.
 
 ## Quick Start
 
@@ -331,14 +331,14 @@ maps each name to its text and metadata (`SystemPromptEntry` in that file is the
 the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-The registry holds 21 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
+The registry holds 22 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
 onboarding-chat, placement, proposals, analytics-insights) and `/messages` one-shot JSON prompts
-(image-selection, visual-verify, the four Website-Analysis probes, and the onboarding /
+(image-selection, visual-verify, visual-verify-free, the four Website-Analysis probes, and the onboarding /
 cart-drawer / optimize propose + review passes). The authoritative inventory — every prompt with
 its shape, endpoint, tools, and role — is [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), which
 also owns the per-prompt doc-sync rule.
 
-**Prompt-text shapes** — a prompt is one of three shapes, all resolving to the same registry
+**Prompt-text shapes** — a prompt is one of four shapes, all resolving to the same registry
 entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md)):
 
 - **Simple** → one file `src/prompts/<name>.md` (e.g. `chat.md`).
@@ -351,15 +351,19 @@ entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE
   `src/prompts/onboarding-shared/` (the onboarding / cart-drawer / optimize propose + review
   prompts). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
   text; elsewhere a `_*.md` is the co-located exclusion convention (never imported).
+- **Shared-text alias** → an explicit barrel export reuses another registered prompt's final text
+  when the semantic contract is identical but routing or access is intentionally different.
+  `visual-verify-free` is the only alias and keeps its own maintenance doc.
 
 The barrel `src/prompts/index.ts` re-exports every prompt's final text; `src/prompt-registry.ts`
 imports it as `prompts` and pairs each with its metadata. Per-prompt design docs live at
 [docs/prompts/<name>.md](docs/prompts/) (workflow: [docs/PROMPT-AUTHORING.md](docs/PROMPT-AUTHORING.md)).
 
 To change a prompt's wording: edit its `.md` file(s) under `src/prompts/` — pure text.
-To add a prompt: create `src/prompts/<name>.md` (simple), or a `src/prompts/<name>/` folder
-(multi-file, or composed from `_`-block files with its own `index.ts`), re-export its text from
-the `src/prompts/index.ts` barrel, and add a registry entry in `src/prompt-registry.ts`.
+To add a prompt: create `src/prompts/<name>.md` (simple), a `src/prompts/<name>/` folder
+(multi-file, or composed from `_`-block files with its own `index.ts`), or an explicit shared-text
+barrel alias; export its text from `src/prompts/index.ts` and add a registry entry in
+`src/prompt-registry.ts`.
 To change a prompt's model / token budget / whether it uses tools: edit the metadata in
 `src/prompt-registry.ts`.
 
@@ -462,10 +466,16 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
      `PERSONALIZER_INTEGRATION_BRIDGE_TOKEN`, `TOKEN_ENCRYPTION_SECRET` (32 random bytes
      encoded as base64), `AUDIT_ACTIVATION_SIGNING_SECRET`,
      `AUDIT_SESSION_SIGNING_SECRET`, and `AUDIT_STATUS_SIGNING_SECRET`
+5. Deploy the Brain `CanAdministerAllSubscribers` validation response first, then deploy this
+   worker and make one authenticated `visual-verify-free` request. The live-store workflow is not
+   pointed at the route until that smoke returns a parseable `{ pass, reason, fix }` verdict from
+   `@cf/qwen/qwen3.8-27b`.
 
 Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it
 returns 503 from `/health` instead of claiming to be healthy as `buildRev: "dev"`.
+Production health also requires the Workers AI binding, the protected-route kill switch, and the
+strongly consistent daily-quota authority.
 
 ### Manual deployment — operator only
 

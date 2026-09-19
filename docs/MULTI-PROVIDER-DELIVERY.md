@@ -126,15 +126,25 @@ is unavailable and fails explicitly.
 
 ## Providers
 
-| Provider           | Status                        | What it is used for                                                                        |
-| ------------------ | ----------------------------- | ------------------------------------------------------------------------------------------ |
-| Anthropic Messages | Serves every production route | The registry's configured tier bindings all resolve to Anthropic model families.           |
-| OpenAI Responses   | Adapter present, unrouted     | Deterministic adapter contract tests and the explicit paid smoke matrix.                   |
-| Gemini             | Adapter present, unrouted     | Deterministic adapter contract tests and the double-opt-in paid probe matrix.              |
-| Claude Code, Codex | Local development only        | The free local fulfillers behind the dev shim; never bundled, never reached in production. |
+| Provider              | Status                      | What it is used for                                                                          |
+| --------------------- | --------------------------- | -------------------------------------------------------------------------------------------- |
+| Anthropic Messages    | Primary production provider | Every production prompt except the protected-CI visual judge resolves to Anthropic.          |
+| Cloudflare Workers AI | Protected visual judge      | One inline-image, non-streaming route used by protected CI within the daily free allocation. |
+| OpenAI Responses      | Adapter present, unrouted   | Deterministic adapter contract tests and the explicit paid smoke matrix.                     |
+| Gemini                | Adapter present, unrouted   | Deterministic adapter contract tests and the double-opt-in paid probe matrix.                |
+| Claude Code, Codex    | Local development only      | The free local fulfillers behind the dev shim; never bundled, never reached in production.   |
 
 An unrouted adapter is reachable only by configuring a model in its family. Doing so is a
 deliberate act with the conditions below attached to it.
+
+The Workers AI route is isolated in `free-render-verification`: it shares prompt text and the
+public `/messages` envelope with `visual-verify`, but it accepts exactly one inline image and no
+provider-file reference, tools, continuation, or streaming. Its request path and production health
+fail closed unless the route resolves to exact model `@cf/qwen/qwen3.8-27b` through the Cloudflare
+family and has the `AI` binding. Brain must prove the caller holds `AdministerAllSubscribers`, and a separately
+addressed instance of the existing Durable Object authority reserves one of the configured UTC-day
+calls before inference. The deployment kill switch is required; the license-free Qwen vision model
+still receives one authenticated live smoke before lib targets the route.
 
 Anthropic Messages is the parity reference: streaming, files, attachments, server/client tools,
 prompt caching, effort, token estimates, usage, errors, and the handler responses are defined by its

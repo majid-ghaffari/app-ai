@@ -31,6 +31,12 @@ import type {
 } from '../src/lib/inference-types';
 import { CORS, ENV, kvMock, stubFetch } from './helpers';
 
+const promptDocs = import.meta.glob('../docs/prompts/*.md', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+});
+
 afterEach(() => vi.restoreAllMocks());
 
 const EXPECTED_GROUPS: Readonly<Record<PromptGroupName, readonly PromptName[]>> = {
@@ -52,6 +58,7 @@ const EXPECTED_GROUPS: Readonly<Record<PromptGroupName, readonly PromptName[]>> 
   'onboarding-qc-gate': ['onboarding-review-gate-all'],
   'cartdrawer-visual': ['cartdrawer-batch-all', 'cartdrawer-review-all'],
   'render-verification': ['visual-verify'],
+  'free-render-verification': ['visual-verify-free'],
   'website-analysis-visual': ['probe-cart-wiring', 'probe-style', 'probe-template'],
   'website-industry': ['probe-industry'],
   'analytics-narrative': ['analytics-insights'],
@@ -128,6 +135,13 @@ const EXPECTED_FALLBACK_EDGES = [
 ] as const;
 
 describe('prompt registry groups and routes', () => {
+  it('keeps one maintenance document per registered prompt', () => {
+    const missing = listPromptNames().filter(
+      (name) => !Object.keys(promptDocs).some((path) => path.endsWith(`/docs/prompts/${name}.md`)),
+    );
+    expect(missing).toEqual([]);
+  });
+
   it('covers the approved prompt inventory exactly once', () => {
     const expectedNames = Object.values(EXPECTED_GROUPS).flat();
     expect(listPromptNames()).toHaveLength(expectedNames.length);
@@ -149,21 +163,28 @@ describe('prompt registry groups and routes', () => {
     for (const groupName of listPromptGroups()) {
       const group = getPromptGroupDefinition(groupName);
       const { profile, policy: filePolicy } = getGroupModelRoute(groupName, ENV);
-      expect(profile.model).toBe(
-        { fast: ENV.MODEL_FAST, balanced: ENV.MODEL_BALANCED, frontier: ENV.MODEL_FRONTIER }[
-          group.tier
-        ],
-      );
-      expect(profile.provider).toBe('anthropic');
-      expect(profile.apiFamily).toBe('anthropic-messages');
-      expect(filePolicy).toEqual({
-        name: 'anthropic-provider-files',
-        provider: 'anthropic',
-        compatibleApiFamilies: ['anthropic-messages'],
-        inputMode: 'provider-file',
-        lifecycle: 'provider-managed',
-        purpose: null,
-      });
+      if (groupName === 'free-render-verification') {
+        expect(profile.model).toBe('@cf/qwen/qwen3.8-27b');
+        expect(profile.provider).toBe('cloudflare');
+        expect(profile.apiFamily).toBe('cloudflare-workers-ai');
+        expect(filePolicy.name).toBe('cloudflare-inline');
+      } else {
+        expect(profile.model).toBe(
+          { fast: ENV.MODEL_FAST, balanced: ENV.MODEL_BALANCED, frontier: ENV.MODEL_FRONTIER }[
+            group.tier
+          ],
+        );
+        expect(profile.provider).toBe('anthropic');
+        expect(profile.apiFamily).toBe('anthropic-messages');
+        expect(filePolicy).toEqual({
+          name: 'anthropic-provider-files',
+          provider: 'anthropic',
+          compatibleApiFamilies: ['anthropic-messages'],
+          inputMode: 'provider-file',
+          lifecycle: 'provider-managed',
+          purpose: null,
+        });
+      }
       for (const requirement of group.requirements) {
         expect(profile.capabilities[requirement], `${groupName} requires ${requirement}`).toBe(
           true,

@@ -27,7 +27,8 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
 
 1. **Edit a prompt's rules or output contract → update its `docs/prompts/<name>.md` in the SAME change.**
    The doc's Input/Output-contract sections must always describe the current prompt.
-2. **Add a prompt →** create its `.md` (single file) or `<name>/` folder (multi-file / composed) here,
+2. **Add a prompt →** create its `.md` (single file), `<name>/` folder (multi-file / composed), or
+   explicit barrel alias to a semantically identical registered prompt here,
    add its registry entry in `../prompt-registry.ts` (+ its `PROBE_SCHEMAS` entry if it's a `probe-<id>`), write
    `docs/prompts/<name>.md`, and add a row to the prompt table in `docs/ARCHITECTURE-MAP.md`.
 3. **Rename a prompt →** rename the text file(s), the registry key, and `docs/prompts/<name>.md` together.
@@ -42,9 +43,9 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
 The authoring/iteration workflow (artifact rules, length enforcement, what belongs in a maintenance doc) is
 [`../../docs/PROMPT-AUTHORING.md`](../../docs/PROMPT-AUTHORING.md).
 
-## The three shapes (a prompt folder vs a shared-block folder)
+## The four shapes (a prompt folder vs a shared-block folder)
 
-A registered prompt is ONE of three shapes (full mechanics in the root CLAUDE.md → Prompt registry):
+A registered prompt is ONE of four shapes (full mechanics in the root CLAUDE.md → Prompt registry):
 
 Every prompt's FINAL text is re-exported by the barrel [`./index.ts`](./index.ts) as a named export, so
 `../prompt-registry.ts` is just the registry (`import * as prompts from './prompts'` resolves to that barrel;
@@ -61,6 +62,11 @@ each entry's `prompt:` references `prompts.<name>`).
   `onboarding-shared/`, in a STABLE order (the cacheable prefix). The barrel re-exports that folder's
   default. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
   name you can select via the header.
+- **Shared-text alias** — an explicit named export in the barrel points to another registered
+  prompt's final text when the semantic input/output contract is identical but routing or access is
+  intentionally different. The alias owns its own registry entry and maintenance doc but no duplicate
+  runtime text. `visual-verify-free` is the only alias. A change to shared text updates both maintenance
+  docs in the same change.
 
 **`onboarding-shared/` is NOT a prompt — it is the shared block library.** Its `_shared-*.md` /
 `_block-*.md` files are the instruction fragments duplicated across MORE THAN ONE composed prompt (box
@@ -73,7 +79,7 @@ composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
 ## Registered-prompt inventory
 
-`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Two structural rules hold here regardless: every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt, and every loose `.md` at this level is a single-file prompt.
+`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt, every loose `.md` at this level is a single-file prompt, and every shared-text alias is declared explicitly in the barrel.
 
 ### The `-all` twins are NOT duplicates
 

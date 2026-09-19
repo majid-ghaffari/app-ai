@@ -103,7 +103,10 @@ MODEL_FRONTIER = "claude-opus-4-8"
 # name beats its group, and a group beats its tier binding. Empty means every
 # prompt follows its tier. A key naming no registered prompt or prompt group
 # throws rather than being ignored.
-MODEL_OVERRIDES = ""
+MODEL_OVERRIDES = "free-render-verification=@cf/qwen/qwen3.8-27b"
+FREE_VISUAL_VERIFY_ENABLED = "true"
+FREE_VISUAL_VERIFY_DAILY_LIMIT = "8"
+INFERENCE_QUOTA_INTERNAL_ORIGIN = "https://inference-quota.internal"
 
 # ── Anthropic ──
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
@@ -157,6 +160,9 @@ fallthrough = true
 binding = "FILES_KV"
 id = "eb048ab9979f46ce93d8b0dfcdb9d58f"
 preview_id = "b524e2d6d53d482ead49f7ea60881dbd"
+
+[ai]
+binding = "AI"
 
 [[durable_objects.bindings]]
 name = "AUDIT_SESSIONS"

@@ -36,6 +36,9 @@ import {
   auditSessionAuthority,
   auditSessionSigningSecret,
   auditSessionTtlSeconds,
+  freeVisualVerifyDailyLimit,
+  freeVisualVerifyEnabled,
+  inferenceQuotaInternalOrigin,
   missingRequiredSecretNames,
   resolveModel,
   type Env,
@@ -239,6 +242,19 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(() => auditMaxTotalUploadBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_TOTAL_UPLOAD_BYTES/);
     expect(() => auditMaxMessageBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_MESSAGE_BYTES/);
     expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
+  });
+
+  it('protected visual verification configuration fails fast', () => {
+    expect(freeVisualVerifyEnabled(ENV)).toBe(true);
+    expect(freeVisualVerifyDailyLimit(ENV)).toBe(8);
+    expect(() =>
+      freeVisualVerifyDailyLimit({ ...ENV, FREE_VISUAL_VERIFY_DAILY_LIMIT: '9' }),
+    ).toThrow(/must not exceed 8/);
+    expect(inferenceQuotaInternalOrigin(ENV)).toBe('https://inference-quota.internal');
+    expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
+    expect(() => freeVisualVerifyEnabled({ ...ENV, FREE_VISUAL_VERIFY_ENABLED: 'maybe' })).toThrow(
+      /must be true or false/,
+    );
   });
 
   it('credentialedOrigins names CREDENTIALED_ORIGINS', () => {
@@ -452,8 +468,13 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('MODEL_FRONTIER = "claude-opus-4-8"');
   });
 
-  it('ships no per-prompt model exception by default', () => {
-    expect(productionVars()).toContain('MODEL_OVERRIDES = ""');
+  it('routes only protected visual verification through Workers AI', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(productionVars()).toContain(
+      'MODEL_OVERRIDES = "free-render-verification=@cf/qwen/qwen3.8-27b"',
+    );
+    expect(manifest).toContain('[ai]');
+    expect(manifest).toContain('binding = "AI"');
   });
 
   it('resolves every registered prompt and group under the deployed model bindings', () => {
@@ -503,6 +524,13 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(manifest).not.toContain('AUDIT_SESSIONS_KV');
   });
 
+  it('hosts the protected inference quota in the existing audit authority', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(manifest).not.toContain('name = "INFERENCE_QUOTAS"');
+    expect(manifest).not.toContain('class_name = "InferenceQuotaAuthority"');
+    expect(manifest).not.toContain('tag = "inference-quotas-v3"');
+  });
+
   it('keeps the applied migration ledger intact and renames the class through it', () => {
     const manifest = Object.values(wranglerFiles)[0] ?? '';
     const creation = manifest.indexOf('tag = "demo-sessions-v1"');
@@ -527,6 +555,9 @@ describe('production [vars] — the deployed configuration values', () => {
       'MODEL_FAST',
       'MODEL_BALANCED',
       'MODEL_FRONTIER',
+      'FREE_VISUAL_VERIFY_ENABLED',
+      'FREE_VISUAL_VERIFY_DAILY_LIMIT',
+      'INFERENCE_QUOTA_INTERNAL_ORIGIN',
       'LOG_TARGETS_TRACE',
       'LOG_TARGETS_DEBUG',
       'LOG_TARGETS_INFO',

@@ -57,7 +57,7 @@ describe('model catalog', () => {
   });
 
   it('reports exactly the providers a configured model can name', () => {
-    expect([...PROVIDER_NAMES].sort()).toEqual(['anthropic', 'gemini', 'openai']);
+    expect([...PROVIDER_NAMES].sort()).toEqual(['anthropic', 'cloudflare', 'gemini', 'openai']);
     expect(new Set(PROVIDER_NAMES).size).toBe(PROVIDER_NAMES.length);
   });
 
@@ -126,7 +126,9 @@ describe('configured model routing', () => {
     expect(() => validateModelRouting(ENV)).not.toThrow();
     for (const description of describePromptRoutes(ENV)) {
       expect(description.valid, `${description.name}: ${description.error ?? ''}`).toBe(true);
-      expect(description.provider).toBe('anthropic');
+      expect(description.provider).toBe(
+        description.name === 'visual-verify-free' ? 'cloudflare' : 'anthropic',
+      );
       expect(description.error).toBeUndefined();
     }
   });
@@ -216,10 +218,23 @@ describe('configured model routing', () => {
 });
 
 describe('MODEL_OVERRIDES', () => {
-  it('is empty by default and when explicitly blank', () => {
-    expect(modelOverrides(ENV).size).toBe(0);
+  it('is empty when absent or explicitly blank', () => {
+    const { MODEL_OVERRIDES: _override, ...withoutOverride } = ENV;
+    expect(modelOverrides(withoutOverride).size).toBe(0);
     expect(modelOverrides({ ...ENV, MODEL_OVERRIDES: '' }).size).toBe(0);
     expect(modelOverrides({ ...ENV, MODEL_OVERRIDES: '  ' }).size).toBe(0);
+  });
+
+  it('fails closed when the protected visual group leaves its bounded Workers AI model', () => {
+    for (const MODEL_OVERRIDES of [
+      '',
+      'free-render-verification=claude-sonnet-5',
+      'free-render-verification=@cf/qwen/qwen3.8-99b',
+    ]) {
+      expect(() => validateModelRouting({ ...ENV, MODEL_OVERRIDES })).toThrow(
+        /visual-verify-free must resolve to the bounded Cloudflare Workers AI model/,
+      );
+    }
   });
 
   it('parses a sparse comma-separated list, trimming each side', () => {

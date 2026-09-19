@@ -11,7 +11,16 @@
 import { errorResponse, jsonResponse, type CorsHeaders } from '../lib/responses';
 import { silentLoggingRuntime, type LoggingRuntime } from '../lib/logger';
 import { BUILD_REV, isAttributableBuildRevision } from '../build-rev';
-import { deploymentEnvironment, missingRequiredSecretNames, type Env } from '../config';
+import {
+  deploymentEnvironment,
+  freeVisualVerifyDailyLimit,
+  freeVisualVerifyEnabled,
+  auditSessionAuthority,
+  inferenceQuotaInternalOrigin,
+  missingRequiredSecretNames,
+  workersAiBinding,
+  type Env,
+} from '../config';
 import { providersInUse, validateModelRouting } from '../prompt-registry';
 
 export function handleHealth(
@@ -58,12 +67,22 @@ export function handleHealth(
 
 /** Why a production deployment cannot serve, for the log; `null` when it can. */
 function productionReadinessFailure(env: Env): Error | null {
-  const missingSecrets = missingRequiredSecretNames(env, providersInUse(env));
+  const providers = providersInUse(env);
+  const missingSecrets = missingRequiredSecretNames(env, providers);
   if (missingSecrets.length > 0) {
     return new Error(`Required secrets are not set: ${missingSecrets.join(', ')}`);
   }
   try {
     validateModelRouting(env);
+    if (providers.has('cloudflare')) {
+      workersAiBinding(env);
+      auditSessionAuthority(env);
+      inferenceQuotaInternalOrigin(env);
+      freeVisualVerifyDailyLimit(env);
+      if (!freeVisualVerifyEnabled(env)) {
+        throw new Error('Protected visual verification is disabled.');
+      }
+    }
     return null;
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error));

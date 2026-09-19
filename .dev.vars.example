@@ -52,11 +52,16 @@ MODEL_FAST=claude-haiku-4-5
 MODEL_BALANCED=claude-sonnet-5
 # REQUIRED. The most-capable flagship (the DEFAULT tier).
 MODEL_FRONTIER=claude-opus-4-8
+MODEL_OVERRIDES=free-render-verification=@cf/qwen/qwen3.8-27b
+FREE_VISUAL_VERIFY_ENABLED=true
+FREE_VISUAL_VERIFY_DAILY_LIMIT=8
+INFERENCE_QUOTA_INTERNAL_ORIGIN=https://inference-quota.internal
 
-# OPTIONAL. Sparse per-prompt exceptions to the tier bindings above, as a
+# Sparse per-prompt exceptions to the tier bindings above, as a
 # comma-separated promptGroupOrPromptName=modelId list. A prompt name beats its
-# group, and a group beats its tier binding. Empty means every prompt follows
-# its tier; a key naming no registered prompt or prompt group throws.
+# group, and a group beats its tier binding. The protected visual judge stays on
+# the Workers AI binding; additional exceptions append to this value. A key
+# naming no registered prompt or prompt group throws.
 # MODEL_OVERRIDES=website-analysis-visual=claude-opus-4-8,probe-style=claude-sonnet-5
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
@@ -189,8 +194,10 @@ LOG_SEQ_INGEST_URL=https://log.limespot.net/ingest/clef
 # FILES_KV      — OPTIONAL metadata-only KV namespace for best-effort file
 #                 dedup. Its absence no-ops to a plain direct upload; public
 #                 reference correctness never depends on it.
+# AI            — REQUIRED Workers AI binding for protected visual verification.
 # AUDIT_SESSIONS — REQUIRED Durable Object namespace backing the audit session
-#                 authority. The scoped audit routes fail closed without it.
+#                 authority and a separately addressed protected visual-verification
+#                 daily quota record. Both surfaces fail closed without it.
 
 # ── Optional overrides ───────────────────────────────────────────────────────
 

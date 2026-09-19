@@ -54,6 +54,7 @@ import { handleAuditSessionExchange } from './handlers/audit-session';
 import { handlePrompts, promptsDiagnosticsContextId } from './handlers/prompts';
 import { authorizeAuditRequest, finalizeAuditUsage, releaseAuditUsage } from './lib/audit-auth';
 import { auditFileTenantScope } from './inference/file-references';
+import { assertFreeVisualVerifyRoute, FREE_VISUAL_VERIFY_PROMPT } from './prompt-registry';
 export { AuditSessionAuthority } from './lib/audit-session-authority';
 import type { Env } from './config';
 
@@ -160,6 +161,17 @@ async function handleRequest(
         ? {}
         : { subscriberTitle: validation.SubscriberTitle }),
     });
+
+    const freeVisualVerify =
+      pathname === '/messages' &&
+      method === 'POST' &&
+      request.headers.get('X-Personalizer-System-Prompt') === FREE_VISUAL_VERIFY_PROMPT;
+    if (freeVisualVerify) {
+      if (validation.CanAdministerAllSubscribers !== true) {
+        return errorResponse('Resource not found.', corsHeaders, 404, 'RecordNotFoundException');
+      }
+      assertFreeVisualVerifyRoute(env);
+    }
 
     if (pathname === '/files' && method === 'POST') {
       return await handleFileUpload(request, env, corsHeaders, logging);

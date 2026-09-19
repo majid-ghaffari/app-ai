@@ -22,8 +22,9 @@ export { default as analyticsInsights } from './analytics-insights.md';
 export { default as imageSelection } from './image-selection/prompt.md';
 export { default as imageSelectionSample } from './image-selection/sample.md';
 
-// Visual-verify — the quality-gate reasoner (single `prompt.md`).
-export { default as visualVerify } from './visual-verify/prompt.md';
+import visualVerify from './visual-verify/prompt.md';
+export { visualVerify };
+export const visualVerifyFree = visualVerify;
 
 // Website-Analysis probes (each a single `prompt.md`).
 export { default as probeIndustry } from './probe-industry/prompt.md';

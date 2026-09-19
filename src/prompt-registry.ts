@@ -12,6 +12,7 @@ import type {
   SemanticEffort,
 } from './lib/inference-types';
 import {
+  BOUNDED_FREE_VISUAL_MODEL,
   getFilePolicy,
   resolveModelFamily,
   type FilePolicyName,
@@ -59,6 +60,7 @@ export type PromptName =
   | 'placement'
   | 'proposals'
   | 'visual-verify'
+  | 'visual-verify-free'
   | 'onboarding-batch'
   | 'onboarding-batch-all'
   | 'onboarding-review'
@@ -76,6 +78,8 @@ export type PromptName =
   | 'probe-template'
   | 'probe-currency';
 
+export const FREE_VISUAL_VERIFY_PROMPT = 'visual-verify-free' as const;
+
 /** Prompt compatibility groups that own routing and provider-file policy. */
 export type PromptGroupName =
   | 'image-selection'
@@ -87,6 +91,7 @@ export type PromptGroupName =
   | 'onboarding-qc-gate'
   | 'cartdrawer-visual'
   | 'render-verification'
+  | 'free-render-verification'
   | 'website-analysis-visual'
   | 'website-industry'
   | 'analytics-narrative'
@@ -159,6 +164,10 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
   'render-verification': {
     tier: 'balanced',
     requirements: ['vision', 'providerFiles', 'structuredOutput'],
+  },
+  'free-render-verification': {
+    tier: 'balanced',
+    requirements: ['vision'],
   },
   'website-analysis-visual': {
     tier: 'balanced',
@@ -452,6 +461,15 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     usesTools: false,
     description:
       'Visual verification judge; given a plain-language intent + a multi-modal rendered snapshot (screenshot + cleaned HTML + console + inspection facts: computed styles / elementFromPoint hit-test / rects), returns JSON-only { pass, reason, fix }. Used by BOTH the internal test harness (free channel) and the product self-verify loop. Sonnet, no tools.',
+    attachments: [],
+  },
+  [FREE_VISUAL_VERIFY_PROMPT]: {
+    group: 'free-render-verification',
+    prompt: prompts.visualVerifyFree,
+    maxTokens: 1024,
+    usesTools: false,
+    description:
+      'Protected-CI visual verification judge over an inline screenshot and inspection facts; returns JSON-only { pass, reason, fix } through the Workers AI free allocation.',
     attachments: [],
   },
 
@@ -1230,6 +1248,20 @@ export function validateModelRouting(env: Env): void {
   for (const group of listPromptGroups()) getGroupModelRoute(group, env);
   for (const name of listPromptNames()) getModelProfile(name, env);
   getUnregisteredMessagesRoute(env);
+  assertFreeVisualVerifyRoute(env);
+}
+
+export function assertFreeVisualVerifyRoute(env: Env): void {
+  const freeVisualRoute = getSystemPrompt(FREE_VISUAL_VERIFY_PROMPT, env);
+  if (
+    freeVisualRoute.provider !== 'cloudflare' ||
+    freeVisualRoute.apiFamily !== 'cloudflare-workers-ai' ||
+    freeVisualRoute.model !== BOUNDED_FREE_VISUAL_MODEL
+  ) {
+    throw new Error(
+      `${FREE_VISUAL_VERIFY_PROMPT} must resolve to the bounded Cloudflare Workers AI model.`,
+    );
+  }
 }
 
 /**

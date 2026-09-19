@@ -16,6 +16,7 @@ import type { Logger } from '../lib/logger';
 import { AnthropicMessagesAdapter } from './adapters/anthropic';
 import { OpenAIResponsesAdapter } from './adapters/openai';
 import { GeminiGenerateContentAdapter } from './adapters/gemini';
+import { CloudflareWorkersAiAdapter } from './adapters/cloudflare';
 import { DefaultInferenceService } from './service';
 import { resolveInferenceFileReferences } from './file-references';
 
@@ -162,6 +163,7 @@ function createAdapters(env: Env): readonly InferenceProviderAdapter[] {
     new AnthropicMessagesAdapter(env),
     new OpenAIResponsesAdapter(env),
     new GeminiGenerateContentAdapter(env),
+    new CloudflareWorkersAiAdapter(env),
   ];
 }
 

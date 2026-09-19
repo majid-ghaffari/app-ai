@@ -27,6 +27,12 @@ or changes the inference response.
   the model catalog. Registered-prompt callers cannot override model, provider,
   profile, file policy, or effort. Canonical client tools are serialized to
   the active provider's wire shape at the provider boundary.
+- `visual-verify-free` is the protected-CI-only registered prompt. It reuses the
+  visual-verification prompt text but owns a separate no-file group routed to the
+  Workers AI binding; ordinary `visual-verify` remains on its production route.
+  The router exposes it only when Brain proves `AdministerAllSubscribers` and
+  verifies the Cloudflare-only route. The adapter reserves the strongly consistent
+  daily quota after validating the canonical request and immediately before binding I/O.
 - A known prompt with missing route configuration fails closed before file or
   provider I/O. Unknown-selector compatibility must never hide a missing
   `MODEL_*` binding. Registered `/messages` prompts preserve non-effort output

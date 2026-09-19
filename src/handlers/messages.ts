@@ -10,6 +10,7 @@ import {
   getSystemPrompt,
   getUnregisteredMessagesRoute,
   isPromptName,
+  FREE_VISUAL_VERIFY_PROMPT,
   type PromptAttachment,
   type SystemPromptEntry,
 } from '../prompt-registry';
@@ -103,7 +104,15 @@ export async function handleMessages(
   );
   try {
     log.info('Request received');
-    const body = (await request.json()) as Record<string, unknown>;
+    let rawBody: unknown;
+    try {
+      rawBody = await request.json();
+    } catch (error) {
+      if (selector === FREE_VISUAL_VERIFY_PROMPT) throw invalidFreeVisualVerifyRequest();
+      throw error;
+    }
+    if (selector === FREE_VISUAL_VERIFY_PROMPT) validateFreeVisualVerifyBody(rawBody);
+    const body = rawBody as Record<string, unknown>;
     const { apiKey: _apiKey, ...clientBody } = body;
     // Audit sessions carry a narrower server-owned request contract: only the
     // validated evidence messages survive. The registry supplies prompt, model,
@@ -237,6 +246,60 @@ export async function handleMessages(
     });
     return errorResponseFrom(error, corsHeaders, 'Internal proxy server error');
   }
+}
+
+function validateFreeVisualVerifyBody(
+  value: unknown,
+): asserts value is Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  const body = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(body).sort();
+  if (keys.some((key) => key !== 'max_tokens' && key !== 'messages')) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  if (body.max_tokens !== undefined && body.max_tokens !== 1024) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  if (!Array.isArray(body.messages) || body.messages.length !== 1) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  const message = strictRecord(body.messages[0], ['content', 'role']);
+  if (message.role !== 'user' || !Array.isArray(message.content) || message.content.length !== 2) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  const image = strictRecord(message.content[0], ['source', 'type']);
+  const source = strictRecord(image.source, ['data', 'media_type', 'type']);
+  const text = strictRecord(message.content[1], ['text', 'type']);
+  if (
+    image.type !== 'image' ||
+    source.type !== 'base64' ||
+    source.media_type !== 'image/png' ||
+    typeof source.data !== 'string' ||
+    text.type !== 'text' ||
+    typeof text.text !== 'string'
+  ) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+}
+
+function strictRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== [...keys].sort().join(',')) {
+    throw invalidFreeVisualVerifyRequest();
+  }
+  return record;
+}
+
+function invalidFreeVisualVerifyRequest(): WorkerError {
+  return new WorkerError('Protected visual verification request is invalid.', {
+    status: 400,
+    exceptionType: 'ArgumentException',
+  });
 }
 
 function profileModel(request: InferenceRequest): string {

@@ -9,7 +9,9 @@ provider HTTP, credentials, wire types, and serialization live only under
 
 `auth.ts` mirrors the consumed members of Brain's validate-context-id response,
 including `AiToolsContractVersion`, `AvailableAiTools`, and
-`AvailableIntegrationParties`. The router accepts AI-tool capabilities only for
+`AvailableIntegrationParties`. It also carries `CanAdministerAllSubscribers`, the
+permission proof the router requires before reserving a protected visual verdict.
+The router accepts AI-tool capabilities only for
 the `SUPPORTED_AI_TOOLS_CONTRACT_VERSION` owned here; missing and unsupported
 versions fail closed to no Brain data tools.
 
@@ -44,3 +46,7 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   `ls_audit_` bearer, the `AuditSessionAuthority` Durable Object, and these file
   names. The human-readable text of an error body names the feature `grader`,
   because a person reads it.
+- A separately addressed `AuditSessionAuthority` instance is the strongly consistent UTC-day
+  counter for the master-only protected visual route. It determines the current UTC date inside
+  the authority, resets on the next UTC date, and returns 429 after the configured limit without
+  requiring a new Durable Object class migration.

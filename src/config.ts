@@ -34,6 +34,14 @@ import type { ProviderName } from './lib/inference-types';
 // imports `resolveModel` and `modelOverrides` from here).
 import type { ModelTier } from './prompt-registry';
 
+export interface WorkersAiBinding {
+  run(
+    model: string,
+    input: Readonly<Record<string, unknown>>,
+    options: { readonly returnRawResponse: true; readonly signal?: AbortSignal },
+  ): Promise<Response>;
+}
+
 /**
  * The worker's environment bindings (wrangler.toml + Cloudflare secrets).
  * Single source of truth — handlers/lib receive this whole object and read
@@ -141,6 +149,10 @@ export interface Env {
    * Dedup may no-op when absent; public reference correctness does not use KV.
    */
   readonly FILES_KV?: KVNamespace;
+  readonly AI?: WorkersAiBinding;
+  readonly FREE_VISUAL_VERIFY_ENABLED?: string;
+  readonly FREE_VISUAL_VERIFY_DAILY_LIMIT?: string;
+  readonly INFERENCE_QUOTA_INTERNAL_ORIGIN?: string;
   /**
    * OPTIONAL override for the Brain-defaults source URL (lib/brain-defaults.ts).
    * When set, the defaults provider fetches the canonical default
@@ -200,6 +212,9 @@ type RequiredVarName =
   | 'MODEL_FAST'
   | 'MODEL_BALANCED'
   | 'MODEL_FRONTIER'
+  | 'FREE_VISUAL_VERIFY_ENABLED'
+  | 'FREE_VISUAL_VERIFY_DAILY_LIMIT'
+  | 'INFERENCE_QUOTA_INTERNAL_ORIGIN'
   | 'CLAUDE_API_KEY'
   | 'AUDIT_ACTIVATION_SIGNING_SECRET'
   | 'AUDIT_SESSION_SIGNING_SECRET'
@@ -429,7 +444,7 @@ export function masterSubscriberId(env: Env): number {
 }
 
 /** The secret each provider's wire adapter reads. */
-const PROVIDER_SECRET_VAR: Readonly<Record<ProviderName, RequiredVarName>> = {
+const PROVIDER_SECRET_VAR: Readonly<Partial<Record<ProviderName, RequiredVarName>>> = {
   anthropic: 'CLAUDE_API_KEY',
   openai: 'OPENAI_API_KEY',
   gemini: 'GEMINI_API_KEY',
@@ -454,9 +469,9 @@ export function missingRequiredSecretNames(
 ): readonly string[] {
   const providers = new Set(providersInUse);
   const dormantProviderSecrets = new Set(
-    (Object.keys(PROVIDER_SECRET_VAR) as ProviderName[])
-      .filter((provider) => !providers.has(provider))
-      .map((provider) => PROVIDER_SECRET_VAR[provider]),
+    (Object.entries(PROVIDER_SECRET_VAR) as Array<[ProviderName, RequiredVarName]>)
+      .filter(([provider]) => !providers.has(provider))
+      .map(([, secret]) => secret),
   );
   return SECRET_VAR_NAMES.filter((name) => {
     if (dormantProviderSecrets.has(name)) return false;
@@ -478,6 +493,33 @@ export function openaiApiKey(env: Env): string {
 /** The Gemini API key. Only the Gemini wire adapter may call this. */
 export function geminiApiKey(env: Env): string {
   return requireVar(env, 'GEMINI_API_KEY');
+}
+
+export function workersAiBinding(env: Env): WorkersAiBinding {
+  if (env.AI) return env.AI;
+  throw new Error('Missing required configuration binding AI. Bind Workers AI in wrangler.toml.');
+}
+
+export function inferenceQuotaInternalOrigin(env: Env): string {
+  const value = requireVar(env, 'INFERENCE_QUOTA_INTERNAL_ORIGIN');
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.origin !== value) {
+    throw new Error('INFERENCE_QUOTA_INTERNAL_ORIGIN must be a bare HTTPS origin.');
+  }
+  return value;
+}
+
+export function freeVisualVerifyEnabled(env: Env): boolean {
+  const value = requireVar(env, 'FREE_VISUAL_VERIFY_ENABLED').trim().toLowerCase();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error('FREE_VISUAL_VERIFY_ENABLED must be true or false.');
+}
+
+export function freeVisualVerifyDailyLimit(env: Env): number {
+  const value = positiveIntegerVar(env, 'FREE_VISUAL_VERIFY_DAILY_LIMIT');
+  if (value > 8) throw new Error('FREE_VISUAL_VERIFY_DAILY_LIMIT must not exceed 8.');
+  return value;
 }
 
 /**
@@ -626,7 +668,8 @@ function positiveIntegerVar(
     | 'AUDIT_MAX_MESSAGES'
     | 'AUDIT_MAX_UPLOAD_BYTES'
     | 'AUDIT_MAX_TOTAL_UPLOAD_BYTES'
-    | 'AUDIT_MAX_MESSAGE_BYTES',
+    | 'AUDIT_MAX_MESSAGE_BYTES'
+    | 'FREE_VISUAL_VERIFY_DAILY_LIMIT',
 ): number {
   const raw = requireVar(env, name);
   const value = Number(raw);

@@ -674,6 +674,29 @@ describe('handleHealth', () => {
     }
   });
 
+  it('fails production health closed when a configured Workers AI route has no binding', async () => {
+    const { AI: _binding, ...withoutBinding } = ENV;
+    const routed = {
+      ...withoutBinding,
+      ENVIRONMENT: 'production',
+      MODEL_OVERRIDES: 'free-render-verification=@cf/qwen/qwen3.8-27b',
+    };
+    const missing = handleHealth(CORS, routed, undefined, 'fc00704');
+    expect(missing.status).toBe(503);
+    await expect(missing.json()).resolves.toEqual({
+      Message: 'App AI service is not ready.',
+      ExceptionType: 'ServiceUnavailableException',
+    });
+
+    const configured = handleHealth(
+      CORS,
+      { ...routed, AI: { run: vi.fn() } },
+      undefined,
+      'fc00704',
+    );
+    expect(configured.status).toBe(200);
+  });
+
   it('stays a plain liveness check outside production', async () => {
     const { CLAUDE_API_KEY: _key, ...withoutKey } = ENV;
     const res = handleHealth(CORS, { ...withoutKey, MODEL_FAST: 'mistral-large-3' });

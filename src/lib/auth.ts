@@ -29,6 +29,7 @@ export const SUPPORTED_AI_TOOLS_CONTRACT_VERSION = 1;
 export interface ContextValidation {
   SubscriberID?: number;
   SubscriberTitle?: string;
+  CanAdministerAllSubscribers?: boolean;
   /** Version of Brain's AI-tool capability contract. Only version 1 is supported. */
   AiToolsContractVersion?: number;
   /** Permission-derived Brain AI-tool names available to this identity. */

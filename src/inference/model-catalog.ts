@@ -32,6 +32,8 @@ import type {
   ProviderName,
 } from '../lib/inference-types';
 
+export const BOUNDED_FREE_VISUAL_MODEL = '@cf/qwen/qwen3.8-27b';
+
 /**
  * Direct-provider file policies. Each states how one provider takes uploaded
  * evidence and which API families can address a file uploaded under it.
@@ -59,6 +61,14 @@ const FILE_POLICIES = {
     compatibleApiFamilies: ['gemini-generate-content'],
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
+    purpose: null,
+  },
+  'cloudflare-inline': {
+    name: 'cloudflare-inline',
+    provider: 'cloudflare',
+    compatibleApiFamilies: ['cloudflare-workers-ai'],
+    inputMode: 'inline',
+    lifecycle: 'request-scoped',
     purpose: null,
   },
 } as const satisfies Record<string, FilePolicy>;
@@ -161,6 +171,23 @@ const MODEL_FAMILIES = [
     // separate lifecycle no adapter owns.
     capabilities: { ...EVERY_CAPABILITY, inlineCacheBreakpoints: false },
     filePolicy: 'gemini-provider-files',
+  },
+  {
+    profile: 'qwen-vision',
+    prefixes: ['@cf/qwen/qwen3.8-'],
+    provider: 'cloudflare',
+    apiFamily: 'cloudflare-workers-ai',
+    capabilities: {
+      vision: true,
+      providerFiles: false,
+      streaming: false,
+      structuredOutput: false,
+      serverTools: false,
+      clientTools: false,
+      reasoning: false,
+      inlineCacheBreakpoints: false,
+    },
+    filePolicy: 'cloudflare-inline',
   },
 ] as const satisfies readonly ModelFamilyDefinition[];
 

@@ -158,5 +158,6 @@ function inferenceExceptionType(backend: string): string {
   if (backend === 'anthropic' || backend === 'claude-code') return 'AnthropicApiException';
   if (backend === 'openai' || backend === 'codex') return 'OpenAIApiException';
   if (backend === 'gemini') return 'GeminiApiException';
+  if (backend === 'cloudflare') return 'CloudflareWorkersAiException';
   return 'InferenceApiException';
 }
