@@ -4,7 +4,7 @@ The design/maintenance record for the `chat` prompt — the general conversation
 
 ## Summary
 
-`chat` is the base, general Studio AI assistant — the conversational surface a merchant talks to inside the Studio visual editor while the on-screen onboarding flow walks them through setup. It answers their specific question or handles the specific change they ask for, in the context of wherever they are, grounded in LimeSpot best practices and in the merchant's OWN store data. It runs the SERVER-side tool-use agent loop (`usesTools: true`): during reasoning the model can CALL the always-active personalizer toolset to read real store analytics, segments, campaigns, and config from Brain rather than guessing. It replies in plain chat-bubble prose and, when the merchant asks for a store change, appends a fenced `directives` JSON envelope the Studio UI executes.
+`chat` is the base, general LimeSpot Assistant — the conversational surface a merchant talks to inside the Studio visual editor while the on-screen onboarding flow walks them through setup. It answers their specific question or handles the specific change they ask for, in the context of wherever they are, grounded in LimeSpot best practices and in the merchant's OWN store data. It runs the SERVER-side tool-use agent loop (`usesTools: true`): during reasoning the model can CALL the always-active personalizer toolset to read real store analytics, segments, campaigns, and config from Brain rather than guessing. It replies in plain chat-bubble prose and, when the merchant asks for a store change, appends a fenced `directives` JSON envelope the Studio UI executes.
 
 ## Purpose
 
