@@ -142,7 +142,7 @@ One audit identifier may have only one unexpired browser session; a second activ
 conflict until that session expires. The one-use token is not consumed by this active-session
 conflict and can be retried after expiry.
 
-## Scope and quotas
+## Scope
 
 An audit session can call only:
 
@@ -151,7 +151,7 @@ An audit session can call only:
   `onboarding-currency-recovery`. Destinations are repeated multipart `prompt`
   fields (the extension uploads one file for multiple consumers), not the
   `X-Personalizer-System-Prompt` inference header. At least one destination is
-  required, values must be unique, at most four may be supplied, and every supplied value must be in
+  required, values must be unique, at most five may be supplied, and every supplied value must be in
   this exact allowlist. Exactly one multipart `file` part is accepted.
 - `POST /messages` with `onboarding-batch-all` or `onboarding-batch`, a matching
   `X-Personalizer-Ruleset-Version`, one structured user message, and only text or
@@ -163,28 +163,84 @@ send inline base64 files, provide tools, choose a model, raise output effort, or
 fetch Brain defaults. `messages.ts` keeps the validated evidence message and
 forces the registry's prompt, model, output budget, and effort.
 
-Production per-session technical limits are configured in `wrangler.toml`: 30-minute
-session lifetime, 40 successful uploads, 64 MB aggregate upload bytes, 8 MB per
-upload, three successful inference calls, and 1 MB serialized JSON per inference.
-The Durable Object reserves quota before paid upstream work, counts concurrent
-reservations, records returned file IDs atomically, commits successful calls,
-and releases reservations on an upstream non-2xx response or thrown dispatch.
+## Limits: the conductor is never capped, a person's choices are
 
-Public attempt enforcement is stricter than the technical three-message ceiling: exactly two
-successful allowlisted proposal inferences may complete for a stable `auditIdentifier`, including
-across expired sessions and reissued activation tokens. A `started` reservation does not consume an
-attempt. A non-2xx or thrown provider call produces `failed`, releases the reservation, and retries
-the same `attemptNumber`; only successful proposal inference produces `completed` and increments the
-strongly consistent counter. Staff activations are merchant-facing uncapped because each activation
-uses a fresh audit identifier, while every staff session still has the upload, byte, message and
-expiry safety ceilings above.
+The Grader conductor decides how many pages it reads, how many tiles it uploads, and how often it
+sends and repairs its proposal, and app-ai never holds a legitimate run to a fixed count. Every
+limit app-ai keeps is either an abuse ceiling no legitimate run can reach — because a session key
+can be lifted out of the browser — or a limit on something the person chooses to do.
+
+### A session is a sequence of runs
+
+A run is one Grader pass: its evidence uploads, then its proposal inferences. The first run opens at
+exchange. An upload that arrives after the current run has reserved a proposal inference opens the
+next run, which is what Studio's retry produces, and no client signal is trusted to draw that
+boundary. The new run starts with a fresh allowance, owns only the files it uploads itself, and
+releases any proposal request the previous run left pending.
+
+The conductor sends a proposal request only after it has given up on the one before, so a new
+proposal request supersedes a pending one instead of being refused: a request whose caller's
+transport timed out and disconnected never holds the session. The superseded request is mirrored as
+`failed`, and its late outcome, if the worker still produces one, changes nothing.
+
+### One abuse ceiling per run, derived from the grader plan
+
+`src/lib/audit-plan.ts` derives the most one run can need from the plan the conductor follows:
+
+- every page kind the proposal prompts plan — their page vocabulary, pinned to the prompt text by
+  `test/audit-plan.test.ts` — read at desktop and mobile width, with at most two tiles a width;
+- one whole-store proposal, repaired at most twice and sent at most twice.
+
+A recapture adds no upload. In lib, `relayCaptureRaw` (`packages/storefront/src/admin/ai/agent/batch-runner.ts`)
+enqueues a width's upload only after its capture returned a non-empty image, and
+`readPuppetsWithOneRecapture` recaptures only a width that returned none, so each width of a page
+contributes one capture. `enqueueRawCapture` (`packages/storefront/src/admin/ai/agent/onb-capture-queue.ts`)
+slices an audit session's capture to at most two tiles, and the proposal-only audit conductor exits
+before the QC walk, so a run captures each page once per width.
+
+That planned run is 28 uploads and 6 proposal inference requests. A run's ceiling is the plan times
+`AUDIT_RUN_HEADROOM` (production `2`): 56 uploads and 12 inference requests. For scale, one
+measured five-page run on a live SHOPLINE storefront made 18 uploads (1.14 MB in total, the largest
+193 KB) and one proposal request of 17.5 KB. The ceiling follows the page vocabulary, so a conductor
+that audits another page kind raises it without a configuration change. Every inference request a
+run reserves counts, including one later superseded or failed, so a lifted key cannot fan concurrent
+paid calls out past it. An upload or inference beyond the ceiling answers 429 `AuditQuotaException`.
+
+One upload is at most `AUDIT_MAX_UPLOAD_BYTES` (8 MB) and one inference request at most
+`AUDIT_MAX_MESSAGE_BYTES` (1 MB) of serialized JSON — the extension's own transport limits, far
+above anything the conductor sends. There is no aggregate byte cap: a run's bytes are bounded by its
+upload ceiling times the upload size limit.
+
+The Durable Object reserves before paid upstream work, counts concurrent reservations, records
+returned file IDs atomically, commits successful calls, and releases a reservation on an upstream
+non-2xx response or thrown dispatch.
+
+### User choices are limited where they are made
+
+- **Retries per session.** A session starts at most `AUDIT_MAX_RUNS` runs (production `4`): the
+  first run and the three retries Studio offers. The upload that would open one more answers 429
+  `AuditQuotaException` "This grader session has no retries remaining."
+- **Completed public audits.** Exactly two runs may complete for a stable `auditIdentifier` — one
+  lead and one store — including across expired sessions and reissued activation tokens. A run
+  completes at its first successful proposal inference; a repair later in the same run consumes
+  nothing more. A `started` reservation does not consume an attempt, and a non-2xx, thrown or
+  superseded provider call produces `failed` and leaves the same `attemptNumber` for the next
+  request. After two completions, the upload that would open the next run answers 429 "This public
+  grader has no attempts remaining." before any provider call. Staff activations carry no completion cap, because each uses a fresh audit
+  identifier, while every staff session keeps the run limit, the per-run ceiling, the size limits
+  and the session lifetime.
+- **Audits per email, network and day.** These belong to the limespot.com issuer, which already
+  enforces them before it signs an activation: per-IP and per-email hourly windows, the resend
+  interval, the UTC-day email budget, Turnstile, and the launch kill switch. App-ai does not
+  duplicate them.
+- **Session lifetime.** 30 minutes (`AUDIT_SESSION_TTL_SECONDS`).
 
 There is no cross-session app-ai spend counter. The limespot.com issuer therefore
 owns the global controls: email-verification attempt limits, per-identity/IP
 activation limits, a daily activation ceiling, and the launch-wide budget kill
 switch. Cloudflare/Anthropic account alerts and hard spending controls are the
 outer operational cap. The public issuer must not launch without those controls;
-per-session app-ai quotas alone are not a global budget.
+per-session app-ai limits alone are not a global budget.
 
 ## Website status mirror
 
@@ -242,11 +298,32 @@ it renames that class to `AuditSessionAuthority` through `renamed_classes`, whic
 existing object's storage across. Those two strings are the live namespace's identity, not a missed
 rename: editing or removing either one detaches every object's storage, including the completed
 attempt ledger that enforces the public two-run cap, with no way to reattach it. One object is addressed deterministically per `auditIdentifier`, which makes
-cross-link completion counting, activation consumption, quota reservations, and concurrent file-ID
+cross-link completion counting, activation consumption, run reservations, and concurrent file-ID
 ownership strongly consistent. At expiry, an alarm releases pending work, emits `failed` where
-needed, and removes provider file identifiers and per-session counters. It retains only the stable
+needed, and removes provider file identifiers, per-run counters and session totals. It retains only the stable
 completion ledger, activation replay identifiers and pending callback outbox needed to enforce the
 cross-link contract.
+
+The authority writes one session shape, divided into runs, and also reads a session stored without
+runs, whose counters cover the whole session. It reads such a session as its first run: the stored
+successful uploads are the run's uploads, the stored successful and pending inference requests are
+the run's inference requests, and the run owns every stored file. That shape counted every
+inference as an attempt and kept no boundary between one run's files and the next, so it cannot
+tell a repair from a retry whose uploads it has already accepted. The run is therefore read as not
+yet completed: its next proposal is admitted as the next attempt, exactly as that session was
+promised, and a pending inference completes the attempt number it was given when it succeeds. Once
+that attempt completes, repairs consume nothing more, and the next upload opens a fresh run that
+owns only its own files. A session that had already used both public attempts is refused any
+further proposal or run, as it was before. A reservation admitted before the session had runs
+carries no run number: it counts toward, and lands in, whichever run is current when it finishes, so
+a retry upload admitted before the cutover is owned by the run its sibling uploads open after it.
+
+The session record also carries whole-session totals — successful uploads, their bytes and
+successful inference requests — and every pending reservation its upload bytes. The authority
+enforces nothing from them; they are the counts a worker version without runs enforces its fixed
+limits from. A rollback to such a version therefore reads finite counts for every session the
+current worker wrote and holds it to those limits, rather than comparing absent fields that never
+refuse anything.
 
 Clearing an owned file identifier removes audit authorization to reference it; it does not delete the
 upstream Anthropic Files object. App-ai's existing content-hash dedup layer may retain a provider

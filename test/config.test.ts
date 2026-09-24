@@ -29,10 +29,9 @@ import {
   auditStatusOrigins,
   auditStatusSigningSecret,
   auditMaxMessageBytes,
-  auditMaxMessages,
-  auditMaxTotalUploadBytes,
+  auditMaxRuns,
   auditMaxUploadBytes,
-  auditMaxUploads,
+  auditRunHeadroom,
   auditSessionAuthority,
   auditSessionSigningSecret,
   auditSessionTtlSeconds,
@@ -65,10 +64,9 @@ describe('config accessors — present values', () => {
     expect(auditStatusSigningSecret(ENV)).toBe(ENV.AUDIT_STATUS_SIGNING_SECRET);
     expect(auditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
     expect(auditSessionTtlSeconds(ENV)).toBe(1800);
-    expect(auditMaxUploads(ENV)).toBe(40);
-    expect(auditMaxMessages(ENV)).toBe(3);
+    expect(auditMaxRuns(ENV)).toBe(4);
+    expect(auditRunHeadroom(ENV)).toBe(2);
     expect(auditMaxUploadBytes(ENV)).toBe(8000000);
-    expect(auditMaxTotalUploadBytes(ENV)).toBe(64000000);
     expect(auditMaxMessageBytes(ENV)).toBe(1000000);
   });
 
@@ -233,13 +231,13 @@ describe('config accessors — missing config = error (no fallback defaults)', (
 
   it('audit numeric limits and the Durable Object binding fail fast', () => {
     expect(() => auditSessionTtlSeconds(EMPTY_ENV)).toThrow(/AUDIT_SESSION_TTL_SECONDS/);
-    expect(() => auditMaxUploads({ ...ENV, AUDIT_MAX_UPLOADS: '0' })).toThrow(
-      /AUDIT_MAX_UPLOADS must be a positive integer/,
+    expect(() => auditMaxRuns({ ...ENV, AUDIT_MAX_RUNS: '0' })).toThrow(
+      /AUDIT_MAX_RUNS must be a positive integer/,
     );
-    expect(() => auditMaxMessages({ ...ENV, AUDIT_MAX_MESSAGES: '1.5' })).toThrow(
-      /AUDIT_MAX_MESSAGES must be a positive integer/,
+    expect(() => auditRunHeadroom({ ...ENV, AUDIT_RUN_HEADROOM: '1.5' })).toThrow(
+      /AUDIT_RUN_HEADROOM must be a positive integer/,
     );
-    expect(() => auditMaxTotalUploadBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_TOTAL_UPLOAD_BYTES/);
+    expect(() => auditMaxUploadBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_UPLOAD_BYTES/);
     expect(() => auditMaxMessageBytes(EMPTY_ENV)).toThrow(/AUDIT_MAX_MESSAGE_BYTES/);
     expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
   });
@@ -516,6 +514,21 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('AUDIT_STATUS_ORIGINS = "https://limespot.com"');
   });
 
+  it('limits a grader session by its runs and holds each run to twice its plan', () => {
+    const vars = parsedProductionVars();
+    expect(vars.get('AUDIT_MAX_RUNS')).toBe('4');
+    expect(vars.get('AUDIT_RUN_HEADROOM')).toBe('2');
+    expect(vars.get('AUDIT_MAX_UPLOAD_BYTES')).toBe('8000000');
+    expect(vars.get('AUDIT_MAX_MESSAGE_BYTES')).toBe('1000000');
+    for (const retired of [
+      'AUDIT_MAX_UPLOADS',
+      'AUDIT_MAX_MESSAGES',
+      'AUDIT_MAX_TOTAL_UPLOAD_BYTES',
+    ]) {
+      expect(vars.has(retired), `${retired} no longer limits a grader session`).toBe(false);
+    }
+  });
+
   it('binds the strongly consistent audit-session authority with its migration', () => {
     const manifest = Object.values(wranglerFiles)[0] ?? '';
     expect(manifest).toContain('name = "AUDIT_SESSIONS"');
@@ -567,10 +580,9 @@ describe('production [vars] — the deployed configuration values', () => {
       'LOG_SEQ_INGEST_URL',
       'AUDIT_STATUS_ORIGINS',
       'AUDIT_SESSION_TTL_SECONDS',
-      'AUDIT_MAX_UPLOADS',
-      'AUDIT_MAX_MESSAGES',
+      'AUDIT_MAX_RUNS',
+      'AUDIT_RUN_HEADROOM',
       'AUDIT_MAX_UPLOAD_BYTES',
-      'AUDIT_MAX_TOTAL_UPLOAD_BYTES',
       'AUDIT_MAX_MESSAGE_BYTES',
     ]) {
       expect(vars).toContain(`${name} = `);

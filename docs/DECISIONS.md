@@ -506,11 +506,13 @@ updates when the onboarding conductor uploads many screenshot tiles in parallel.
 `AuditSessionAuthority` is one deterministically addressed Durable Object per signed stable
 `auditIdentifier`. It consumes activation identifiers, permits one live session, atomically reserves
 paid work, owns provider file IDs, and preserves the public two-completion count across expired
-sessions and reissued links. Failed inference releases the attempt number; only successful proposal
-inference consumes it. Audit scope remains four onboarding upload destinations and two proposal
-inference prompts; the server forces registry model/budget/effort and never calls Brain.
+sessions and reissued links. Failed inference releases the attempt number; only a run's first
+successful proposal inference consumes it. Audit scope remains five onboarding upload destinations
+and two proposal inference prompts; the server forces registry model/budget/effort and never calls
+Brain.
 
-Per-session byte/upload/message ceilings are app-ai's paid-work guard. Cross-session activation,
+A per-run abuse ceiling derived from the grader plan, the runs a session may start, and per-request
+size limits are app-ai's paid-work guard (decision 33). Cross-session activation,
 identity/IP, daily-budget, and kill-switch controls belong to the limespot.com issuer, with provider
 hard spending controls outside it. App-ai HMAC-signs immutable `started`/`failed`/`completed` events
 with a third, purpose-specific secret and retries them from an ordered Durable Object outbox; website
@@ -881,3 +883,31 @@ per-call text.
 
 The explicit `cachedContents` named-cache resource is a separate lifecycle with
 its own creation, TTL, and deletion, and no adapter owns it.
+
+### 33. The Grader conductor is never capped; a person's choices are
+
+A fixed per-session count of uploads and inferences sized for one conductor stops being true the
+moment the conductor reads more of the store, and it failed exactly that way: a count sized for a
+one-page audit refused the uploads of a five-page one, and a retry reused the exhausted count. How
+much evidence the conductor gathers and how often it repairs its proposal is LimeSpot's decision, so
+app-ai no longer holds a legitimate run to any fixed number.
+
+What remains is of two kinds. The abuse ceiling exists because a session key can be lifted from the
+browser: it applies per run and is derived in `src/lib/audit-plan.ts` from the plan the conductor
+follows — the page vocabulary the proposal prompts plan, both widths, the tiles a width takes, and
+the proposal's bounded repairs and sends — times a configured headroom. A recapture is not a second
+upload: lib uploads a width's capture only when it returned an image and recaptures only a width
+that returned none. It follows the
+prompt vocabulary rather than a configured number, so a conductor that audits another page kind
+raises it with no configuration change, and no legitimate run approaches it. The other limits sit on
+what a person chooses to do: the runs one session may start (the first and every retry), two
+completed public runs per stable audit identifier — held at the upload that would open another run,
+so an exhausted audit reaches no provider — and the issuer's per-email, per-network and daily
+activation controls, which app-ai does not duplicate.
+
+A run boundary is drawn only from what the server observes. The first upload after a proposal was
+reserved opens the next run with a fresh allowance and its own file ownership, and a new proposal
+request supersedes a pending one, because the conductor never sends one while it still waits on
+another. A request whose caller disconnected therefore never holds the session, which is what made
+every retry after a transport timeout fail until the session expired. A superseded request still
+counts toward its run's ceiling, so concurrency cannot buy more paid calls than the ceiling allows.

@@ -180,14 +180,12 @@ export interface Env {
   readonly AUDIT_SESSIONS?: DurableObjectNamespace;
   /** Lifetime of an exchanged audit session in seconds. */
   readonly AUDIT_SESSION_TTL_SECONDS?: string;
-  /** Maximum successful file uploads in one audit session. */
-  readonly AUDIT_MAX_UPLOADS?: string;
-  /** Maximum successful inference requests in one audit session. */
-  readonly AUDIT_MAX_MESSAGES?: string;
+  /** Runs one audit session may start: its first run and every retry. */
+  readonly AUDIT_MAX_RUNS?: string;
+  /** How many times the planned grader run one run's abuse ceiling allows. */
+  readonly AUDIT_RUN_HEADROOM?: string;
   /** Maximum bytes accepted by one audit file upload. */
   readonly AUDIT_MAX_UPLOAD_BYTES?: string;
-  /** Maximum aggregate uploaded bytes reserved or completed by one audit session. */
-  readonly AUDIT_MAX_TOTAL_UPLOAD_BYTES?: string;
   /** Maximum JSON request bytes accepted by one audit inference. */
   readonly AUDIT_MAX_MESSAGE_BYTES?: string;
 }
@@ -221,10 +219,9 @@ type RequiredVarName =
   | 'AUDIT_STATUS_SIGNING_SECRET'
   | 'AUDIT_STATUS_ORIGINS'
   | 'AUDIT_SESSION_TTL_SECONDS'
-  | 'AUDIT_MAX_UPLOADS'
-  | 'AUDIT_MAX_MESSAGES'
+  | 'AUDIT_MAX_RUNS'
+  | 'AUDIT_RUN_HEADROOM'
   | 'AUDIT_MAX_UPLOAD_BYTES'
-  | 'AUDIT_MAX_TOTAL_UPLOAD_BYTES'
   | 'AUDIT_MAX_MESSAGE_BYTES'
   | 'OPENAI_API_KEY'
   | 'GEMINI_API_KEY'
@@ -620,24 +617,19 @@ export function auditSessionTtlSeconds(env: Env): number {
   return positiveIntegerVar(env, 'AUDIT_SESSION_TTL_SECONDS');
 }
 
-/** Maximum successful uploads in one audit session. */
-export function auditMaxUploads(env: Env): number {
-  return positiveIntegerVar(env, 'AUDIT_MAX_UPLOADS');
+/** Runs one audit session may start: its first run and every retry. */
+export function auditMaxRuns(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_MAX_RUNS');
 }
 
-/** Maximum successful inference calls in one audit session. */
-export function auditMaxMessages(env: Env): number {
-  return positiveIntegerVar(env, 'AUDIT_MAX_MESSAGES');
+/** How many times the planned grader run one run's abuse ceiling allows. */
+export function auditRunHeadroom(env: Env): number {
+  return positiveIntegerVar(env, 'AUDIT_RUN_HEADROOM');
 }
 
 /** Maximum byte length of one audit upload. */
 export function auditMaxUploadBytes(env: Env): number {
   return positiveIntegerVar(env, 'AUDIT_MAX_UPLOAD_BYTES');
-}
-
-/** Maximum aggregate uploaded bytes reserved or completed by one audit session. */
-export function auditMaxTotalUploadBytes(env: Env): number {
-  return positiveIntegerVar(env, 'AUDIT_MAX_TOTAL_UPLOAD_BYTES');
 }
 
 /** Maximum serialized JSON bytes accepted by one audit inference request. */
@@ -664,10 +656,9 @@ function positiveIntegerVar(
   name:
     | 'MASTER_SUBSCRIBER_ID'
     | 'AUDIT_SESSION_TTL_SECONDS'
-    | 'AUDIT_MAX_UPLOADS'
-    | 'AUDIT_MAX_MESSAGES'
+    | 'AUDIT_MAX_RUNS'
+    | 'AUDIT_RUN_HEADROOM'
     | 'AUDIT_MAX_UPLOAD_BYTES'
-    | 'AUDIT_MAX_TOTAL_UPLOAD_BYTES'
     | 'AUDIT_MAX_MESSAGE_BYTES'
     | 'FREE_VISUAL_VERIFY_DAILY_LIMIT',
 ): number {
