@@ -110,7 +110,6 @@ export function anthropicMessageStart(
 
 export type FetchMock = Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
 
-/** Create a typed fetch mock and install it as the global `fetch`. */
 /** Complete Anthropic Files API record; the adapter validates every member. */
 export function anthropicFileRecord(
   id: string,
@@ -128,10 +127,134 @@ export function anthropicFileRecord(
   };
 }
 
+/**
+ * Create a typed fetch mock and install it as the global `fetch`. The mock plays the provider:
+ * a test answers with the Anthropic message it wants the model to return, and when the request
+ * asked for `stream: true` the provider delivers that message as the Messages API event stream,
+ * exactly as the real API renders one answer in the transport the request chose.
+ */
 export function stubFetch(): FetchMock {
   const fetchMock: FetchMock = vi.fn();
-  vi.stubGlobal('fetch', fetchMock);
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+    inRequestedTransport(await fetchMock(input, init), init),
+  );
   return fetchMock;
+}
+
+async function inRequestedTransport(
+  response: Response | undefined,
+  init: RequestInit | undefined,
+): Promise<Response | undefined> {
+  if (!response || response.bodyUsed || response.status !== 200 || !requestsStream(init)) {
+    return response;
+  }
+  if (response.headers.get('Content-Type')?.includes('text/event-stream')) return response;
+  let message: unknown;
+  try {
+    message = JSON.parse(await response.clone().text()) as unknown;
+  } catch {
+    return response;
+  }
+  if (!isRecord(message) || message.type !== 'message') return response;
+  return anthropicStreamResponse(message);
+}
+
+function requestsStream(init: RequestInit | undefined): boolean {
+  if (typeof init?.body !== 'string') return false;
+  try {
+    const body = JSON.parse(init.body) as unknown;
+    return isRecord(body) && body.stream === true;
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function anthropicStreamResponse(message: Readonly<Record<string, unknown>>): Response {
+  const { stop_details: _terminalOnly, ...started } = message;
+  const usage = isRecord(message.usage) ? message.usage : {};
+  const content = Array.isArray(message.content) ? message.content : [];
+  const events: Record<string, unknown>[] = [
+    {
+      type: 'message_start',
+      message: {
+        ...started,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { ...usage, output_tokens: 0 },
+      },
+    },
+  ];
+  content.forEach((raw: unknown, index) => {
+    const block = isRecord(raw) ? raw : {};
+    if (block.type === 'text') {
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'text', text: '' },
+      });
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'text_delta', text: block.text },
+      });
+      for (const citation of Array.isArray(block.citations) ? block.citations : []) {
+        events.push({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'citations_delta', citation },
+        });
+      }
+    } else if (block.type === 'tool_use') {
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} },
+      });
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) },
+      });
+    } else if (block.type === 'thinking') {
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      });
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'thinking_delta', thinking: block.thinking },
+      });
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'signature_delta', signature: block.signature },
+      });
+    } else {
+      events.push({ type: 'content_block_start', index, content_block: block });
+    }
+    events.push({ type: 'content_block_stop', index });
+  });
+  events.push({
+    type: 'message_delta',
+    delta: {
+      stop_reason: message.stop_reason,
+      stop_sequence: message.stop_sequence ?? null,
+      ...(message.stop_details === undefined ? {} : { stop_details: message.stop_details }),
+    },
+    usage: { output_tokens: usage.output_tokens },
+  });
+  events.push({ type: 'message_stop' });
+  const body = events
+    .map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join('');
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
 /** The nth fetch call's `(url, init)` — throws if that call was never made. */

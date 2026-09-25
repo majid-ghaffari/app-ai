@@ -102,6 +102,7 @@ export function handleMessagesNonStream(
       options: Readonly<Record<string, unknown>>,
     ) => Promise<unknown>;
     readonly cache?: ShimCacheContext | null;
+    readonly asStream?: boolean;
   },
 ): Promise<void>;
 export function handleMessagesStream(

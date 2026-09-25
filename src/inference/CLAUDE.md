@@ -53,6 +53,17 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   union. Browser tools are returned; the worker never executes them.
 - Every transport error, abort, timeout, HTTP failure, and invalid response is
   normalized as `InferenceFailure` before leaving an adapter.
+- `deadline.ts` is the ONE upstream inference deadline. The service runs every
+  adapter `complete`/`stream` call, and the factory runs the unregistered
+  passthrough, under it, alongside the caller's cancellation. No adapter,
+  handler, or prompt sets another time limit on a model call. A call the
+  deadline ends becomes the 504 `InferenceTimeoutException` failure with code
+  `inference_timeout`
+  ([docs/DECISIONS.md → One upstream inference deadline, owned by app-ai](../../docs/DECISIONS.md#one-upstream-inference-deadline-owned-by-app-ai)).
+- The Anthropic adapter's `complete` streams upstream and assembles the events
+  into the exact non-streaming message body, so registered `/messages` keep
+  their JSON response while large output budgets stay on the transport the
+  provider recommends for them.
 - Production code remains dependency-free and uses Web `fetch` plus local types.
 - The Cloudflare adapter accepts one inline image, emits Qwen's OpenAI-compatible
   multimodal message shape, disables thinking, propagates request cancellation,

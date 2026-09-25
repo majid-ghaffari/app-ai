@@ -15,6 +15,7 @@ import type {
 import type { InferenceProviderAdapter } from './adapter';
 import { InferenceFailure } from './adapter';
 import { applyCanonicalConversationBreakpoints, hasExtendedFilePrefix } from './cache';
+import { completeWithinDeadline, streamWithinDeadline } from './deadline';
 
 /** Adapter resolver injected by the factory so the runtime contains no vendor switch. */
 export type AdapterResolver = (request: InferenceRequest) => InferenceProviderAdapter;
@@ -31,7 +32,10 @@ export class DefaultInferenceService implements InferenceService {
 
   async complete(request: InferenceRequest): Promise<InferenceResult> {
     const prepared = await this.prepareRequest(request);
-    return this.resolveAdapter(prepared).complete(prepared);
+    const adapter = this.resolveAdapter(prepared);
+    return completeWithinDeadline(prepared.modelProfile.provider, prepared.abortSignal, (signal) =>
+      adapter.complete({ ...prepared, abortSignal: signal }),
+    );
   }
 
   stream(request: InferenceRequest): AsyncIterable<InferenceEvent> {
@@ -40,7 +44,10 @@ export class DefaultInferenceService implements InferenceService {
 
   private async *preparedStream(request: InferenceRequest): AsyncIterable<InferenceEvent> {
     const prepared = await this.prepareRequest(request);
-    yield* this.resolveAdapter(prepared).stream(prepared);
+    const adapter = this.resolveAdapter(prepared);
+    yield* streamWithinDeadline(prepared.modelProfile.provider, prepared.abortSignal, (signal) =>
+      adapter.stream({ ...prepared, abortSignal: signal }),
+    );
   }
 
   async runAgent(request: AgentRequest): Promise<AgentResult> {

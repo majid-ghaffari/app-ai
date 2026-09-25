@@ -704,10 +704,14 @@ describe('handleChat — streaming', () => {
   });
 
   it('preserves canonical media/tool-result inputs and propagates the request abort signal', async () => {
-    const fetchMock = stubFetch().mockResolvedValue(
-      sseResponse(anthropicSse([{ type: 'text', text: 'I can see it' }], 'end_turn')),
-    );
-    const request = chatRequest({
+    const caller = new AbortController();
+    let upstreamCancelledWithCaller = false;
+    const fetchMock = stubFetch().mockImplementation(async (_input, init) => {
+      caller.abort();
+      upstreamCancelledWithCaller = init?.signal?.aborted === true;
+      return sseResponse(anthropicSse([{ type: 'text', text: 'I can see it' }], 'end_turn'));
+    });
+    const unsignalled = chatRequest({
       messages: [
         {
           role: 'user',
@@ -753,11 +757,12 @@ describe('handleChat — streaming', () => {
       ],
     });
 
+    const request = new Request(unsignalled, { signal: caller.signal });
     const response = await handleChat(request, ENV, CORS);
     await readWorkerSse(response);
 
     const call = fetchCall(fetchMock, 0);
-    expect(call.init.signal).toBe(request.signal);
+    expect(upstreamCancelledWithCaller).toBe(true);
     expect(sentBody(call.init).messages?.[0]?.content).toEqual([
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
       { type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } },

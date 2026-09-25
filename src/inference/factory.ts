@@ -19,6 +19,7 @@ import { GeminiGenerateContentAdapter } from './adapters/gemini';
 import { CloudflareWorkersAiAdapter } from './adapters/cloudflare';
 import { DefaultInferenceService } from './service';
 import { resolveInferenceFileReferences } from './file-references';
+import { completeWithinDeadline } from './deadline';
 
 /** Construct the provider-neutral service for one worker request environment. */
 export function createInferenceService(
@@ -78,7 +79,10 @@ export function createUnregisteredSelectorPassthrough(
 ): UnregisteredSelectorPassthroughService {
   const adapter = new AnthropicMessagesAdapter(env);
   return {
-    complete: (payload, abortSignal, log) => adapter.completePassthrough(payload, abortSignal, log),
+    complete: (payload, abortSignal, log) =>
+      completeWithinDeadline('anthropic', abortSignal, (signal) =>
+        adapter.completePassthrough(payload, signal, log),
+      ),
     countTokens: (payload, abortSignal) => adapter.countPassthroughTokens(payload, abortSignal),
   };
 }

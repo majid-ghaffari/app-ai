@@ -118,28 +118,37 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
   }
 
   async complete(request: InferenceRequest): Promise<InferenceResult> {
-    const response = await callAnthropic(
-      () => anthropic.createMessage(toAnthropicPayload(request), this.env, request.abortSignal),
-      request.abortSignal,
-    );
-    const data = await readAnthropicJson<AnthropicResponseBody>(response);
-    if (!response.ok) throw anthropicFailure(response.status, data);
-    return responseResult(data);
+    const events = this.readMessageStream(request);
+    for (;;) {
+      const next = await events.next();
+      if (next.done) return responseResult(next.value);
+    }
   }
 
   async *stream(request: InferenceRequest): AsyncIterable<InferenceEvent> {
+    yield* this.readMessageStream(request);
+  }
+
+  private async *readMessageStream(
+    request: InferenceRequest,
+  ): AsyncGenerator<InferenceEvent, AnthropicResponseBody> {
     const response = await callAnthropic(
       () => anthropic.streamMessage(toAnthropicPayload(request), this.env, request.abortSignal),
       request.abortSignal,
     );
-    if (!response.ok || !response.body) {
+    if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw anthropicFailure(response.status, undefined, detail);
+      throw anthropicFailure(response.status, parseErrorBody(detail), detail);
+    }
+    if (!response.body) {
+      throw invalidAnthropicResponse('Anthropic returned a stream response with no body');
     }
 
     yield { type: 'message-start' };
     const blocks: PendingBlock[] = [];
+    let startedMessage: Record<string, unknown> | undefined;
     let stopReason: string | null = null;
+    let messageDelta: Record<string, unknown> = {};
     let usage: Usage | undefined;
     let sawMessageStart = false;
     let sawMessageDelta = false;
@@ -187,6 +196,7 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
             throw invalidAnthropicResponse('Anthropic stream contained an invalid message_start');
           }
           sawMessageStart = true;
+          startedMessage = { ...event.message };
           validateUsage(event.message.usage, true);
           usage = event.message.usage;
         } else if (event.type === 'content_block_start') {
@@ -278,20 +288,26 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
             );
           }
         } else if (event.type === 'message_delta') {
+          const delta: unknown = event.delta;
           if (
             !sawMessageStart ||
-            sawMessageDelta ||
             openBlocks.size > 0 ||
-            typeof event.delta?.stop_reason !== 'string'
+            !isJsonObject(delta) ||
+            (delta.stop_reason !== undefined &&
+              delta.stop_reason !== null &&
+              typeof delta.stop_reason !== 'string')
           ) {
             throw invalidAnthropicResponse('Anthropic stream contained an invalid message_delta');
           }
           sawMessageDelta = true;
-          stopReason = event.delta.stop_reason;
-          validateStreamDeltaUsage(event.usage);
-          usage = { ...(usage ?? {}), ...event.usage };
-          validateUsage(usage, true);
-          yield { type: 'usage', usage: normalizeUsage(usage) };
+          messageDelta = { ...messageDelta, ...delta };
+          if (typeof delta.stop_reason === 'string') stopReason = delta.stop_reason;
+          if (event.usage !== undefined) {
+            validateStreamDeltaUsage(event.usage);
+            usage = { ...(usage ?? {}), ...event.usage };
+            validateUsage(usage, true);
+            yield { type: 'usage', usage: normalizeUsage(usage) };
+          }
         } else if (event.type === 'message_stop') {
           if (!sawMessageStart || !sawMessageDelta || openBlocks.size > 0) {
             throw invalidAnthropicResponse('Anthropic stream contained an invalid message_stop');
@@ -331,6 +347,15 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
       }),
     };
     yield { type: 'complete', result };
+    return {
+      ...startedMessage,
+      ...messageDelta,
+      content: blocks.map((block) => block.raw),
+      stop_reason: stopReason,
+      stop_sequence:
+        typeof messageDelta.stop_sequence === 'string' ? messageDelta.stop_sequence : null,
+      usage,
+    };
   }
 
   async countTokens(request: InferenceRequest): Promise<number | null> {
@@ -1027,6 +1052,14 @@ function anthropicTransportFailure(error: unknown, abortSignal?: AbortSignal): I
     retryable: !cancelled,
     failureClass: cancelled ? 'cancelled' : timedOut ? 'timeout' : 'network',
   });
+}
+
+function parseErrorBody(detail: string): unknown {
+  try {
+    return JSON.parse(detail) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readAnthropicJson<T>(response: Response): Promise<T> {

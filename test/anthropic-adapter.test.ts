@@ -349,8 +349,9 @@ describe('Anthropic complete adapter', () => {
     await expect(createInferenceService(ENV).complete(canonicalRequest())).rejects.toMatchObject({
       inferenceError: {
         backend: 'anthropic',
-        status: 200,
+        status: null,
         code: 'invalid_response',
+        message: 'Anthropic stream ended with a truncated event',
         failureClass: 'invalid-response',
       },
     });

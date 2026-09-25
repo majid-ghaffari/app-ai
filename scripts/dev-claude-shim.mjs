@@ -12,7 +12,7 @@
  * auth. No `src/` change is needed.
  *
  * Endpoints (the subset the worker actually calls):
- *   POST /v1/messages                      — non-stream (probes: createMessage) + stream:true SSE (/chat)
+ *   POST /v1/messages                      — non-stream + stream:true SSE
  *   POST /v1/messages/count_tokens         — { input_tokens } char/4 estimate (advisory)
  *   POST /v1/files, GET/DELETE /v1/files/{id} — local temp store keyed by generated file_id
  *
@@ -884,6 +884,7 @@ async function handleMessagesNonStream(body, contextId, res, abortController, de
   const selectedFulfiller = localFulfillerName(localEnv);
   const fulfill = dependencies.fulfill || fulfillLocalOneShot;
   const cache = dependencies.cache || null;
+  const asStream = dependencies.asStream === true;
   const normalizedBody = {
     ...body,
     messages: Array.isArray(body.messages)
@@ -908,7 +909,8 @@ async function handleMessagesNonStream(body, contextId, res, abortController, de
       { ...result, content },
       `msg_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
     );
-    sendJson(res, 200, responseBody);
+    if (asStream) sendMessageAsStream(res, responseBody);
+    else sendJson(res, 200, responseBody);
     // Only a SUCCESSFUL fulfilment is recorded, so a transient failure can never
     // become the permanent answer.
     recordCacheEntry(cache, body, result.model, { response: responseBody });
@@ -928,6 +930,66 @@ async function handleMessagesNonStream(body, contextId, res, abortController, de
 
 function sseFrame(eventType, data) {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function messageStreamFrames(message) {
+  const frames = [
+    {
+      event: 'message_start',
+      data: {
+        type: 'message_start',
+        message: {
+          ...message,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { ...message.usage, output_tokens: 0 },
+        },
+      },
+    },
+  ];
+  message.content.forEach((block, index) => {
+    if (block.type === 'text') {
+      frames.push({
+        event: 'content_block_start',
+        data: { type: 'content_block_start', index, content_block: { type: 'text', text: '' } },
+      });
+      frames.push({
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'text_delta', text: block.text },
+        },
+      });
+    } else {
+      frames.push({
+        event: 'content_block_start',
+        data: { type: 'content_block_start', index, content_block: block },
+      });
+    }
+    frames.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index } });
+  });
+  frames.push({
+    event: 'message_delta',
+    data: {
+      type: 'message_delta',
+      delta: { stop_reason: message.stop_reason, stop_sequence: message.stop_sequence },
+      usage: { output_tokens: message.usage.output_tokens },
+    },
+  });
+  frames.push({ event: 'message_stop', data: { type: 'message_stop' } });
+  return frames;
+}
+
+function sendMessageAsStream(res, message) {
+  writeSseHead(res);
+  for (const frame of messageStreamFrames(message)) res.write(sseFrame(frame.event, frame.data));
+  res.end();
+}
+
+function isOneShotStream(body) {
+  return body.stream === true && !(Array.isArray(body.tools) && body.tools.length > 0);
 }
 
 /** The SSE response head — shared by the live stream and a cache replay. */
@@ -1281,7 +1343,10 @@ async function handleHttp(req, res) {
       res.once('close', () => {
         if (!res.writableEnded) controller.abort();
       });
-      const transport = body.stream === true ? 'stream' : 'messages';
+      const oneShotStream = isOneShotStream(body);
+      const { stream: _stream, ...oneShotBody } = body;
+      const fulfilledBody = oneShotStream ? oneShotBody : body;
+      const transport = body.stream === true && !oneShotStream ? 'stream' : 'messages';
       debug(
         `/v1/messages model=${body.model || DEFAULT_MODEL} stream=${!!body.stream} tools=${Array.isArray(body.tools) ? body.tools.length : 0}`,
       );
@@ -1291,10 +1356,19 @@ async function handleHttp(req, res) {
       if (cache) {
         const entry = lookupCachedEntry(cache, res);
         if (entry) {
-          return transport === 'stream' ? replayStream(entry, res) : replayNonStream(entry, res);
+          if (transport === 'stream') return replayStream(entry, res);
+          return oneShotStream
+            ? sendMessageAsStream(res, entry.response)
+            : replayNonStream(entry, res);
         }
       } else {
         markCacheOutcome(res, 'off');
+      }
+      if (oneShotStream) {
+        return handleMessagesNonStream(fulfilledBody, contextId, res, controller, {
+          cache,
+          asStream: true,
+        });
       }
       if (body.stream === true) {
         return handleMessagesStream(body, contextId, res, controller, LOCAL_FULFILLER, cache);

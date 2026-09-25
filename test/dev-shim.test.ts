@@ -73,6 +73,7 @@ function responseRecorder() {
       }),
     },
     status: () => status,
+    raw: () => payload,
     json: () => JSON.parse(payload) as unknown,
   };
 }
@@ -111,6 +112,52 @@ describe('shim canonical local HTTP wiring', () => {
       stop_reason: 'end_turn',
     });
     expect(fulfill).toHaveBeenCalledOnce();
+  });
+
+  it('delivers a one-shot answer as the event stream a stream request expects', async () => {
+    const recorder = responseRecorder();
+    const fulfill = vi.fn(async () => ({
+      fulfiller: 'codex',
+      model: 'gpt-codex-test',
+      content: [{ type: 'text', text: '```json\n{"pages":{}}\n```' }],
+      stopReason: 'end_turn',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    }));
+    await handleMessagesNonStream(
+      { messages: [{ role: 'user', content: 'propose' }] },
+      '',
+      recorder.response,
+      new AbortController(),
+      {
+        env: { LOCAL_AI_FULFILLER: 'codex', CODEX_LOCAL_MODEL: 'gpt-codex-test' },
+        fulfill,
+        asStream: true,
+      },
+    );
+    expect(recorder.status()).toBe(200);
+    const events = recorder
+      .raw()
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
+    expect(events.map((event) => event.type)).toEqual([
+      'message_start',
+      'content_block_start',
+      'content_block_delta',
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
+    expect(events[2]).toMatchObject({ delta: { type: 'text_delta', text: '{"pages":{}}' } });
+    expect(events[4]).toMatchObject({
+      delta: { stop_reason: 'end_turn' },
+      usage: { output_tokens: 2 },
+    });
   });
 
   it.each([undefined, 'not-an-array', null])(

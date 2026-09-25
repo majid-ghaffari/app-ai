@@ -987,7 +987,7 @@ describe('files handlers', () => {
       const named = uploaded.references[prompt];
       if (!named) throw new Error(`upload response named no reference for ${prompt}`);
       expect(named.id).toBe(uploaded.id);
-      const fetchMock = stubFetch().mockResolvedValue(jsonOk(anthropicMessage()));
+      const fetchMock = stubFetch().mockImplementation(async () => jsonOk(anthropicMessage()));
       const request = new Request('https://app-ai.test/messages', {
         method: 'POST',
         headers: {
@@ -1971,9 +1971,15 @@ describe('handleMessages', () => {
   });
 
   it('preserves registered-request sampling, stops, metadata, media, and abort signal', async () => {
+    const caller = new AbortController();
+    let upstreamCancelledWithCaller = false;
     const fetchMock = stubFetch();
-    fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
-    const request = messagesRequest(
+    fetchMock.mockImplementation(async (_input, init) => {
+      caller.abort();
+      upstreamCancelledWithCaller = init?.signal?.aborted === true;
+      return jsonOk(anthropicMessage());
+    });
+    const unsignalled = messagesRequest(
       {
         model: 'caller-model',
         max_tokens: 1,
@@ -2090,12 +2096,13 @@ describe('handleMessages', () => {
       },
       'onboarding-review',
     );
+    const request = new Request(unsignalled, { signal: caller.signal });
 
     await handleMessages(request, ENV, CORS);
 
     const call = fetchCall(fetchMock, 0);
     const sent = sentBody(call.init);
-    expect(call.init.signal).toBe(request.signal);
+    expect(upstreamCancelledWithCaller).toBe(true);
     expect(sent).toMatchObject({
       temperature: 0.25,
       top_p: 0.8,

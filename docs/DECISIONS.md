@@ -712,7 +712,10 @@ The development-only Anthropic-compatible shim selects a canonical local
 one-shot fulfiller through `LOCAL_AI_FULFILLER`. Claude Code remains the default
 and retains the established streaming, server-tool, and browser-tool bridge.
 Codex is deliberately narrower: it requires an explicit `CODEX_LOCAL_MODEL` and
-accepts only non-streaming, tool-free visual/structured turns. It runs
+accepts only tool-free visual/structured turns. The shim fulfils a tool-free
+`stream: true` request as that same one-shot turn and delivers the answer as the
+Messages API event sequence, so the registered prompts, which stream upstream,
+reach either fulfiller. It runs
 `codex exec` ephemerally with inherited AGENTS/project instruction bytes set to
 zero, ignored user configuration/rules, a read-only sandbox,
 disabled shell/web/plugin/subagent/app-connector/dependency-install tools, image files, an optional JSON Schema output
@@ -911,3 +914,26 @@ request supersedes a pending one, because the conductor never sends one while it
 another. A request whose caller disconnected therefore never holds the session, which is what made
 every retry after a transport timeout fail until the session expired. A superseded request still
 counts toward its run's ceiling, so concurrency cannot buy more paid calls than the ceiling allows.
+
+### One upstream inference deadline, owned by app-ai
+
+lib and the extension wait for app-ai's answer or its error and hold no deadline of their own, so
+app-ai is the only place a model call's time limit lives: `UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS`
+in `src/inference/deadline.ts`. Every upstream inference call runs under it: registered `/messages`,
+each `/chat` turn, and the unregistered passthrough. The caller's own cancellation still aborts the
+call. When the deadline passes first, app-ai answers `504` with its error envelope,
+`{ "Message": "The AI model did not answer within the 600-second inference deadline.",
+"ExceptionType": "InferenceTimeoutException", "MessageDetail": "inference_timeout" }`, and the SSE
+`error` event of `/chat` carries the same payload.
+
+The value is the provider's documented limit for one request that a client waits on for a single
+answer: ten minutes. The Claude API's [Long requests](https://platform.claude.com/docs/en/api/errors#long-requests)
+guidance names ten minutes as the point past which a request should not be held open for one
+response, and the official SDKs validate that a non-streaming Messages request is not expected to
+exceed a ten-minute timeout, which is also their default request timeout. The same guidance advises
+against a large `max_tokens` without streaming, because some networks drop idle connections, so the
+Anthropic adapter's `complete` asks for `stream: true` and assembles the event stream into the exact
+message body the non-streaming API returns: every `message_start` member, the content blocks, and
+every member the one or more `message_delta` events carry, such as a refusal's `stop_details`. A
+stream answer with no body is an invalid provider response, never a success. The `/messages`
+response contract stays one JSON message.

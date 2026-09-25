@@ -17,6 +17,7 @@
 export type CorsHeaders = Record<string, string>;
 
 import { InferenceFailure } from '../inference/adapter';
+import { INFERENCE_TIMEOUT_CODE } from '../inference/deadline';
 import { SecretConfigurationError } from '../config';
 
 /**
@@ -117,7 +118,9 @@ export function errorEnvelopeFrom(error: unknown, fallbackMessage: string): Brai
   if (error instanceof InferenceFailure) {
     return errorPayload(
       error.inferenceError.message || fallbackMessage,
-      inferenceExceptionType(error.inferenceError.backend),
+      error.inferenceError.code === INFERENCE_TIMEOUT_CODE
+        ? 'InferenceTimeoutException'
+        : inferenceExceptionType(error.inferenceError.backend),
       error.inferenceError.detail,
     );
   }
