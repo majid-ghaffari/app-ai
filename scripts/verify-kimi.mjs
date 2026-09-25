@@ -160,11 +160,7 @@ async function probeStreamDoneSentinel(context) {
       `Kimi probe stream-done-sentinel failed (${response.status}): ${raw.slice(0, 500)}`,
     );
   }
-  const payloads = raw
-    .split(/\r?\n\r?\n/)
-    .map((frame) => frame.trim())
-    .filter((frame) => frame.startsWith('data:'))
-    .map((frame) => frame.slice(frame.indexOf(':') + 1).trim());
+  const payloads = streamPayloads(raw);
   if (!payloads.includes('[DONE]')) {
     throw new Error('Kimi probe stream-done-sentinel did not emit data: [DONE]');
   }
@@ -188,6 +184,81 @@ async function probeStreamDoneSentinel(context) {
         contentIndexes.length === 0 ||
         Math.max(...reasoningIndexes) < Math.min(...contentIndexes),
     },
+  };
+}
+
+function streamPayloads(raw) {
+  return raw
+    .split(/\r?\n\r?\n/)
+    .map((frame) => frame.trim())
+    .filter((frame) => frame.startsWith('data:'))
+    .map((frame) => frame.slice(frame.indexOf(':') + 1).trim());
+}
+
+async function probeStreamedToolCall(context) {
+  const response = await context.fetchImpl(context.chatUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${context.key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: context.model,
+      messages: baseMessages('Call report_status with ok set to true.'),
+      tools: [SMOKE_TOOL],
+      tool_choice: context.model.startsWith('k3') ? 'required' : 'auto',
+      ...reasoningControl(context.model),
+      max_completion_tokens: 2048,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Kimi probe streamed-tool-call failed (${response.status}): ${raw.slice(0, 500)}`,
+    );
+  }
+  const payloads = streamPayloads(raw);
+  if (!payloads.includes('[DONE]')) {
+    throw new Error('Kimi probe streamed-tool-call did not emit data: [DONE]');
+  }
+  const chunks = payloads
+    .filter((payload) => payload !== '[DONE]')
+    .map((payload) => JSON.parse(payload));
+  const calls = new Map();
+  let finishReason = null;
+  for (const chunk of chunks) {
+    const choice = chunk?.choices?.[0];
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    for (const delta of choice?.delta?.tool_calls ?? []) {
+      const index = delta.index;
+      const current = calls.get(index) ?? { id: '', name: '', arguments: '' };
+      if (typeof delta.id === 'string') current.id = delta.id;
+      if (typeof delta.function?.name === 'string') current.name = delta.function.name;
+      if (typeof delta.function?.arguments === 'string') {
+        current.arguments += delta.function.arguments;
+      }
+      calls.set(index, current);
+    }
+  }
+  const call = calls.get(0);
+  let input = null;
+  try {
+    input = JSON.parse(call?.arguments ?? '');
+  } catch {
+    throw new Error('Kimi probe streamed-tool-call returned invalid tool JSON');
+  }
+  if (
+    finishReason !== 'tool_calls' ||
+    calls.size !== 1 ||
+    typeof call?.id !== 'string' ||
+    call.id.length === 0 ||
+    call.name !== 'report_status' ||
+    input?.ok !== true
+  ) {
+    throw new Error('Kimi probe streamed-tool-call returned an invalid tool call');
+  }
+  return {
+    outcome: 'accepted',
+    detail: { frameCount: chunks.length, finishReason, toolName: call.name, input },
   };
 }
 
@@ -269,6 +340,73 @@ async function probeFilesApi(context) {
   };
 }
 
+async function probeReasoningToolReplay(context) {
+  const messages = baseMessages('Call report_status with ok set to true.');
+  const first = await post(context.fetchImpl, context.chatUrl, context.key, {
+    model: context.model,
+    messages,
+    tools: [SMOKE_TOOL],
+    tool_choice: context.model.startsWith('k3') ? 'required' : 'auto',
+    ...reasoningControl(context.model),
+    max_completion_tokens: 2048,
+  });
+  requireOk('reasoning-tool-replay', first);
+  const firstChoice = first.body?.choices?.[0];
+  const assistant = first.body?.choices?.[0]?.message;
+  const calls = assistant?.tool_calls;
+  const call = calls?.[0];
+  let input = null;
+  try {
+    input = JSON.parse(call?.function?.arguments ?? '');
+  } catch {
+    throw new Error('Kimi probe reasoning-tool-replay returned invalid tool JSON');
+  }
+  if (
+    firstChoice?.finish_reason !== 'tool_calls' ||
+    typeof assistant?.reasoning_content !== 'string' ||
+    assistant.reasoning_content.length === 0 ||
+    !Array.isArray(calls) ||
+    calls.length !== 1 ||
+    typeof call?.id !== 'string' ||
+    call?.function?.name !== 'report_status' ||
+    input?.ok !== true
+  ) {
+    throw new Error('Kimi probe reasoning-tool-replay returned an invalid first tool turn');
+  }
+  const replayedAssistant = {
+    role: 'assistant',
+    content: assistant.content ?? '',
+    reasoning_content: assistant.reasoning_content,
+    tool_calls: calls,
+  };
+  const second = await post(context.fetchImpl, context.chatUrl, context.key, {
+    model: context.model,
+    messages: [
+      ...messages,
+      replayedAssistant,
+      { role: 'tool', tool_call_id: call.id, content: 'ok' },
+    ],
+    tools: [SMOKE_TOOL],
+    ...reasoningControl(context.model),
+    max_completion_tokens: 2048,
+  });
+  requireOk('reasoning-tool-replay', second);
+  const secondFinishReason = second.body?.choices?.[0]?.finish_reason;
+  if (secondFinishReason !== 'stop') {
+    throw new Error(
+      `Kimi probe reasoning-tool-replay final turn finished as ${secondFinishReason}`,
+    );
+  }
+  return {
+    outcome: 'accepted',
+    detail: {
+      firstFinishReason: firstChoice.finish_reason,
+      secondFinishReason,
+      reasoningLength: assistant.reasoning_content.length,
+    },
+  };
+}
+
 async function probeReasoningReplayWithoutContent(context) {
   const result = await post(context.fetchImpl, context.chatUrl, context.key, {
     model: context.model,
@@ -325,8 +463,10 @@ const PROBES = [
   { id: 'auth-and-chat', required: true, run: probeAuthAndChat },
   { id: 'structured-output-strict', required: true, run: probeStructuredOutputStrict },
   { id: 'stream-done-sentinel', required: true, run: probeStreamDoneSentinel },
+  { id: 'streamed-tool-call', required: true, run: probeStreamedToolCall },
   { id: 'inline-image', required: false, run: probeInlineImage },
   { id: 'files-api', required: true, run: probeFilesApi },
+  { id: 'reasoning-tool-replay', required: true, run: probeReasoningToolReplay },
   {
     id: 'reasoning-replay-without-content',
     required: false,

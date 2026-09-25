@@ -5,6 +5,7 @@ import type {
   InferenceRequest,
   InferenceToolCall,
   InferenceToolResult,
+  ProviderFileReference,
 } from '../../lib/inference-types';
 import { readInlineEvidence } from './evidence';
 import { WorkerError } from '../../lib/responses';
@@ -20,7 +21,6 @@ const UTF8 = new TextEncoder();
 export interface KimiHtmlFragmentSelection {
   readonly fragments: Map<string, string[]>;
   readonly bytesByDocument: Map<string, number>;
-  totalJsonBytes: number;
 }
 
 export const KIMI_HTML_TOOLS: readonly CanonicalServerToolDefinition[] = [
@@ -65,6 +65,7 @@ export interface KimiHtmlToolRequest {
 export async function prepareKimiHtmlToolRequest(
   env: Env,
   request: InferenceRequest,
+  documentCache?: Map<string, Promise<string>>,
 ): Promise<KimiHtmlToolRequest | null> {
   const candidates: { location: string; sizeBytes: number }[] = [];
   const names = new Map<string, string>();
@@ -123,8 +124,12 @@ export async function prepareKimiHtmlToolRequest(
         content.push(part);
         continue;
       }
-      const bytes = await readInlineEvidence(env, part.source.reference, request.abortSignal);
-      const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
+      const text = await readStoredText(
+        env,
+        part.source.reference,
+        request.abortSignal,
+        documentCache,
+      );
       documents.set(name, text);
       locations.set(name, { message: messageIndex, part: partIndex });
       identities.push(
@@ -151,6 +156,31 @@ export async function prepareKimiHtmlToolRequest(
     locations,
     cacheKey: identities.sort().join('|'),
   };
+}
+
+async function readStoredText(
+  env: Env,
+  reference: ProviderFileReference,
+  abortSignal?: AbortSignal,
+  cache?: Map<string, Promise<string>>,
+): Promise<string> {
+  const key = [
+    reference.upstreamFileId,
+    reference.contentHash,
+    reference.sizeBytes,
+    reference.expiresAt,
+  ].join('\0');
+  let pending = cache?.get(key);
+  if (!pending) {
+    pending = readInlineEvidence(env, reference, abortSignal).then((bytes) =>
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes),
+    );
+    cache?.set(key, pending);
+    void pending.catch(() => {
+      if (cache && cache.get(key) === pending) cache.delete(key);
+    });
+  }
+  return pending;
 }
 
 export function replaceKimiHtmlEvidence(
@@ -192,7 +222,6 @@ export function createKimiHtmlFragmentSelection(
   return {
     fragments: new Map(names.map((name) => [name, []])),
     bytesByDocument: new Map(names.map((name) => [name, 0])),
-    totalJsonBytes: 0,
   };
 }
 
@@ -235,7 +264,6 @@ export function collectKimiHtmlFragments(
       selected.push(retained);
     }
     selection.bytesByDocument.set(name, used + retainedBytes);
-    selection.totalJsonBytes += retainedBytes;
   };
   add(record.html, record.offset);
   if (Array.isArray(record.hits)) {
@@ -281,7 +309,7 @@ function fitFragment(
   let best: { fragment: string; bytes: number } | null = null;
   while (low <= high) {
     const length = Math.floor((low + high) / 2);
-    const fragment = `${prefix}${html.slice(0, length)}`;
+    const fragment = `${prefix}${unicodeSafeSlice(html, 0, length)}`;
     const bytes = jsonBytes(fragment);
     if (bytes <= maxBytes) {
       best = { fragment, bytes };
@@ -324,12 +352,17 @@ export function executeKimiHtmlTool(
       isError = true;
     } else {
       const end = Math.min(document.length, offset + Math.min(limit, MAX_READ_CHARACTERS));
+      const html = unicodeSafeSlice(document, offset, end);
+      const start =
+        offset < document.length && isLowSurrogate(document.charCodeAt(offset))
+          ? offset + 1
+          : offset;
       output = {
         document: fields.document,
-        offset,
-        end,
+        offset: start,
+        end: start + html.length,
         totalCharacters: document.length,
-        html: document.slice(offset, end),
+        html,
       };
     }
   } else if (call.name === 'kimi_search_html') {
@@ -349,7 +382,8 @@ export function executeKimiHtmlTool(
         const found = match.index;
         hits.push({
           offset: found,
-          html: document.slice(
+          html: unicodeSafeSlice(
+            document,
             Math.max(0, found - SEARCH_CONTEXT_CHARACTERS),
             Math.min(document.length, found + query.length + SEARCH_CONTEXT_CHARACTERS),
           ),
@@ -368,6 +402,36 @@ export function executeKimiHtmlTool(
     isError,
     cache: 'none',
   };
+}
+
+export function unicodeSafeSlice(value: string, start: number, end: number): string {
+  let safeStart = start;
+  let safeEnd = end;
+  if (
+    safeStart > 0 &&
+    safeStart < value.length &&
+    isLowSurrogate(value.charCodeAt(safeStart)) &&
+    isHighSurrogate(value.charCodeAt(safeStart - 1))
+  ) {
+    safeStart += 1;
+  }
+  if (
+    safeEnd > safeStart &&
+    safeEnd < value.length &&
+    isHighSurrogate(value.charCodeAt(safeEnd - 1)) &&
+    isLowSurrogate(value.charCodeAt(safeEnd))
+  ) {
+    safeEnd -= 1;
+  }
+  return value.slice(safeStart, safeEnd);
+}
+
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 }
 
 function escapeRegularExpression(value: string): string {

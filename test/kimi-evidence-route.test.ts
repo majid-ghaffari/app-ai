@@ -46,6 +46,64 @@ function evidenceBucket() {
 }
 
 describe('Kimi prompt-aware evidence route', () => {
+  it('fails a Kimi upload without R2 while the same real route still uploads to Anthropic', async () => {
+    const fetchMock = stubFetch().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/validate-context-id')) {
+        return new Response(JSON.stringify({ SubscriberID: 7, SubscriberTitle: 'Example' }));
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(
+          JSON.stringify({
+            id: 'file_anthropic',
+            type: 'file',
+            filename: 'page.png',
+            mime_type: 'image/png',
+            size_bytes: 3,
+            created_at: '2026-01-01T00:00:00Z',
+            downloadable: false,
+          }),
+        );
+      }
+      throw new Error(`Unexpected outbound request: ${url}`);
+    });
+    const uploadRequest = (prompts: readonly string[] = ['visual-verify']) => {
+      const form = new FormData();
+      form.append('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), 'page.png');
+      prompts.forEach((prompt) => form.append('prompt', prompt));
+      return new Request('https://app-ai.test/files', {
+        method: 'POST',
+        headers: { 'X-Personalizer-Context-ID': 'ctx-binding-route' },
+        body: form,
+      });
+    };
+    const kimi = await worker.fetch(uploadRequest(), {
+      ...ENV,
+      MODEL_OVERRIDES: 'render-verification=kimi-for-coding',
+    });
+    expect(kimi.status).toBe(500);
+    expect(await kimi.json()).toMatchObject({
+      ExceptionType: 'Exception',
+      Message: expect.stringMatching(/INLINE_EVIDENCE_R2/),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const mixed = await worker.fetch(uploadRequest(['image-selection', 'visual-verify']), {
+      ...ENV,
+      MODEL_OVERRIDES: 'render-verification=kimi-for-coding',
+    });
+    expect(mixed.status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const anthropic = await worker.fetch(uploadRequest(), ENV);
+    expect(anthropic.status, await anthropic.clone().text()).toBe(200);
+    expect(await anthropic.json()).toMatchObject({ type: 'file' });
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://brain.test/v2/administrator-authentication/validate-context-id',
+      'https://brain.test/v2/administrator-authentication/validate-context-id',
+      'https://brain.test/v2/administrator-authentication/validate-context-id',
+      'https://api.anthropic.com/v1/files',
+    ]);
+  });
+
   it('seals and replays a server-tool transcript through the real chat route', async () => {
     const { bucket } = evidenceBucket();
     const env = {

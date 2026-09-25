@@ -127,6 +127,22 @@ reference contract works, from `providerFiles`, which means the provider owns
 the full upstream file lifecycle. Kimi's worker-managed evidence has the first
 capability and lacks the second.
 
+### Kimi provider constraints
+
+The Kimi coding endpoint accepts image uploads and serves their compact `ms://`
+identifiers, but its metadata, content-read, and delete operations return 404.
+Deleting an app-ai reference revokes the encrypted R2 object and hosted-id
+sidecar; an image already accepted by Kimi follows Kimi's retention policy.
+Overlapping first use can upload unreachable duplicates because provider I/O
+is request-owned; later requests reuse the completed encrypted sidecar.
+
+Kimi limits a Chat Completions body to 2 MiB. Uploaded images stay outside that
+body as `ms://` references, and oversized uploaded HTML is reduced through the
+bounded internal retrieval loop. A request still over the provider limit returns
+413 before paid completion I/O. Retrieval requires at least one retained exact
+fragment from every stored document and stops after eight tool turns; failure to
+meet either condition is an invalid provider result rather than a partial answer.
+
 Provider-scoped dedup metadata records only what validating and deduplicating the upstream object
 needs — provider, account scope, file policy, content hash, upstream file id, media type, expiry, and
 compatible group identity — and expires no later than the upstream file. A group whose evidence must
@@ -257,6 +273,8 @@ production prompt group is served by a different provider:
    tells the truth.
 5. **The change is reversible.** It is one `[vars]` edit, so the revert is one too — which only
    holds while no prompt, handler, or lib caller has grown a provider-shaped assumption.
+6. **A Kimi route clears its provider gates.** The required paid smoke matrix passes against the
+   configured subscription model, followed by a merchant canary on the exact prompt group.
 
 ## Adding a provider
 

@@ -83,7 +83,7 @@ composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
 ## Registered-prompt inventory
 
-`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt, every loose `.md` at this level is a single-file prompt, and every shared-text alias is declared explicitly in the barrel.
+`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt; every loose prompt `.md` at this level EXCEPT the adapter-internal `kimi-html-retrieval.md` is a single-file registered prompt; and every shared-text alias is declared explicitly in the barrel.
 
 ### The `-all` twins are NOT duplicates
 

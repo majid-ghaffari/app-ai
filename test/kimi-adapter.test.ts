@@ -117,6 +117,28 @@ function request(overrides: Partial<InferenceRequest> = {}): InferenceRequest {
   };
 }
 
+async function uploadReference(
+  adapter: KimiChatCompletionsAdapter,
+  bytes: Uint8Array,
+  filename: string,
+  mediaType: string,
+) {
+  const metadata = await adapter.uploadFile({ bytes, filename, mediaType, policy: POLICY });
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return {
+    provider: 'kimi' as const,
+    accountScope: await adapter.getFileScope(POLICY),
+    tenantScope: 'tenant-test',
+    filePolicy: POLICY.name,
+    compatibleGroups: [ROUTE.promptGroup] as const,
+    upstreamFileId: metadata.id,
+    contentHash: Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+    mediaType: metadata.mediaType,
+    sizeBytes: metadata.sizeBytes,
+    expiresAt: metadata.expiresAt,
+  };
+}
+
 function completion(
   model = PROFILE.model,
   message: Readonly<Record<string, unknown>> = {
@@ -259,6 +281,45 @@ describe('Kimi Code subscription transport', () => {
     expect(peakReads).toBe(1);
   });
 
+  it('evicts a failed decrypted-document cache entry before the next read', async () => {
+    const bucket = evidenceBucket();
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: bucket };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      adapter,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    const storedGet = bucket.get.bind(bucket);
+    const get = vi
+      .spyOn(bucket, 'get')
+      .mockRejectedValueOnce(new Error('temporary R2 failure'))
+      .mockImplementation(storedGet);
+    const cache = new Map<string, Promise<string>>();
+    const htmlRequest = request({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'provider-file', reference },
+              cache: 'none',
+            },
+          ],
+        },
+      ],
+    });
+    await expect(prepareKimiHtmlToolRequest(env, htmlRequest, cache)).rejects.toThrow(
+      'temporary R2 failure',
+    );
+    await expect(prepareKimiHtmlToolRequest(env, htmlRequest, cache)).resolves.toMatchObject({
+      documents: expect.any(Map),
+    });
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it('bounds selected HTML fragments across all documents by encoded bytes', () => {
     const selection = createKimiHtmlFragmentSelection(['html_1', 'html_2']);
     const fragments = selection.fragments;
@@ -311,7 +372,134 @@ describe('Kimi Code subscription transport', () => {
         0,
       );
     expect(encodedBytes).toBeLessThanOrEqual(750_000);
-    expect(selection.totalJsonBytes).toBe(encodedBytes);
+  });
+
+  it('fits a first HTML fragment without splitting a Unicode surrogate pair', () => {
+    const names = Array.from({ length: 5_000 }, (_, index) => `html_${index}`);
+    const selection = createKimiHtmlFragmentSelection(names);
+    collectKimiHtmlFragments(
+      {
+        type: 'tool-result',
+        toolCallId: 'call_unicode',
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ document: names[0], offset: 0, html: '😀'.repeat(100) }),
+            cache: 'none',
+          },
+        ],
+        isError: false,
+        cache: 'none',
+      },
+      selection,
+    );
+    const retained = selection.fragments.get(names[0] ?? '')?.[0] ?? '';
+    expect(retained).toBe(`[offset 0]\n${'😀'.repeat(34)}`);
+    for (let index = 0; index < retained.length; index += 1) {
+      const unit = retained.charCodeAt(index);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const next = retained.charCodeAt(index + 1);
+        expect(next).toBeGreaterThanOrEqual(0xdc00);
+        expect(next).toBeLessThanOrEqual(0xdfff);
+        index += 1;
+      } else {
+        expect(unit < 0xdc00 || unit > 0xdfff).toBe(true);
+      }
+    }
+
+    const documents = new Map([['html_1', 'a😀b']]);
+    const readFromHigh = executeKimiHtmlTool(
+      {
+        type: 'tool-call',
+        id: 'call_read_high',
+        name: 'kimi_read_html',
+        input: { document: 'html_1', offset: 0, limit: 2 },
+        cache: 'none',
+      },
+      documents,
+    );
+    const readFromLow = executeKimiHtmlTool(
+      {
+        type: 'tool-call',
+        id: 'call_read_low',
+        name: 'kimi_read_html',
+        input: { document: 'html_1', offset: 2, limit: 2 },
+        cache: 'none',
+      },
+      documents,
+    );
+    const searched = executeKimiHtmlTool(
+      {
+        type: 'tool-call',
+        id: 'call_search_unicode',
+        name: 'kimi_search_html',
+        input: { document: 'html_1', query: 'needle' },
+        cache: 'none',
+      },
+      new Map([['html_1', `😀${'x'.repeat(599)}needle`]]),
+    );
+    const output = (result: ReturnType<typeof executeKimiHtmlTool>) => {
+      const content = result.content[0];
+      if (!content || content.type !== 'text') throw new Error('Expected text tool result');
+      return JSON.parse(content.text) as {
+        html?: string;
+        hits?: { html: string }[];
+        offset?: number;
+      };
+    };
+    expect(output(readFromHigh)).toMatchObject({ html: 'a', offset: 0 });
+    expect(output(readFromLow)).toMatchObject({ html: 'b', offset: 3 });
+    expect(output(searched).hits?.[0]?.html).toBe(`${'x'.repeat(599)}needle`);
+  });
+
+  it('builds a well-formed HTML retrieval seed at task and user-context boundaries', async () => {
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      adapter,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    const fetchMock = stubFetch().mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          completion('k3', {
+            role: 'assistant',
+            content: 'READY',
+            reasoning_content: 'No inspection.',
+          }),
+        ),
+      ),
+    );
+    await expect(
+      adapter.complete(
+        request({
+          prompt: `${'p'.repeat(11_999)}😀tail`,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: `😀${'u'.repeat(99_999)}`, cache: 'none' },
+                {
+                  type: 'document',
+                  source: { type: 'provider-file', reference },
+                  cache: 'none',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: { failureClass: 'invalid-response' },
+    });
+    const body = sentBody(fetchCall(fetchMock, 0).init);
+    const seed = body.messages?.at(-1)?.content;
+    if (typeof seed !== 'string') throw new Error('Expected string retrieval seed');
+    expect(seed).toBe(new TextDecoder().decode(new TextEncoder().encode(seed)));
+    expect(seed).toContain(`Task instructions: ${'p'.repeat(11_999)}\n`);
+    expect(seed).toContain(`User context: ${'u'.repeat(99_999)}\n`);
   });
 
   it('normalizes cached and reasoning tokens from the subscription usage envelope', async () => {
@@ -875,7 +1063,8 @@ describe('Kimi Code reasoning replay and failures', () => {
   });
 
   it('selects large HTML once across a multi-iteration server tool loop', async () => {
-    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const bucket = evidenceBucket();
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: bucket };
     const adapter = new KimiChatCompletionsAdapter(env);
     const bytes = new TextEncoder().encode(
       `<section id="hero">Target</section>${'x'.repeat(300_000)}`,
@@ -889,6 +1078,7 @@ describe('Kimi Code reasoning replay and failures', () => {
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
     const contentHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
     const accountScope = await adapter.getFileScope(POLICY);
+    const get = vi.spyOn(bucket, 'get');
     const fetchMock = stubFetch()
       .mockResolvedValueOnce(
         new Response(
@@ -1015,6 +1205,341 @@ describe('Kimi Code reasoning replay and failures', () => {
         ),
       ),
     ).toHaveLength(2);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reuse decrypted HTML across inference-service request contexts', async () => {
+    const bucket = evidenceBucket();
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: bucket };
+    const uploader = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      uploader,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    const htmlRequest = request({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'provider-file', reference },
+              cache: 'none',
+            },
+          ],
+        },
+      ],
+    });
+    const get = vi.spyOn(bucket, 'get');
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion(
+              'k3',
+              {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'Read the document.',
+                tool_calls: [
+                  {
+                    id: 'call_request_scope',
+                    type: 'function',
+                    function: {
+                      name: 'kimi_read_html',
+                      arguments: '{"document":"html_1","offset":0,"limit":20}',
+                    },
+                  },
+                ],
+              },
+              'tool_calls',
+            ),
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion('k3', {
+              role: 'assistant',
+              content: 'READY',
+              reasoning_content: 'The document was inspected.',
+            }),
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(completion())));
+    await expect(
+      createInferenceService(env, 'tenant-test').complete(htmlRequest),
+    ).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'Hello back' }],
+    });
+    await uploader.deleteFile(reference.upstreamFileId);
+    await expect(createInferenceService(env, 'tenant-test').complete(htmlRequest)).rejects.toThrow(
+      /unavailable or expired/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when Kimi finishes HTML selection without inspecting stored documents', async () => {
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      adapter,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    const fetchMock = stubFetch().mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          completion('k3', {
+            role: 'assistant',
+            content: 'READY',
+            reasoning_content: 'No inspection.',
+          }),
+        ),
+      ),
+    );
+    await expect(
+      adapter.complete(
+        request({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: { type: 'provider-file', reference },
+                  cache: 'none',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: {
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(/did not inspect every stored HTML document/),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when Kimi inspects only one of multiple stored HTML documents', async () => {
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const references = await Promise.all(
+      [1, 2].map((index) =>
+        uploadReference(
+          adapter,
+          new TextEncoder().encode(`<main>target ${index}</main>${'x'.repeat(300_000)}`),
+          `document-${index}.txt`,
+          'text/plain',
+        ),
+      ),
+    );
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion(
+              'k3',
+              {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'Inspect the first document.',
+                tool_calls: [
+                  {
+                    id: 'call_partial_inspection',
+                    type: 'function',
+                    function: {
+                      name: 'kimi_read_html',
+                      arguments: '{"document":"html_1","offset":0,"limit":20}',
+                    },
+                  },
+                ],
+              },
+              'tool_calls',
+            ),
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion('k3', {
+              role: 'assistant',
+              content: 'READY',
+              reasoning_content: 'Inspected enough.',
+            }),
+          ),
+        ),
+      );
+    await expect(
+      adapter.complete(
+        request({
+          messages: [
+            {
+              role: 'user',
+              content: references.map((reference) => ({
+                type: 'document' as const,
+                source: { type: 'provider-file' as const, reference },
+                cache: 'none' as const,
+              })),
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: {
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(/did not inspect every stored HTML document/),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when Kimi ends HTML selection without a completed stop after inspection', async () => {
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      adapter,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion(
+              'k3',
+              {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'Inspect the document.',
+                tool_calls: [
+                  {
+                    id: 'call_nonterminal_inspection',
+                    type: 'function',
+                    function: {
+                      name: 'kimi_read_html',
+                      arguments: '{"document":"html_1","offset":0,"limit":20}',
+                    },
+                  },
+                ],
+              },
+              'tool_calls',
+            ),
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(
+            completion(
+              'k3',
+              {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'Output budget ended.',
+              },
+              'length',
+            ),
+          ),
+        ),
+      );
+    await expect(
+      adapter.complete(
+        request({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: { type: 'provider-file', reference },
+                  cache: 'none',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: {
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(/did not inspect every stored HTML document/),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails after the bounded HTML retrieval tool-turn limit', async () => {
+    const env: Env = { ...KIMI_ENV, INLINE_EVIDENCE_R2: evidenceBucket() };
+    const adapter = new KimiChatCompletionsAdapter(env);
+    const reference = await uploadReference(
+      adapter,
+      new TextEncoder().encode(`<main>target</main>${'x'.repeat(300_000)}`),
+      'document.txt',
+      'text/plain',
+    );
+    let index = 0;
+    const fetchMock = stubFetch().mockImplementation(async () => {
+      index += 1;
+      return new Response(
+        JSON.stringify(
+          completion(
+            'k3',
+            {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'Read again.',
+              tool_calls: [
+                {
+                  id: `call_limit_${index}`,
+                  type: 'function',
+                  function: {
+                    name: 'kimi_read_html',
+                    arguments: '{"document":"html_1","offset":0,"limit":10}',
+                  },
+                },
+              ],
+            },
+            'tool_calls',
+          ),
+        ),
+      );
+    });
+    await expect(
+      adapter.complete(
+        request({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: { type: 'provider-file', reference },
+                  cache: 'none',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      inferenceError: {
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(/exceeded its tool-turn limit/),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 
   it('keeps overlapping hosted-image uploads inside their own request contexts', async () => {

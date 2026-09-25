@@ -15,7 +15,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
-function completion(content: string, model = 'k3'): Response {
+function completion(content: string, model = 'k3', finishReason = 'stop'): Response {
   return json({
     id: 'cmpl_probe',
     object: 'chat.completion',
@@ -25,7 +25,47 @@ function completion(content: string, model = 'k3'): Response {
       {
         index: 0,
         message: { role: 'assistant', content, reasoning_content: 'thinking' },
-        finish_reason: 'stop',
+        finish_reason: finishReason,
+      },
+    ],
+    usage: USAGE,
+  });
+}
+
+function toolCompletion(
+  model = 'k3',
+  options: Pick<
+    RouterOptions,
+    'replayReasoning' | 'replayToolCall' | 'replayFirstFinishReason'
+  > = {},
+): Response {
+  return json({
+    id: 'cmpl_probe_tool',
+    object: 'chat.completion',
+    created: 1,
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: '',
+          ...(options.replayReasoning === false
+            ? {}
+            : { reasoning_content: 'use the requested tool' }),
+          ...(options.replayToolCall === false
+            ? {}
+            : {
+                tool_calls: [
+                  {
+                    id: 'probe_reasoning_call',
+                    type: 'function',
+                    function: { name: 'report_status', arguments: '{"ok":true}' },
+                  },
+                ],
+              }),
+        },
+        finish_reason: options.replayFirstFinishReason ?? 'tool_calls',
       },
     ],
     usage: USAGE,
@@ -57,9 +97,66 @@ function streamBody(sentinel = true): string {
   return lines.join('');
 }
 
+function streamedToolBody(options: RouterOptions): string {
+  const frames = [
+    {
+      id: 'tool-stream',
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: 'k3',
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            reasoning_content: 'use tool',
+            ...(options.streamedToolCall === false
+              ? {}
+              : {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'probe_stream_call',
+                      type: 'function',
+                      function: { name: 'report_status', arguments: '{"ok":' },
+                    },
+                  ],
+                }),
+          },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      id: 'tool-stream',
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: 'k3',
+      choices: [
+        {
+          index: 0,
+          delta:
+            options.streamedToolCall === false
+              ? { content: 'no tool' }
+              : { tool_calls: [{ index: 0, function: { arguments: 'true}' } }] },
+          finish_reason: options.streamedToolFinishReason ?? 'tool_calls',
+        },
+      ],
+      usage: USAGE,
+    },
+  ];
+  return `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')}data: [DONE]\n\n`;
+}
+
 interface RouterOptions {
   readonly sentinel?: boolean;
   readonly filesStatus?: number;
+  readonly streamedToolCall?: boolean;
+  readonly streamedToolFinishReason?: string;
+  readonly replayReasoning?: boolean;
+  readonly replayToolCall?: boolean;
+  readonly replayFirstFinishReason?: string;
+  readonly replaySecondFinishReason?: string;
 }
 
 function router(options: RouterOptions = {}) {
@@ -81,14 +178,31 @@ function router(options: RouterOptions = {}) {
         400,
       );
     }
-    if (body?.stream === true) return new Response(streamBody(options.sentinel ?? true));
+    if (body?.stream === true) {
+      return new Response(
+        Array.isArray(body.tools)
+          ? streamedToolBody(options)
+          : streamBody(options.sentinel ?? true),
+      );
+    }
     const model = typeof body?.model === 'string' ? body.model : 'k3';
     if (body?.response_format) return completion('{"ok":true}', model);
     if (Array.isArray(body?.messages) && body.messages.some((message) => message.role === 'tool')) {
-      return json(
-        { error: { message: 'missing reasoning_content', type: 'invalid_request_error' } },
-        400,
-      );
+      return body.messages.some(
+        (message) => message.role === 'assistant' && typeof message.reasoning_content === 'string',
+      )
+        ? completion(
+            'replayed',
+            typeof body.model === 'string' ? body.model : 'k3',
+            options.replaySecondFinishReason,
+          )
+        : json(
+            { error: { message: 'missing reasoning_content', type: 'invalid_request_error' } },
+            400,
+          );
+    }
+    if (Array.isArray(body?.tools)) {
+      return toolCompletion(typeof body.model === 'string' ? body.model : 'k3', options);
     }
     return completion('ready', model);
   });
@@ -122,8 +236,10 @@ describe('Kimi Code live-probe credit guard', () => {
       'auth-and-chat',
       'structured-output-strict',
       'stream-done-sentinel',
+      'streamed-tool-call',
       'inline-image',
       'files-api',
+      'reasoning-tool-replay',
       'reasoning-replay-without-content',
       'error-envelope',
     ]);
@@ -134,6 +250,11 @@ describe('Kimi Code live-probe credit guard', () => {
       frameCount: 2,
       usageIndexes: [1],
       reasoningPrecedesContent: true,
+    });
+    expect(byProbe['streamed-tool-call']).toMatchObject({
+      required: true,
+      outcome: 'accepted',
+      detail: { finishReason: 'tool_calls', toolName: 'report_status', input: { ok: true } },
     });
     expect(byProbe['inline-image']).toMatchObject({ required: false, outcome: 'accepted' });
     expect(byProbe['files-api']).toMatchObject({
@@ -147,12 +268,17 @@ describe('Kimi Code live-probe credit guard', () => {
         deleteStatus: 404,
       },
     });
+    expect(byProbe['reasoning-tool-replay']).toMatchObject({
+      required: true,
+      outcome: 'accepted',
+      detail: { firstFinishReason: 'tool_calls', secondFinishReason: 'stop' },
+    });
     expect(byProbe['reasoning-replay-without-content']).toMatchObject({ outcome: 'rejected' });
     expect(byProbe['error-envelope']?.detail).toMatchObject({
       status: 400,
       type: 'invalid_request_error',
     });
-    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(fetchMock).toHaveBeenCalledTimes(12);
 
     const authBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(authBody).toMatchObject({
@@ -160,10 +286,23 @@ describe('Kimi Code live-probe credit guard', () => {
       reasoning_effort: 'low',
       max_completion_tokens: 2048,
     });
-    for (const index of [1, 2]) {
+    for (const index of [1, 2, 3]) {
       const body = JSON.parse(String(fetchMock.mock.calls[index]?.[1]?.body));
       expect(body.max_completion_tokens).toBe(2048);
     }
+    const replayBody = JSON.parse(String(fetchMock.mock.calls[9]?.[1]?.body));
+    expect(replayBody.messages.at(-2)).toEqual({
+      role: 'assistant',
+      content: '',
+      reasoning_content: 'use the requested tool',
+      tool_calls: [
+        {
+          id: 'probe_reasoning_call',
+          type: 'function',
+          function: { name: 'report_status', arguments: '{"ok":true}' },
+        },
+      ],
+    });
     expect(authBody).not.toHaveProperty('thinking');
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://kimi.test/coding/v1/chat/completions');
   });
@@ -195,5 +334,24 @@ describe('Kimi Code live-probe credit guard', () => {
 
   it('fails loudly when image upload or its ms reference is unavailable', async () => {
     await expect(runKimiSmoke(LIVE, router({ filesStatus: 500 }))).rejects.toThrow(/files-api/);
+  });
+
+  it.each([
+    [{ streamedToolFinishReason: 'stop' }, /streamed-tool-call returned an invalid tool call/],
+    [{ streamedToolCall: false }, /streamed-tool-call returned invalid tool JSON/],
+  ])('fails loudly on an invalid streamed tool probe', async (options, message) => {
+    await expect(runKimiSmoke(LIVE, router(options))).rejects.toThrow(message);
+  });
+
+  it.each([
+    [{ replayReasoning: false }, /reasoning-tool-replay returned an invalid first tool turn/],
+    [{ replayToolCall: false }, /reasoning-tool-replay returned invalid tool JSON/],
+    [
+      { replayFirstFinishReason: 'stop' },
+      /reasoning-tool-replay returned an invalid first tool turn/,
+    ],
+    [{ replaySecondFinishReason: 'length' }, /reasoning-tool-replay final turn finished as length/],
+  ])('fails loudly on an invalid reasoning replay probe', async (options, message) => {
+    await expect(runKimiSmoke(LIVE, router(options))).rejects.toThrow(message);
   });
 });

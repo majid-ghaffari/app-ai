@@ -1,4 +1,4 @@
-import { kimiEvidenceMaxBytes, type Env } from '../../config';
+import { inlineEvidenceBucket, kimiEvidenceMaxBytes, type Env } from '../../config';
 import type {
   CanonicalToolDefinition,
   FilePolicy,
@@ -41,6 +41,7 @@ import {
   KIMI_HTML_TOOLS,
   prepareKimiHtmlToolRequest,
   replaceKimiHtmlEvidence,
+  unicodeSafeSlice,
   type KimiHtmlToolRequest,
 } from '../kimi/html-tools';
 import { kimiHtmlRetrieval } from '../../prompts';
@@ -107,6 +108,16 @@ const KIMI_SUBSCRIPTION_ACCOUNT: ChatCompletionsAccount = {
   },
   files: null,
 };
+
+export function listChatCompletionsProfileNames(
+  provider: ChatCompletionsAccount['provider'],
+): readonly string[] {
+  return Object.keys(
+    provider === 'moonshot'
+      ? MOONSHOT_METERED_ACCOUNT.modelProfiles
+      : KIMI_SUBSCRIPTION_ACCOUNT.modelProfiles,
+  );
+}
 
 interface MoonshotErrorBody {
   error?: { message?: unknown; type?: unknown; code?: unknown } | null;
@@ -570,6 +581,7 @@ export class MoonshotChatCompletionsAdapter extends ChatCompletionsAdapter {
 }
 
 export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
+  private readonly htmlDocuments = new Map<string, Promise<string>>();
   private readonly htmlSelections = new Map<
     string,
     {
@@ -588,7 +600,7 @@ export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
   override async complete(request: InferenceRequest): Promise<InferenceResult> {
     validateMoonshotPreflight(KIMI_SUBSCRIPTION_ACCOUNT, request);
     preflightInlineEvidence(this.env, request);
-    const html = await prepareKimiHtmlToolRequest(this.env, request);
+    const html = await prepareKimiHtmlToolRequest(this.env, request, this.htmlDocuments);
     const source = html?.request ?? request;
     for (let attempt = 0; attempt < KIMI_IMAGE_ATTEMPTS; attempt += 1) {
       const prepared = await materializeInlineEvidence(this.env, source, this.uploadHostedImage);
@@ -657,8 +669,12 @@ export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
       .flatMap((message) => message.content)
       .filter((part): part is Extract<InferenceContent, { type: 'text' }> => part.type === 'text')
       .map((part) => part.text)
-      .join('\n')
-      .slice(-KIMI_HTML_USER_CONTEXT_CHARACTERS);
+      .join('\n');
+    const userContext = unicodeSafeSlice(
+      userText,
+      Math.max(0, userText.length - KIMI_HTML_USER_CONTEXT_CHARACTERS),
+      userText.length,
+    );
     const seed: InferenceRequest = {
       prompt: kimiHtmlRetrieval,
       promptGroup: prepared.promptGroup,
@@ -671,7 +687,7 @@ export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
             {
               type: 'text',
               text:
-                `Task instructions: ${prepared.prompt.slice(0, KIMI_HTML_TASK_CHARACTERS)}\nUser context: ${userText}\n` +
+                `Task instructions: ${unicodeSafeSlice(prepared.prompt, 0, KIMI_HTML_TASK_CHARACTERS)}\nUser context: ${userContext}\n` +
                 [...html.documents]
                   .map(([name, text]) => `Stored HTML ${name}: ${text.length} characters`)
                   .join('\n'),
@@ -737,7 +753,7 @@ export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
   override async *stream(request: InferenceRequest): AsyncIterable<InferenceEvent> {
     validateMoonshotPreflight(KIMI_SUBSCRIPTION_ACCOUNT, request);
     preflightInlineEvidence(this.env, request);
-    const html = await prepareKimiHtmlToolRequest(this.env, request);
+    const html = await prepareKimiHtmlToolRequest(this.env, request, this.htmlDocuments);
     const source = html?.request ?? request;
     let retried = false;
     while (true) {
@@ -835,6 +851,7 @@ export class KimiChatCompletionsAdapter extends ChatCompletionsAdapter {
         exceptionType: 'ArgumentException',
       });
     }
+    inlineEvidenceBucket(this.env);
   }
 
   override getFileMetadata(id: string): Promise<ProviderFileMetadata | null> {

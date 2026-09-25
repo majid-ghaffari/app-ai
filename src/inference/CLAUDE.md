@@ -120,10 +120,10 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   only after an exact terminal finish, validated final usage, and `data: [DONE]`.
   A following empty-choices chunk may repeat identical terminal usage; conflicting
   counts fail the stream. Captured nullable members are accepted on their known
-  fields and unknown delta members fail closed. The paid matrix verifies streamed
-  text and non-streaming tool calls separately; streamed tool deltas follow the
-  same documented Chat Completions schema and are pinned by deterministic
-  split-frame tests. Usage normalization reads cached input tokens from the
+  fields and unknown delta members fail closed. The Kimi paid matrix verifies
+  streamed tool-call assembly and full-reasoning tool replay live. Deterministic
+  split-frame tests pin every streamed delta and lifecycle boundary for both
+  accounts. Usage normalization reads cached input tokens from the
   top-level or nested prompt detail and reasoning tokens from the nested
   completion detail, rejecting inconsistent duplicate cache counts.
   Neither account honours an inline cache breakpoint, so `inlineCacheBreakpoints`
@@ -142,7 +142,8 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   event invalidates the sidecar and retries once from encrypted bytes. Text
   evidence is decoded and sent as text. Uploads are bounded before buffering,
   and oversized uploaded HTML is accessed through bounded internal search/read
-  tools. All routes retain their public tools after exact selected fragments
+  tools. One request decrypts each selected HTML object once and reuses that
+  bounded plaintext across its internal agent turns. All routes retain their public tools after exact selected fragments
   replace the full HTML. The internal transcript
   stays in app-ai and usage is aggregated across calls. A remaining request
   over 2 MiB fails before the completion call with 413. Kimi's coding

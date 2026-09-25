@@ -1788,9 +1788,18 @@ describe('Moonshot streaming', () => {
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
       ],
+      /before data: \[DONE\]/,
     ],
-    ['missing usage', [chunk({ role: 'assistant', content: 'x' }, 'stop'), '[DONE]']],
-    ['missing finish', [chunk({ role: 'assistant', content: 'x' }), '[DONE]']],
+    [
+      'missing usage',
+      [chunk({ role: 'assistant', content: 'x' }, 'stop'), '[DONE]'],
+      /without final usage/,
+    ],
+    [
+      'missing finish',
+      [chunk({ role: 'assistant', content: 'x' }), '[DONE]'],
+      /before a finish reason/,
+    ],
     [
       'missing required reasoning',
       [
@@ -1800,10 +1809,12 @@ describe('Moonshot streaming', () => {
         }),
         '[DONE]',
       ],
+      /required reasoning content/,
     ],
     [
       'changed id',
       [chunk({ role: 'assistant', content: '' }), chunk({ content: 'x' }, null, { id: 'other' })],
+      /chunk envelope was invalid/,
     ],
     [
       'changed created timestamp',
@@ -1811,12 +1822,14 @@ describe('Moonshot streaming', () => {
         chunk({ role: 'assistant', content: '' }),
         chunk({ content: 'x' }, null, { created: 1_700_000_002 }),
       ],
+      /chunk envelope was invalid/,
     ],
     [
       'late choice',
       [chunk({ role: 'assistant', content: '' }, 'stop'), chunk({ content: 'late' })],
+      /choice after its finish reason/,
     ],
-  ] as const)('rejects malformed stream: %s', async (_name, events) => {
+  ] as const)('rejects malformed stream: %s', async (_name, events, message) => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(sse(events));
     const consume = async () => {
@@ -1825,20 +1838,33 @@ describe('Moonshot streaming', () => {
       }
     };
     await expect(consume()).rejects.toMatchObject({
-      inferenceError: { backend: 'moonshot', failureClass: 'invalid-response' },
+      inferenceError: {
+        backend: 'moonshot',
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(message),
+      },
     });
   });
 
   it.each([
-    ['invalid json', 'data: {\n\n'],
-    ['non-object', 'data: null\n\n'],
-    ['first role missing', `data: ${JSON.stringify(chunk({ content: 'x' }))}\n\n`],
+    ['invalid json', 'data: {\n\n', /invalid JSON/],
+    ['non-object', 'data: null\n\n', /chunk envelope was invalid/],
+    [
+      'first role missing',
+      `data: ${JSON.stringify(chunk({ content: 'x' }))}\n\n`,
+      /stream delta was invalid/,
+    ],
     [
       'unknown delta field',
       `data: ${JSON.stringify(chunk({ role: 'assistant', future: 'x' }))}\n\n`,
+      /unknown field/,
     ],
-    ['truncated frame', `data: ${JSON.stringify(chunk({ role: 'assistant', content: 'x' }))}`],
-  ])('rejects malformed raw SSE: %s', async (_name, body) => {
+    [
+      'truncated frame',
+      `data: ${JSON.stringify(chunk({ role: 'assistant', content: 'x' }))}`,
+      /truncated event/,
+    ],
+  ])('rejects malformed raw SSE: %s', async (_name, body, message) => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(new Response(body));
     const consume = async () => {
@@ -1847,7 +1873,35 @@ describe('Moonshot streaming', () => {
       }
     };
     await expect(consume()).rejects.toMatchObject({
-      inferenceError: { backend: 'moonshot', failureClass: 'invalid-response' },
+      inferenceError: {
+        backend: 'moonshot',
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(message),
+      },
+    });
+  });
+
+  it('rejects a stream frame after data: [DONE]', async () => {
+    stubFetch().mockResolvedValue(
+      sse([
+        chunk({ role: 'assistant', content: 'ok', reasoning_content: 'done' }, 'stop', {
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        '[DONE]',
+        chunk({ content: 'late' }),
+      ]),
+    );
+    const consume = async () => {
+      for await (const event of new MoonshotChatCompletionsAdapter(ENV).stream(request())) {
+        void event;
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      inferenceError: {
+        backend: 'moonshot',
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(/data after \[DONE\]/),
+      },
     });
   });
 
@@ -1857,6 +1911,7 @@ describe('Moonshot streaming', () => {
       [
         chunk({
           role: 'assistant',
+          reasoning_content: '',
           tool_calls: [
             {
               index: 1,
@@ -1871,12 +1926,14 @@ describe('Moonshot streaming', () => {
         }),
         '[DONE]' as const,
       ],
+      /tool-call indexes were not contiguous/,
     ],
     [
       'changed tool identity',
       [
         chunk({
           role: 'assistant',
+          reasoning_content: '',
           tool_calls: [
             {
               index: 0,
@@ -1890,6 +1947,7 @@ describe('Moonshot streaming', () => {
           tool_calls: [{ index: 0, id: 'changed', function: { arguments: '}' } }],
         }),
       ],
+      /tool-call delta changed identity/,
     ],
     [
       'contradictory usage',
@@ -1907,10 +1965,12 @@ describe('Moonshot streaming', () => {
           ],
         }),
       ],
+      /usage in two locations/,
     ],
     [
       'reasoning after visible content',
       [chunk({ role: 'assistant', content: 'visible' }), chunk({ reasoning_content: 'late' })],
+      /reasoning appeared after visible content/,
     ],
     [
       'reasoning after tool output',
@@ -1928,6 +1988,7 @@ describe('Moonshot streaming', () => {
         }),
         chunk({ reasoning_content: 'late' }),
       ],
+      /reasoning appeared after visible content/,
     ],
     [
       'premature usage',
@@ -1936,6 +1997,7 @@ describe('Moonshot streaming', () => {
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
       ],
+      /usage outside its terminal chunk/,
     ],
     [
       'conflicting terminal usage',
@@ -1948,12 +2010,14 @@ describe('Moonshot streaming', () => {
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
       ],
+      /conflicting terminal usage/,
     ],
     [
       'duplicate tool-call ids',
       [
         chunk({
           role: 'assistant',
+          reasoning_content: '',
           tool_calls: [
             {
               index: 0,
@@ -1974,8 +2038,9 @@ describe('Moonshot streaming', () => {
         }),
         '[DONE]' as const,
       ],
+      /duplicate tool-call IDs/,
     ],
-  ] as const)('rejects strict stream lifecycle mismatch: %s', async (_name, events) => {
+  ] as const)('rejects strict stream lifecycle mismatch: %s', async (_name, events, message) => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(sse(events));
     const consume = async () => {
@@ -1984,7 +2049,11 @@ describe('Moonshot streaming', () => {
       }
     };
     await expect(consume()).rejects.toMatchObject({
-      inferenceError: { backend: 'moonshot', failureClass: 'invalid-response' },
+      inferenceError: {
+        backend: 'moonshot',
+        failureClass: 'invalid-response',
+        message: expect.stringMatching(message),
+      },
     });
   });
 });

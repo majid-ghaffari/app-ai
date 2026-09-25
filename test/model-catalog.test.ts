@@ -31,6 +31,7 @@ import {
   validateModelRouting,
 } from '../src/prompt-registry';
 import { modelOverrides } from '../src/config';
+import { listChatCompletionsProfileNames } from '../src/inference/adapters/moonshot';
 import type { Env } from '../src/config';
 import { ENV } from './helpers';
 
@@ -55,6 +56,16 @@ describe('model catalog', () => {
       'kimi-for-coding-highspeed',
     ]) {
       expect(modelMaxOutputTokens(model), model).toBe(131_072);
+    }
+  });
+
+  it('keeps every Moonshot and Kimi catalog profile in the Chat Completions adapter table', () => {
+    for (const provider of ['moonshot', 'kimi'] as const) {
+      const catalog = listModelFamilies()
+        .filter((family) => family.provider === provider)
+        .map((family) => family.profile)
+        .sort();
+      expect([...listChatCompletionsProfileNames(provider)].sort()).toEqual(catalog);
     }
   });
 

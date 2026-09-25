@@ -355,17 +355,21 @@ limits from. A rollback to such a version therefore reads finite counts for ever
 current worker wrote and holds it to those limits, rather than comparing absent fields that never
 refuse anything.
 
-Clearing an owned file identifier removes audit authorization to reference it; it does not delete the
-upstream Anthropic Files object. App-ai's existing content-hash dedup layer may retain a provider
-reference in `FILES_KV` for up to 30 days and can share an identical object across requests, so a
-session alarm cannot safely delete it unilaterally. Public privacy copy and the processor retention
-policy must describe this distinction. Provider-side deletion/retention is an operational production
-policy, not a capability claimed by the audit session TTL.
+Clearing an owned file identifier removes audit authorization to reference it; it does not promise
+immediate deletion of the underlying provider evidence. Anthropic's content-hash dedup layer may
+retain a provider reference in `FILES_KV` for up to 30 days and can share an identical object across
+requests, so a session alarm cannot safely delete it unilaterally. An audit route configured onto Kimi
+stores encrypted evidence in R2; session expiry removes authorization immediately and the bucket's
+16-day rule removes the object and hosted-id sidecar, while an image already accepted upstream
+follows Kimi's retention policy because its delete operation is unavailable. Public privacy copy and
+the processor retention policy must describe these provider-specific lifetimes before any audit route
+resolves to Kimi. Provider-side deletion and retention are
+operational production policy, not capabilities claimed by the audit session TTL.
 
 Production provisioning requires all three encrypted secrets plus the HTTPS
 `AUDIT_STATUS_ORIGINS` allowlist before the route is usable. `npm run deploy:dry-run` validates the class
 export, binding, migration, and revision-stamped production launcher without deploying or invoking
-Anthropic.
+an inference provider.
 
 **Cross-repo deploy ordering (HARD): app-ai deploys BEFORE the website activation issuer.** The
 claim set is matched exactly on both sides, so there is no shape both accept: a worker that requires
