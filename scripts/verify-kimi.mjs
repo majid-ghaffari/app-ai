@@ -387,6 +387,7 @@ async function probeReasoningToolReplay(context) {
       { role: 'tool', tool_call_id: call.id, content: 'ok' },
     ],
     tools: [SMOKE_TOOL],
+    tool_choice: 'none',
     ...reasoningControl(context.model),
     max_completion_tokens: 2048,
   });

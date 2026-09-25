@@ -291,6 +291,7 @@ describe('Kimi Code live-probe credit guard', () => {
       expect(body.max_completion_tokens).toBe(2048);
     }
     const replayBody = JSON.parse(String(fetchMock.mock.calls[9]?.[1]?.body));
+    expect(replayBody.tool_choice).toBe('none');
     expect(replayBody.messages.at(-2)).toEqual({
       role: 'assistant',
       content: '',
