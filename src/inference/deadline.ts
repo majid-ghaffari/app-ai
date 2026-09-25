@@ -21,8 +21,9 @@ export async function completeWithinDeadline<T>(
   provider: ProviderName,
   callerSignal: AbortSignal | undefined,
   run: (signal: AbortSignal) => Promise<T>,
+  startedAt: number = Date.now(),
 ): Promise<T> {
-  const deadline = startDeadline(callerSignal);
+  const deadline = startDeadline(callerSignal, startedAt);
   try {
     return await run(deadline.signal);
   } catch (error) {
@@ -36,8 +37,9 @@ export async function* streamWithinDeadline(
   provider: ProviderName,
   callerSignal: AbortSignal | undefined,
   run: (signal: AbortSignal) => AsyncIterable<InferenceEvent>,
+  startedAt: number = Date.now(),
 ): AsyncIterable<InferenceEvent> {
-  const deadline = startDeadline(callerSignal);
+  const deadline = startDeadline(callerSignal, startedAt);
   try {
     yield* run(deadline.signal);
   } catch (error) {
@@ -47,13 +49,16 @@ export async function* streamWithinDeadline(
   }
 }
 
-function startDeadline(callerSignal: AbortSignal | undefined): RunningDeadline {
+function startDeadline(callerSignal: AbortSignal | undefined, startedAt: number): RunningDeadline {
   const controller = new AbortController();
   let expired = false;
-  const timer = setTimeout(() => {
-    expired = true;
-    controller.abort(new DOMException('Upstream inference deadline passed', 'TimeoutError'));
-  }, UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS);
+  const timer = setTimeout(
+    () => {
+      expired = true;
+      controller.abort(new DOMException('Upstream inference deadline passed', 'TimeoutError'));
+    },
+    Math.max(0, startedAt + UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS - Date.now()),
+  );
   const forwardCancellation = (): void => controller.abort(callerSignal?.reason);
   if (callerSignal?.aborted) forwardCancellation();
   else callerSignal?.addEventListener('abort', forwardCancellation, { once: true });

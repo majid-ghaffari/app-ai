@@ -11,12 +11,19 @@
 
 import { auditMaxRuns, auditSessionAuthority, type Env } from '../config';
 import { auditRunCeiling } from './audit-plan';
+import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { WorkerError } from './responses';
 import { reserveFreeVisualVerificationSlot } from './inference-quota-authority';
 
 const SESSION_STORAGE_KEY = 'session';
 const CALLBACK_RETRY_MILLISECONDS = 60_000;
+
+/**
+ * How long past its inference deadline a reservation stays open, so a result the model returned
+ * just before the deadline is finalized and counted before the alarm releases the reservation.
+ */
+export const RESERVATION_FINALIZE_GRACE_MILLISECONDS = 60_000;
 
 type ReservationKind = 'upload' | 'message';
 
@@ -29,6 +36,15 @@ interface PendingReservation {
   readonly run?: number;
   readonly uploadBytes: number;
   readonly attemptNumber?: number;
+  /**
+   * The session that admitted this reservation, and when. A reservation stays open until the
+   * upstream inference deadline plus the finalization grace has passed since admission, whatever
+   * happens to the session that admitted it, so the paid work it guards is finalized and delivered.
+   * Absent on reservations admitted before either was recorded; those are released when their
+   * session expires.
+   */
+  readonly sessionIdentifier?: string;
+  readonly admittedAt?: number;
 }
 
 interface SessionRecord {
@@ -264,9 +280,9 @@ export class AuditSessionAuthority implements DurableObject {
         ...NO_SESSION_TOTALS,
         run: 1,
         ...FRESH_RUN,
-        pending: {},
+        pending: expired?.pending ?? {},
         completedReservations: [],
-        abandonedReservations: [],
+        abandonedReservations: expired?.abandonedReservations ?? [],
         statusOutbox: expired?.statusOutbox ?? [],
       };
       await storage.put(SESSION_STORAGE_KEY, session);
@@ -305,6 +321,8 @@ export class AuditSessionAuthority implements DurableObject {
               kind: input.kind,
               run: session.run,
               uploadBytes: input.uploadBytes,
+              sessionIdentifier: session.sessionIdentifier,
+              admittedAt: Date.now(),
             },
           },
         } satisfies SessionRecord);
@@ -330,6 +348,8 @@ export class AuditSessionAuthority implements DurableObject {
             run: session.run,
             uploadBytes: 0,
             ...(session.runCompleted ? {} : { attemptNumber }),
+            sessionIdentifier: session.sessionIdentifier,
+            admittedAt: Date.now(),
           },
         },
         statusOutbox: session.runCompleted
@@ -371,7 +391,8 @@ export class AuditSessionAuthority implements DurableObject {
 
       const { [input.reservationIdentifier]: _completed, ...pending } = session.pending;
       const currentRun = inCurrentRun(reservation, session);
-      const uploaded = input.succeeded && reservation.kind === 'upload';
+      const ownSession = admittedBySession(reservation, session);
+      const uploaded = input.succeeded && reservation.kind === 'upload' && ownSession;
       const uploadSucceeded = uploaded && currentRun;
       const fileIdentifiers =
         uploadSucceeded && input.fileIdentifier
@@ -383,19 +404,31 @@ export class AuditSessionAuthority implements DurableObject {
         currentRun &&
         !session.runCompleted &&
         reservation.attemptNumber !== undefined;
+      const completesEarlierSession =
+        input.succeeded &&
+        reservation.kind === 'message' &&
+        reservation.attemptNumber !== undefined &&
+        !admittedBySession(reservation, session);
+      const completesAttempt = completesRun || completesEarlierSession;
       const statusOutbox = [...session.statusOutbox];
       if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
         statusOutbox.push(
-          statusEvent(session, reservation.attemptNumber, completesRun ? 'completed' : 'failed'),
+          statusEvent(
+            session,
+            reservation.attemptNumber,
+            completesAttempt ? 'completed' : 'failed',
+            reservation.sessionIdentifier,
+          ),
         );
       }
       await storage.put(SESSION_STORAGE_KEY, {
         ...session,
-        completedAttempts: session.completedAttempts + (completesRun ? 1 : 0),
+        completedAttempts: session.completedAttempts + (completesAttempt ? 1 : 0),
         uploadCount: session.uploadCount + (uploaded ? 1 : 0),
         totalUploadBytes: session.totalUploadBytes + (uploaded ? reservation.uploadBytes : 0),
         messageCount:
-          session.messageCount + (input.succeeded && reservation.kind === 'message' ? 1 : 0),
+          session.messageCount +
+          (input.succeeded && reservation.kind === 'message' && ownSession ? 1 : 0),
         runCompleted: session.runCompleted || completesRun,
         runUploads: session.runUploads + (uploadSucceeded ? 1 : 0),
         fileIdentifiers,
@@ -418,8 +451,9 @@ export class AuditSessionAuthority implements DurableObject {
     const now = epochSeconds();
     await this.state.storage.transaction(async (storage) => {
       const session = await readSession(storage);
-      if (!session || session.expiresAt > now) return;
-      await storage.put(SESSION_STORAGE_KEY, releaseExpiredSession(session, now));
+      if (!session) return;
+      const released = releaseLapsedReservations(releaseExpiredSession(session, now), Date.now());
+      if (released !== session) await storage.put(SESSION_STORAGE_KEY, released);
     });
   }
 
@@ -448,6 +482,10 @@ export class AuditSessionAuthority implements DurableObject {
     if (session.statusOutbox.length > 0) candidates.push(now + CALLBACK_RETRY_MILLISECONDS);
     const sessionExpiry = session.expiresAt * 1000;
     if (sessionExpiry > now) candidates.push(sessionExpiry);
+    const leaseEnds = Object.values(session.pending).flatMap((reservation) =>
+      reservation.admittedAt === undefined ? [] : [leaseEnd(reservation.admittedAt)],
+    );
+    if (leaseEnds.length > 0) candidates.push(Math.max(now, Math.min(...leaseEnds)));
     if (candidates.length > 0) await this.state.storage.setAlarm(Math.min(...candidates));
   }
 }
@@ -455,24 +493,74 @@ export class AuditSessionAuthority implements DurableObject {
 function releaseExpiredSession(session: SessionRecord, now: number): SessionRecord {
   if (session.expiresAt > now) return session;
   const statusOutbox = [...session.statusOutbox];
-  for (const reservation of Object.values(session.pending)) {
+  const leased: Record<string, PendingReservation> = {};
+  const released: string[] = [];
+  for (const [identifier, reservation] of Object.entries(session.pending)) {
+    if (reservation.admittedAt !== undefined) {
+      leased[identifier] = reservation;
+      continue;
+    }
+    released.push(identifier);
     if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
-      statusOutbox.push(statusEvent(session, reservation.attemptNumber, 'failed'));
+      statusOutbox.push(
+        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+      );
     }
   }
   return {
     ...session,
     ...NO_SESSION_TOTALS,
     ...FRESH_RUN,
-    pending: {},
+    pending: leased,
     completedReservations: [],
-    abandonedReservations: [],
+    abandonedReservations: [...session.abandonedReservations, ...released],
     statusOutbox,
   };
 }
 
+function releaseLapsedReservations(session: SessionRecord, nowMilliseconds: number): SessionRecord {
+  const lapsed = Object.entries(session.pending).filter(
+    ([, reservation]) =>
+      reservation.admittedAt !== undefined && leaseEnd(reservation.admittedAt) <= nowMilliseconds,
+  );
+  if (lapsed.length === 0) return session;
+  const lapsedIdentifiers = new Set(lapsed.map(([identifier]) => identifier));
+  const statusOutbox = [...session.statusOutbox];
+  for (const [, reservation] of lapsed) {
+    if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
+      statusOutbox.push(
+        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+      );
+    }
+  }
+  return {
+    ...session,
+    pending: Object.fromEntries(
+      Object.entries(session.pending).filter(([identifier]) => !lapsedIdentifiers.has(identifier)),
+    ),
+    abandonedReservations: [...session.abandonedReservations, ...lapsedIdentifiers],
+    statusOutbox,
+  };
+}
+
+function leaseEnd(admittedAt: number): number {
+  return (
+    admittedAt + UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + RESERVATION_FINALIZE_GRACE_MILLISECONDS
+  );
+}
+
+function admittedBySession(reservation: PendingReservation, session: SessionRecord): boolean {
+  return (
+    reservation.sessionIdentifier === undefined ||
+    reservation.sessionIdentifier === session.sessionIdentifier
+  );
+}
+
 function inCurrentRun(reservation: PendingReservation, session: SessionRecord): boolean {
-  return reservation.run === undefined || reservation.run === session.run;
+  return (
+    admittedBySession(reservation, session) &&
+    (reservation.run === undefined || reservation.run === session.run)
+  );
 }
 
 function publicAttemptsExhausted(session: SessionRecord): boolean {
@@ -498,7 +586,9 @@ function abandonPendingInferences(session: SessionRecord): SessionRecord {
   const statusOutbox = [...session.statusOutbox];
   for (const [, reservation] of abandoned) {
     if (reservation.attemptNumber !== undefined) {
-      statusOutbox.push(statusEvent(session, reservation.attemptNumber, 'failed'));
+      statusOutbox.push(
+        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+      );
     }
   }
   return {
@@ -547,12 +637,13 @@ function statusEvent(
   session: SessionRecord,
   attemptNumber: number,
   status: AuditStatus,
+  sessionIdentifier: string = session.sessionIdentifier,
 ): AuditStatusEvent {
   return {
     version: 1,
     eventIdentifier: crypto.randomUUID(),
     auditIdentifier: session.auditIdentifier,
-    sessionIdentifier: session.sessionIdentifier,
+    sessionIdentifier,
     storeOrigin: session.storeOrigin,
     attemptNumber,
     status,

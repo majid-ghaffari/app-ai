@@ -33,8 +33,11 @@ export class DefaultInferenceService implements InferenceService {
   async complete(request: InferenceRequest): Promise<InferenceResult> {
     const prepared = await this.prepareRequest(request);
     const adapter = this.resolveAdapter(prepared);
-    return completeWithinDeadline(prepared.modelProfile.provider, prepared.abortSignal, (signal) =>
-      adapter.complete({ ...prepared, abortSignal: signal }),
+    return completeWithinDeadline(
+      prepared.modelProfile.provider,
+      prepared.abortSignal,
+      (signal) => adapter.complete({ ...prepared, abortSignal: signal }),
+      prepared.deadlineStartedAt,
     );
   }
 
@@ -45,8 +48,11 @@ export class DefaultInferenceService implements InferenceService {
   private async *preparedStream(request: InferenceRequest): AsyncIterable<InferenceEvent> {
     const prepared = await this.prepareRequest(request);
     const adapter = this.resolveAdapter(prepared);
-    yield* streamWithinDeadline(prepared.modelProfile.provider, prepared.abortSignal, (signal) =>
-      adapter.stream({ ...prepared, abortSignal: signal }),
+    yield* streamWithinDeadline(
+      prepared.modelProfile.provider,
+      prepared.abortSignal,
+      (signal) => adapter.stream({ ...prepared, abortSignal: signal }),
+      prepared.deadlineStartedAt,
     );
   }
 

@@ -121,6 +121,7 @@ async function handleRequest(
           response = await handleMessages(request, env, corsHeaders, logging, {
             audit: true,
             tenantScope,
+            deadlineStartedAt: auditAuthorization.admittedAt,
           });
         } else {
           response = errorResponse(

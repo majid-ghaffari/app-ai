@@ -55,7 +55,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   upload after a proposal was reserved, lets a new proposal request supersede a
   pending one, and limits only what a person chooses: runs per session and
   completed public runs, the latter refusing the upload that would open another
-  run. A session stored without runs is read as its first run, derived from its
+  run. Session expiry refuses new reservations only: a reservation records the
+  session that admitted it and when, and stays open for a lease of the upstream
+  inference deadline plus a finalization grace, released on the alarm whichever
+  session is current, so paid work admitted before expiry is still
+  finalized and delivered. A session stored without runs is read as its first run, derived from its
   stored counters and pending reservations and not yet completed, so its next
   proposal is admitted as an attempt as that shape promised; a reservation it
   admitted carries no run and lands in whichever run is current. The record also

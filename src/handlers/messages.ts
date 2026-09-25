@@ -88,7 +88,11 @@ export async function handleMessages(
   env: Env,
   corsHeaders: CorsHeaders,
   logging: LoggingRuntime = createLoggingRuntime(env),
-  options: { readonly audit?: boolean; readonly tenantScope?: string } = {},
+  options: {
+    readonly audit?: boolean;
+    readonly tenantScope?: string;
+    readonly deadlineStartedAt?: number;
+  } = {},
 ): Promise<Response> {
   const requestStartedAt = Date.now();
   const selector = request.headers.get('X-Personalizer-System-Prompt');
@@ -192,7 +196,13 @@ export async function handleMessages(
       log,
       tenantScope,
       continuation,
-      { effort, injectBrainDefaults: options.audit !== true },
+      {
+        effort,
+        injectBrainDefaults: options.audit !== true,
+        ...(options.deadlineStartedAt === undefined
+          ? {}
+          : { deadlineStartedAt: options.deadlineStartedAt }),
+      },
     );
 
     if (!NON_BLOCKING_VISUAL_PROMPTS.has(selector)) {
@@ -356,7 +366,11 @@ async function buildInferenceRequest(
   log: Logger,
   tenantScope: string | null,
   continuation: InferenceRequest['continuation'],
-  requestPolicy: { effort: SemanticEffort | undefined; injectBrainDefaults: boolean },
+  requestPolicy: {
+    effort: SemanticEffort | undefined;
+    injectBrainDefaults: boolean;
+    deadlineStartedAt?: number;
+  },
 ): Promise<InferenceRequest> {
   const profile = getModelProfile(entry.name, env);
   const policy = getFilePolicy(entry.filePolicy);
@@ -419,6 +433,9 @@ async function buildInferenceRequest(
     ...(serviceTier ? { serviceTier } : {}),
     ...(toolChoice ? { toolChoice } : {}),
     ...(continuation ? { continuation } : {}),
+    ...(requestPolicy.deadlineStartedAt === undefined
+      ? {}
+      : { deadlineStartedAt: requestPolicy.deadlineStartedAt }),
   };
 }
 

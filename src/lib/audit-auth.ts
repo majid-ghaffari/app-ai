@@ -83,6 +83,8 @@ export interface AuditAuthorization {
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
   readonly reservation: AuditAuthorityReservation;
+  /** Epoch milliseconds the request was admitted at; its inference deadline counts from here. */
+  readonly admittedAt: number;
 }
 
 /** Successful activation exchange returned to the extension background worker. */
@@ -217,6 +219,7 @@ export async function authorizeAuditRequest(
     referencedFileIdentifiers = validateAuditMessage(body);
   }
 
+  const admittedAt = Date.now();
   const reservation = await reserveAuditAuthorityRequest(
     {
       sessionIdentifier: claims.sessionIdentifier,
@@ -233,6 +236,7 @@ export async function authorizeAuditRequest(
     sessionIdentifier: claims.sessionIdentifier,
     storeOrigin: claims.storeOrigin,
     reservation,
+    admittedAt,
   };
 }
 

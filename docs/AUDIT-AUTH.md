@@ -233,7 +233,16 @@ non-2xx response or thrown dispatch.
   enforces them before it signs an activation: per-IP and per-email hourly windows, the resend
   interval, the UTC-day email budget, Turnstile, and the launch kill switch. App-ai does not
   duplicate them.
-- **Session lifetime.** 30 minutes (`AUDIT_SESSION_TTL_SECONDS`).
+- **Session lifetime.** 30 minutes (`AUDIT_SESSION_TTL_SECONDS`). The lifetime is a security
+  boundary for new work only: no upload or inference is admitted after it. A reservation holds a
+  lease from its admission: the upstream inference deadline (`src/inference/deadline.ts`), which
+  an audit inference counts from that same admission, plus a one-minute finalization grace. The
+  proposal it guards is therefore finalized, counted and delivered even when the model answers
+  after the session expired, including after a reissued link opened the next session. The alarm
+  releases a lapsed lease on its own schedule, whichever session is current, and mirrors it
+  `failed`; a result that still arrives afterwards reaches its caller without being counted. A
+  reservation carried into a reissued session never counts toward that session's upload or
+  inference totals.
 
 There is no cross-session app-ai spend counter. The limespot.com issuer therefore
 owns the global controls: email-verification attempt limits, per-identity/IP
@@ -299,8 +308,11 @@ existing object's storage across. Those two strings are the live namespace's ide
 rename: editing or removing either one detaches every object's storage, including the completed
 attempt ledger that enforces the public two-run cap, with no way to reattach it. One object is addressed deterministically per `auditIdentifier`, which makes
 cross-link completion counting, activation consumption, run reservations, and concurrent file-ID
-ownership strongly consistent. At expiry, an alarm releases pending work, emits `failed` where
-needed, and removes provider file identifiers, per-run counters and session totals. It retains only the stable
+ownership strongly consistent. At expiry, an alarm removes provider file identifiers, per-run
+counters and session totals. Work still inside its lease stays pending, carried into a reissued
+session if one opens; the alarm is always set for the earliest lease end, so a lease lapses on time
+even while a reissued session is active, and the lapsed reservation is released and mirrored
+`failed`. It retains only the stable
 completion ledger, activation replay identifiers and pending callback outbox needed to enforce the
 cross-link contract.
 

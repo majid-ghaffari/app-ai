@@ -289,6 +289,11 @@ export interface InferenceRequest {
   readonly toolChoice?: CanonicalToolChoice;
   readonly continuation?: ProviderContinuationState;
   readonly abortSignal?: AbortSignal;
+  /**
+   * Epoch milliseconds the upstream inference deadline counts from, when the work was admitted
+   * before the request reached the model; absent, the deadline counts from the model call.
+   */
+  readonly deadlineStartedAt?: number;
 }
 
 /** Normalized token and cache accounting from an inference provider. */

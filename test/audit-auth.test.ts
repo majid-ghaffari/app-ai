@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import worker from '../src/index';
-import { AuditSessionAuthority } from '../src/lib/audit-session-authority';
+import {
+  AuditSessionAuthority,
+  RESERVATION_FINALIZE_GRACE_MILLISECONDS,
+} from '../src/lib/audit-session-authority';
 import { PLANNED_AUDIT_RUN } from '../src/lib/audit-plan';
+import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../src/inference/deadline';
 import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
 import type { Env } from '../src/config';
 import {
@@ -25,6 +29,7 @@ interface NamedDurableObjectId {
 }
 
 const AUTHORITIES_BY_ENV = new WeakMap<Env, Map<string, AuditSessionAuthority>>();
+const AUTHORITY_GATES = new WeakMap<Env, (path: string) => Promise<void>>();
 const STORAGES_BY_ENV = new WeakMap<Env, Map<string, MemoryDurableStorage>>();
 
 class MemoryDurableStorage {
@@ -43,7 +48,17 @@ class MemoryDurableStorage {
     this.values.clear();
   }
 
-  async setAlarm(_scheduledTime: number): Promise<void> {}
+  private alarmAt: number | null = null;
+
+  async setAlarm(scheduledTime: number): Promise<void> {
+    this.alarmAt = scheduledTime;
+  }
+
+  takeDueAlarm(): boolean {
+    if (this.alarmAt === null || this.alarmAt > Date.now()) return false;
+    this.alarmAt = null;
+    return true;
+  }
 
   async transaction<T>(callback: (storage: MemoryDurableStorage) => Promise<T>): Promise<T> {
     const previous = this.transactionTail;
@@ -79,8 +94,11 @@ function durableEnv(overrides: Partial<Env> = {}): Env {
         storages.set(name, storage);
       }
       return {
-        fetch: (input: RequestInfo | URL, init?: RequestInit) =>
-          authority.fetch(input instanceof Request ? input : new Request(input, init)),
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          await AUTHORITY_GATES.get(resolveEnv())?.(new URL(request.url).pathname);
+          return authority.fetch(request);
+        },
       } as unknown as DurableObjectStub;
     },
   } as unknown as DurableObjectNamespace;
@@ -100,6 +118,12 @@ function storageFor(env: Env, auditIdentifier: string): MemoryDurableStorage {
   const storage = STORAGES_BY_ENV.get(env)?.get(auditIdentifier);
   if (!storage) throw new Error(`Missing test storage for ${auditIdentifier}`);
   return storage;
+}
+
+async function deliverStatusEvents(env: Env): Promise<void> {
+  for (const [auditIdentifier, storage] of STORAGES_BY_ENV.get(env) ?? []) {
+    while (storage.takeDueAlarm()) await authorityFor(env, auditIdentifier).alarm();
+  }
 }
 
 async function activationToken(
@@ -1194,6 +1218,7 @@ describe('grader runs in one audit session', () => {
 
   interface GraderUpstream {
     readonly callbacks: Array<[unknown, unknown]>;
+    readonly callbackEvents: Array<Record<string, unknown>>;
     readonly inferenceCalls: () => number;
     readonly uploadCalls: () => number;
     readonly releaseHeldInference: () => void;
@@ -1205,6 +1230,7 @@ describe('grader runs in one audit session', () => {
     holdUpload: (upload: number) => boolean = () => false,
   ): GraderUpstream {
     const callbacks: Array<[unknown, unknown]> = [];
+    const callbackEvents: Array<Record<string, unknown>> = [];
     const held: Array<() => void> = [];
     const heldUploads: Array<() => void> = [];
     let inference = 0;
@@ -1215,6 +1241,7 @@ describe('grader runs in one audit session', () => {
       if (url === AUDIT_STATUS_CALLBACK_URL) {
         const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
         callbacks.push([event.status, event.attemptNumber]);
+        callbackEvents.push(event);
         return new Response(null, { status: 204 });
       }
       if (url.endsWith('/v1/files')) {
@@ -1247,6 +1274,7 @@ describe('grader runs in one audit session', () => {
     });
     return {
       callbacks,
+      callbackEvents,
       inferenceCalls: () => inference,
       uploadCalls: () => upload,
       releaseHeldInference: () => held.splice(0).forEach((release) => release()),
@@ -1270,6 +1298,244 @@ describe('grader runs in one audit session', () => {
     expect(((await fifthRun.json()) as { Message: string }).Message).toBe(
       'This grader session has no retries remaining.',
     );
+  });
+
+  async function sessionExpiringDuringProposal(auditIdentifier: string): Promise<{
+    env: Env;
+    upstream: GraderUpstream;
+    proposal: Promise<Response>;
+    sessionIdentifier: string;
+    expiresAt: number;
+    admittedAt: number;
+  }> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const exchangedAt = new Date('2026-09-24T12:00:00Z').getTime();
+    vi.setSystemTime(exchangedAt);
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        `${auditIdentifier}-token`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const upstream = graderUpstream(() => 'hold');
+    const expiresAt = exchangedAt + Number(ENV.AUDIT_SESSION_TTL_SECONDS) * 1000;
+    const admittedAt = expiresAt - 60_000;
+    vi.setSystemTime(admittedAt);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    const proposal = worker.fetch(messageRequest(session.accessToken, tiles), env);
+    await vi.waitFor(() => expect(upstream.inferenceCalls()).toBe(1));
+    return {
+      env,
+      upstream,
+      proposal,
+      sessionIdentifier: session.sessionIdentifier,
+      expiresAt,
+      admittedAt,
+    };
+  }
+
+  const LEASE_MILLISECONDS =
+    UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + RESERVATION_FINALIZE_GRACE_MILLISECONDS;
+
+  it('delivers a proposal whose inference started before its session expired', async () => {
+    const auditIdentifier = 'audit-expiry-in-flight';
+    const { env, upstream, proposal, expiresAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(expiresAt + 1000);
+    await authorityFor(env, auditIdentifier).alarm();
+    upstream.releaseHeldInference();
+
+    const response = await proposal;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ content: [{ type: 'text', text: '{}' }] });
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('finalizes a proposal that answers after its inference deadline, inside the finalization grace', async () => {
+    const auditIdentifier = 'audit-expiry-finalization-grace';
+    const { env, upstream, proposal, admittedAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(admittedAt + UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + 1000);
+    await deliverStatusEvents(env);
+    upstream.releaseHeldInference();
+
+    expect((await proposal).status).toBe(200);
+    await deliverStatusEvents(env);
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('reports a reservation failed once its lease lapsed, and still delivers its late result', async () => {
+    const auditIdentifier = 'audit-expiry-past-lease';
+    const { env, upstream, proposal, admittedAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(admittedAt + LEASE_MILLISECONDS + 1000);
+    await deliverStatusEvents(env);
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
+    ]);
+    expect((await storedRunSession(env, auditIdentifier)).pending).toEqual({});
+
+    upstream.releaseHeldInference();
+    expect((await proposal).status).toBe(200);
+    await deliverStatusEvents(env);
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
+    ]);
+  });
+
+  it('releases a reservation at its own lease while a reissued session is active', async () => {
+    const auditIdentifier = 'audit-expiry-reissued';
+    const { env, upstream, proposal, sessionIdentifier, expiresAt, admittedAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(expiresAt + 1000);
+    const reissued = await exchange(
+      env,
+      await activationToken(
+        env,
+        `${auditIdentifier}-reissued-token`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    await deliverStatusEvents(env);
+    expect(upstream.callbacks).toEqual([['started', 1]]);
+
+    vi.setSystemTime(admittedAt + LEASE_MILLISECONDS + 1000);
+    await deliverStatusEvents(env);
+
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
+    ]);
+    expect(upstream.callbackEvents.at(-1)?.sessionIdentifier).toBe(sessionIdentifier);
+    const record = await storedRunSession(env, auditIdentifier);
+    expect(record.sessionIdentifier).toBe(reissued.sessionIdentifier);
+    expect(record.pending).toEqual({});
+    upstream.releaseHeldInference();
+    await proposal;
+  });
+
+  it('counts an audit inference deadline from its admission, through the real route', async () => {
+    vi.useFakeTimers();
+    const PRE_MODEL_DELAY_MILLISECONDS = 300_000;
+    const env = durableEnv();
+    const session = await exchange(env);
+    let modelCalledAt: number | null = null;
+    let markModelCalled = (): void => {};
+    const modelCalled = new Promise<void>((resolve) => {
+      markModelCalled = resolve;
+    });
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      modelCalledAt = Date.now();
+      markModelCalled();
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+          once: true,
+        });
+      });
+    });
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+
+    let releaseReservation = (): void => {};
+    let markReservationHeld = (): void => {};
+    const reservationHeld = new Promise<void>((resolve) => {
+      markReservationHeld = resolve;
+    });
+    AUTHORITY_GATES.set(env, async (path) => {
+      if (path !== '/reserve') return;
+      AUTHORITY_GATES.delete(env);
+      markReservationHeld();
+      await new Promise<void>((resolve) => {
+        releaseReservation = resolve;
+      });
+    });
+    const admittedAt = Date.now();
+    const pending = worker.fetch(messageRequest(session.accessToken, tiles), env);
+    await reservationHeld;
+    await vi.advanceTimersByTimeAsync(PRE_MODEL_DELAY_MILLISECONDS);
+    releaseReservation();
+    await modelCalled;
+    expect(modelCalledAt).toBe(admittedAt + PRE_MODEL_DELAY_MILLISECONDS);
+
+    await vi.advanceTimersByTimeAsync(
+      UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS - PRE_MODEL_DELAY_MILLISECONDS,
+    );
+    const response = await pending;
+
+    expect(response.status).toBe(504);
+    expect(await response.json()).toEqual({
+      Message: 'The AI model did not answer within the 600-second inference deadline.',
+      ExceptionType: 'InferenceTimeoutException',
+      MessageDetail: 'inference_timeout',
+    });
+  });
+
+  it("never charges an expired session's late upload to the session that replaced it", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const auditIdentifier = 'audit-late-upload';
+    const exchangedAt = new Date('2026-09-24T12:00:00Z').getTime();
+    vi.setSystemTime(exchangedAt);
+    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1', AUDIT_MAX_RUNS: '1' });
+    const token = (suffix: string): Promise<string> =>
+      activationToken(
+        env,
+        `${auditIdentifier}-${suffix}`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      );
+    const expired = await exchange(env, await token('first'));
+    const upstream = graderUpstream(
+      () => 200,
+      (upload) => upload === 1,
+    );
+    const expiresAt = exchangedAt + Number(ENV.AUDIT_SESSION_TTL_SECONDS) * 1000;
+    vi.setSystemTime(expiresAt - 60_000);
+    const lateUpload = worker.fetch(uploadRequest(expired.accessToken, 'late.webp'), env);
+    await vi.waitFor(() => expect(upstream.uploadCalls()).toBe(1));
+
+    vi.setSystemTime(expiresAt + 1000);
+    const replacement = await exchange(env, await token('second'));
+    upstream.releaseHeldUploads();
+    expect((await lateUpload).status).toBe(200);
+
+    await uploadTiles(env, replacement.accessToken, PLANNED_AUDIT_RUN.uploads);
+    const overAllowance = await worker.fetch(
+      uploadRequest(replacement.accessToken, 'over.webp'),
+      env,
+    );
+    expect(overAllowance.status).toBe(429);
+    expect(await storedRunSession(env, auditIdentifier)).toMatchObject({
+      sessionIdentifier: replacement.sessionIdentifier,
+      uploadCount: PLANNED_AUDIT_RUN.uploads,
+    });
   });
 
   it('releases a proposal its caller abandoned when the conductor sends it again', async () => {
@@ -1556,7 +1822,13 @@ describe('grader runs in one audit session', () => {
       messageCount: 1,
     });
     expect(Object.values(record.pending)).toEqual([
-      { kind: 'upload', run: 2, uploadBytes: 'held-retry.webp'.length },
+      {
+        kind: 'upload',
+        run: 2,
+        uploadBytes: 'held-retry.webp'.length,
+        sessionIdentifier: expect.any(String),
+        admittedAt: expect.any(Number),
+      },
     ]);
 
     upstream.releaseHeldUploads();
