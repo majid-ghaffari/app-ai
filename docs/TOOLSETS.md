@@ -25,7 +25,12 @@ AI tool that shares one backend:
   model sees as `tool_result` content (`{ error: ... }` with `ok: false` on
   failure, fed back as `is_error` so the model can apologize/proceed);
   `summary` is the short human string for the SSE `tool_result` event. A
-  backend failure degrades the tool call; it never aborts the agent turn.
+  backend failure degrades the tool call; it never aborts the agent turn. A
+  success may add `notice`, a plain sentence the model reads as a second text
+  block after `result`: the personalizer toolset uses it when Brain answers a
+  list read (`segments`, `campaigns`, `store-config`) with
+  `X-Ls-Has-More-Results: true`, saying that only the first N entries are shown
+  and the store has more. The body shape is unchanged either way.
 
 Each toolset exports exactly one thing — its **descriptor** (typed as
 `ToolsetDescriptor` in [`src/toolsets/types.ts`](../src/toolsets/types.ts),

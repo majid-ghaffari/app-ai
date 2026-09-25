@@ -207,6 +207,56 @@ describe('AI-tool response boundary', () => {
   );
 });
 
+describe('AI-tool partial lists', () => {
+  it.each([
+    [
+      'list_segments',
+      VALID_TOOL_RESULTS.list_segments,
+      'Only the first 1 segments are shown; the store has more than 1.',
+    ],
+    [
+      'list_campaigns',
+      VALID_TOOL_RESULTS.list_campaigns,
+      'Only the first 1 campaigns are shown; the store has more than 1.',
+    ],
+    [
+      'get_store_config',
+      VALID_TOOL_RESULTS.get_store_config,
+      'Only the first 1 pages are shown in Pages; the store has more than 1.',
+    ],
+  ])(
+    'tells the model a %s result holds only the first page',
+    async (toolName, brainResult, notice) => {
+      const fetchMock = workerFlow(
+        versionOneValidation(toolName),
+        [toolTurn(toolName), textTurn('Noted.')],
+        jsonResponse(brainResult, { 'X-Ls-Has-More-Results': 'true' }),
+      );
+
+      const response = await worker.fetch(chatRequest(), ENV);
+      await readWorkerSse(response);
+
+      expect(modelVisibleToolResultBlocks(fetchMock)).toEqual([
+        { type: 'text', text: JSON.stringify(brainResult) },
+        { type: 'text', text: notice },
+      ]);
+    },
+  );
+
+  it('adds nothing when Brain says the list is complete', async () => {
+    const fetchMock = workerFlow(
+      versionOneValidation('list_segments'),
+      [toolTurn('list_segments'), textTurn('Noted.')],
+      jsonResponse(VALID_TOOL_RESULTS.list_segments, { 'X-Ls-Has-More-Results': 'false' }),
+    );
+
+    const response = await worker.fetch(chatRequest(), ENV);
+    await readWorkerSse(response);
+
+    expect(modelVisibleToolResult(fetchMock)).toEqual(VALID_TOOL_RESULTS.list_segments);
+  });
+});
+
 function versionOneValidation(toolName: string): ContextValidation {
   return {
     SubscriberID: 7,
@@ -255,10 +305,10 @@ function chatRequest(): Request {
   });
 }
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
 }
 
@@ -312,6 +362,18 @@ function sentToolNames(fetchMock: FetchMock): string[] {
 
 function brainAiToolCalls(fetchMock: FetchMock): string[] {
   return fetchedUrls(fetchMock).filter((url) => url.includes('/v2/ai-tools/'));
+}
+
+function modelVisibleToolResultBlocks(fetchMock: FetchMock): unknown {
+  const messageIndexes = fetchedUrls(fetchMock)
+    .map((url, index) => (url.endsWith('/v1/messages') ? index : -1))
+    .filter((index) => index >= 0);
+  const lastIndex = messageIndexes.at(-1);
+  if (lastIndex === undefined) throw new Error('no Anthropic request was made');
+  const lastMessage = sentBody(fetchCall(fetchMock, lastIndex).init).messages?.at(-1);
+  const resultBlock = Array.isArray(lastMessage?.content) ? lastMessage.content[0] : undefined;
+  if (!resultBlock) throw new Error('no model-visible tool result was sent');
+  return resultBlock.content;
 }
 
 function modelVisibleToolResult(fetchMock: FetchMock): unknown {

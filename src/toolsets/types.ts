@@ -23,6 +23,8 @@ export interface ToolExecutionSuccess {
   name: string;
   result: unknown;
   summary: string;
+  /** A plain sentence the model reads beside `result`, such as a statement that a list is partial. */
+  notice?: string;
 }
 
 /** A degraded tool execution — fed back to the model as an `is_error` tool_result. */

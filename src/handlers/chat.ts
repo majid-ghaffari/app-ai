@@ -391,7 +391,12 @@ export async function handleChat(
           return {
             type: 'tool-result',
             toolCallId: call.id,
-            content: [{ type: 'text', text: JSON.stringify(execution.result), cache: 'none' }],
+            content: [
+              { type: 'text', text: JSON.stringify(execution.result), cache: 'none' },
+              ...(execution.ok && execution.notice
+                ? [{ type: 'text' as const, text: execution.notice, cache: 'none' as const }]
+                : []),
+            ],
             isError: !execution.ok,
             cache: 'none',
           };

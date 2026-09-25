@@ -33,6 +33,8 @@ import type { CanonicalServerToolDefinition } from '../../lib/inference-types';
 import type { Logger } from '../../lib/logger';
 import type { ToolExecutionResult, ToolsetDescriptor } from '../types';
 
+const HAS_MORE_RESULTS_HEADER = 'X-Ls-Has-More-Results';
+
 /**
  * Canonical server-tool definitions. Kept deterministic
  * (stable order, no per-request data) so the prompt prefix caches well.
@@ -353,7 +355,17 @@ async function fetchBrainTool(
       });
       return invalidBrainToolResponse(name);
     }
-    return { ok: true, name, result: data, summary: summarize(name, data) };
+    const notice =
+      response.headers.get(HAS_MORE_RESULTS_HEADER) === 'true'
+        ? partialListNotice(name, data)
+        : undefined;
+    return {
+      ok: true,
+      name,
+      result: data,
+      summary: summarize(name, data),
+      ...(notice === undefined ? {} : { notice }),
+    };
   } catch (error) {
     logger.error(`Brain AI tool ${name} request failed`, error);
     return {
@@ -363,6 +375,19 @@ async function fetchBrainTool(
       summary: `${name} error`,
     };
   }
+}
+
+function partialListNotice(name: string, data: unknown): string | undefined {
+  if (name === 'list_segments' && Array.isArray(data)) {
+    return `Only the first ${data.length} segments are shown; the store has more than ${data.length}.`;
+  }
+  if (name === 'list_campaigns' && Array.isArray(data)) {
+    return `Only the first ${data.length} campaigns are shown; the store has more than ${data.length}.`;
+  }
+  if (name === 'get_store_config' && isRecord(data) && Array.isArray(data.Pages)) {
+    return `Only the first ${data.Pages.length} pages are shown in Pages; the store has more than ${data.Pages.length}.`;
+  }
+  return undefined;
 }
 
 function invalidBrainToolResponse(name: string): ToolExecutionResult {

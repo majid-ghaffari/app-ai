@@ -29,7 +29,10 @@ The per-module map — what each toolset file owns — is [docs/ARCHITECTURE-MAP
   [docs/TOOLSETS.md](../../docs/TOOLSETS.md).
 - **Degrade, never throw:** every `execute` resolves to
   `{ ok, name, result, summary }` so the agent loop can feed failures back to
-  the model (`tool_result` with `is_error`) instead of aborting the turn. Tool
+  the model (`tool_result` with `is_error`) instead of aborting the turn. A
+  success may carry `notice`, model-facing framing appended after `result` —
+  the personalizer toolset states there when Brain's
+  `X-Ls-Has-More-Results: true` says a list holds only its first page. Tool
   input is untrusted despite the frozen schema, so the platform executors guard
   their required fields (`method`/`path` for REST, `query` for GraphQL/GAQL)
   and degrade to an `Invalid input: …` result — a clean local signal the model
