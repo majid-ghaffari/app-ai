@@ -59,7 +59,13 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   session that admitted it and when, and stays open for a lease of the upstream
   inference deadline plus a finalization grace, released on the alarm whichever
   session is current, so paid work admitted before expiry is still
-  finalized and delivered. A session stored without runs is read as its first run, derived from its
+  finalized and delivered. Only an inference that returned a usable proposal —
+  complete, parseable as its prompt's proposal contract, covering every page the
+  request's manifest names, with every box a vocabulary box type at a valid
+  position and candidate number (at most 500), and never for a request whose
+  manifest did not parse, as `audit-proposal.ts` decides from the request
+  and response app-ai already holds — completes a public run; any
+  other reply is mirrored `failed` and leaves the attempt for the next request. A session stored without runs is read as its first run, derived from its
   stored counters and pending reservations and not yet completed, so its next
   proposal is admitted as an attempt as that shape promised; a reservation it
   admitted carries no run and lands in whichever run is current. The record also

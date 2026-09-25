@@ -222,10 +222,17 @@ non-2xx response or thrown dispatch.
   `AuditQuotaException` "This grader session has no retries remaining."
 - **Completed public audits.** Exactly two runs may complete for a stable `auditIdentifier` — one
   lead and one store — including across expired sessions and reissued activation tokens. A run
-  completes at its first successful proposal inference; a repair later in the same run consumes
-  nothing more. A `started` reservation does not consume an attempt, and a non-2xx, thrown or
-  superseded provider call produces `failed` and leaves the same `attemptNumber` for the next
-  request. After two completions, the upload that would open the next run answers 429 "This public
+  completes at its first proposal inference that returned a usable proposal: a complete reply, not
+  cut off at its output limit, whose assistant text parses as the proposal contract of its prompt
+  and plans every page the request's manifest names, each box naming a box type from the prompts'
+  box vocabulary, a `before` / `after` / `replace` position, and a candidate number inside its
+  page's range and the conductor's bound of 500. A request whose manifest does not parse — no page
+  for the whole-store prompt, or not exactly one page with a range for the per-page prompt — sets
+  no contract, so no reply to it completes a run (`src/lib/audit-proposal.ts`, decided from the request and response app-ai already
+  holds, so the extension bridge reports nothing). This is at least as strict as the conductor's
+  own reading, so a reply the conductor would reject never spends a run. A repair later in the same run consumes nothing more. A `started`
+  reservation does not consume an attempt, and a non-2xx, thrown, superseded or unusable provider
+  reply produces `failed` and leaves the same `attemptNumber` for the next request. After two completions, the upload that would open the next run answers 429 "This public
   grader has no attempts remaining." before any provider call. Staff activations carry no completion cap, because each uses a fresh audit
   identifier, while every staff session keeps the run limit, the per-run ceiling, the size limits
   and the session lifetime.

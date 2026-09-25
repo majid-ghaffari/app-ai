@@ -21,6 +21,7 @@ import {
 } from './helpers';
 
 const STORE_ORIGIN = 'https://lsdev.myshopline.com';
+const USABLE_PROPOSAL = JSON.stringify({ pages: { Home: { boxes: [] } } });
 const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
 const PAST_ACTIVATION_CEILING_MILLISECONDS = 1_000_000;
 
@@ -249,7 +250,11 @@ function uploadRequest(
   });
 }
 
-function messageRequest(accessToken: string, fileIdentifiers: readonly string[]): Request {
+function messageRequest(
+  accessToken: string,
+  fileIdentifiers: readonly string[],
+  manifest = 'PAGE Home: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..6',
+): Request {
   return new Request('https://app-ai.test/messages', {
     method: 'POST',
     headers: auditHeaders(accessToken, 'onboarding-batch-all'),
@@ -265,7 +270,7 @@ function messageRequest(accessToken: string, fileIdentifiers: readonly string[])
               type: 'image',
               source: { type: 'file', file_id: fileIdentifier },
             })),
-            { type: 'text', text: 'Analyze this store.' },
+            { type: 'text', text: manifest },
           ],
         },
       ],
@@ -701,10 +706,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     const uploads = await Promise.all(
@@ -787,10 +795,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
     const owned = await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env);
     expect(owned.status).toBe(200);
@@ -848,10 +859,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
     const uploaded = await worker.fetch(uploadRequest(session.accessToken, 'home.webp'), env);
     expect(uploaded.status).toBe(200);
@@ -960,10 +974,13 @@ describe('audit session authorization', () => {
         callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(null, { status: 204 });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     const failed = await worker.fetch(messageRequest(session.accessToken, []), missingSecretEnv);
@@ -1039,10 +1056,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     const firstRun = await uploadTiles(env, session.accessToken, 1);
@@ -1097,10 +1117,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     const retryUpload = await worker.fetch(uploadRequest(session.accessToken, 'retry.webp'), env);
@@ -1113,6 +1136,186 @@ describe('audit session authorization', () => {
       (await worker.fetch(messageRequest(session.accessToken, [retryReference]), env)).status,
     ).toBe(200);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('reports a reply that is not a usable proposal as failed, so it does not count as a run', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const callbacks: Array<[unknown, unknown]> = [];
+    const replies = [
+      'I could not see the store clearly, so here is my best advice in prose.',
+      '{"pages":',
+      USABLE_PROPOSAL,
+    ];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        callbacks.push([event.status, event.attemptNumber]);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: replies.shift() ?? '' }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    for (let reply = 0; reply < 3; reply += 1) {
+      expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(
+        200,
+      );
+    }
+
+    expect(callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['completed', 1],
+    ]);
+  });
+
+  it('never spends a public run on a proposal the conductor would reject', async () => {
+    const auditIdentifier = 'audit-consumer-shapes';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        'consumer-shapes-token',
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const manifest = [
+      'PAGE Home: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..6',
+      'PAGE Cart: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..3',
+      'Propose the placement plan for EACH page listed above.',
+    ].join('\n');
+    const box = { boxType: 'MostPopular', position: 'after', anchorNumber: 2 };
+    const replies = [
+      { pages: { Home: { boxes: [{}] }, Cart: { boxes: [] } } },
+      { pages: { Home: { boxes: [box] } } },
+      { pages: { Home: { boxes: [box] }, Cart: { boxes: [{ ...box, anchorNumber: 7 }] } } },
+      { pages: { Home: { boxes: [box] }, Cart: { boxes: [] } } },
+    ].map((proposal) => JSON.stringify(proposal));
+    const callbacks: Array<[unknown, unknown]> = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        callbacks.push([event.status, event.attemptNumber]);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: replies.shift() ?? '' }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await worker.fetch(
+        messageRequest(session.accessToken, tiles, manifest),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    await deliverStatusEvents(env);
+    expect(callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['failed', 1],
+      ['started', 1],
+      ['completed', 1],
+    ]);
+    const stored = await storageFor(env, auditIdentifier).get<{ completedAttempts: number }>(
+      'session',
+    );
+    expect(stored?.completedAttempts).toBe(1);
+  });
+
+  it('never spends a public run on a reply to a request without a readable manifest', async () => {
+    const auditIdentifier = 'audit-manifest-required';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        'manifest-required-token',
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const box = { boxType: 'MostPopular', position: 'after', anchorNumber: 2 };
+    const replies = [
+      { pages: { Home: { boxes: [box] } } },
+      { pages: { Home: { boxes: [{ ...box, anchorNumber: 501 }] } } },
+      { pages: { Home: { boxes: [box] } } },
+    ].map((proposal) => JSON.stringify(proposal));
+    const callbacks: Array<[unknown, unknown]> = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        callbacks.push([event.status, event.attemptNumber]);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: replies.shift() ?? '' }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    const wideManifest =
+      'PAGE Home: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..600';
+
+    for (const manifest of ['Analyze this store.', wideManifest, wideManifest]) {
+      const response = await worker.fetch(
+        messageRequest(session.accessToken, tiles, manifest),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    await deliverStatusEvents(env);
+    expect(callbacks).toEqual([
+      ['started', 1],
+      ['failed', 1],
       ['started', 1],
       ['failed', 1],
       ['started', 1],
@@ -1142,10 +1345,13 @@ describe('audit session authorization', () => {
         callbackBodies.push(String(init?.body));
         return new Response(null, { status: callbackAvailable ? 204 : 503 });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
@@ -1196,10 +1402,13 @@ describe('audit session authorization', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     });
 
     expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
@@ -1259,7 +1468,7 @@ describe('grader runs in one audit session', () => {
       inference += 1;
       const outcome = answer(inference);
       const success = (): Response =>
-        new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: '{}' }])), {
+        new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -1353,7 +1562,9 @@ describe('grader runs in one audit session', () => {
 
     const response = await proposal;
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ content: [{ type: 'text', text: '{}' }] });
+    expect(await response.json()).toMatchObject({
+      content: [{ type: 'text', text: USABLE_PROPOSAL }],
+    });
     expect(upstream.callbacks).toEqual([
       ['started', 1],
       ['completed', 1],

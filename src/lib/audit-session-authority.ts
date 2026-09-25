@@ -116,6 +116,7 @@ interface FinalizeInput {
   readonly reservationIdentifier: string;
   readonly succeeded: boolean;
   readonly fileIdentifier?: string;
+  readonly completed?: boolean;
 }
 
 interface FreeVisualVerificationReserveInput {
@@ -202,18 +203,23 @@ export async function reserveAuditAuthorityRequest(
   };
 }
 
-/** Commit a successful paid operation or release its reservation after failure. */
+/**
+ * Commit a successful paid operation or release its reservation after failure. `completed` says
+ * whether an inference returned a usable proposal; only such an inference completes a public run.
+ */
 export async function finalizeAuditAuthorityRequest(
   authorization: AuditAuthorityReservation,
   storeOrigin: string,
   succeeded: boolean,
   fileIdentifier: string | undefined,
   env: Env,
+  completed = false,
 ): Promise<void> {
   const input: FinalizeInput = {
     reservationIdentifier: authorization.reservationIdentifier,
     succeeded,
     ...(fileIdentifier === undefined ? {} : { fileIdentifier }),
+    ...(completed ? { completed } : {}),
   };
   const response = await authorityStub(authorization.auditIdentifier, env).fetch(
     internalRequest(storeOrigin, '/finalize', input),
@@ -400,12 +406,14 @@ export class AuditSessionAuthority implements DurableObject {
           : session.fileIdentifiers;
       const completesRun =
         input.succeeded &&
+        input.completed === true &&
         reservation.kind === 'message' &&
         currentRun &&
         !session.runCompleted &&
         reservation.attemptNumber !== undefined;
       const completesEarlierSession =
         input.succeeded &&
+        input.completed === true &&
         reservation.kind === 'message' &&
         reservation.attemptNumber !== undefined &&
         !admittedBySession(reservation, session);

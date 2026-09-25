@@ -24,6 +24,11 @@ import {
   type AuditAuthorityReservation,
 } from './audit-session-authority';
 import { WorkerError } from './responses';
+import {
+  isUsableProposal,
+  readProposalManifest,
+  type ProposalManifestPage,
+} from './audit-proposal';
 
 const TOKEN_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 const TOKEN_VERSION = 1;
@@ -85,6 +90,10 @@ export interface AuditAuthorization {
   readonly reservation: AuditAuthorityReservation;
   /** Epoch milliseconds the request was admitted at; its inference deadline counts from here. */
   readonly admittedAt: number;
+  /** The proposal prompt an inference reservation was admitted for; absent on uploads. */
+  readonly prompt?: string;
+  /** The pages the inference asked the model to plan, read from its page manifest. */
+  readonly proposalManifest?: readonly ProposalManifestPage[];
 }
 
 /** Successful activation exchange returned to the extension background worker. */
@@ -171,6 +180,8 @@ export async function authorizeAuditRequest(
   }
 
   let kind: 'upload' | 'message';
+  let proposalPrompt: string | undefined;
+  let proposalManifest: readonly ProposalManifestPage[] | undefined;
   let uploadBytes = 0;
   let referencedFileIdentifiers: readonly string[] = [];
   if (url.pathname === '/files') {
@@ -202,10 +213,11 @@ export async function authorizeAuditRequest(
     uploadBytes = file.size;
   } else {
     kind = 'message';
-    const prompt = request.headers.get('X-Personalizer-System-Prompt');
-    if (!prompt || !ALLOWED_AUDIT_INFERENCE_PROMPTS.has(prompt)) {
+    const selector = request.headers.get('X-Personalizer-System-Prompt');
+    if (!selector || !ALLOWED_AUDIT_INFERENCE_PROMPTS.has(selector)) {
       throw forbidden('This system prompt is not available to grader sessions.');
     }
+    proposalPrompt = selector;
     const bytes = new Uint8Array(await request.clone().arrayBuffer());
     if (bytes.byteLength > auditMaxMessageBytes(env)) {
       throw quotaExceeded('The grader inference request is larger than the allowed size.');
@@ -216,7 +228,9 @@ export async function authorizeAuditRequest(
     } catch {
       throw invalidArgument('The grader inference request body must be valid JSON.');
     }
-    referencedFileIdentifiers = validateAuditMessage(body);
+    const message = validateAuditMessage(body);
+    referencedFileIdentifiers = message.fileIdentifiers;
+    proposalManifest = readProposalManifest(message.texts);
   }
 
   const admittedAt = Date.now();
@@ -237,6 +251,8 @@ export async function authorizeAuditRequest(
     storeOrigin: claims.storeOrigin,
     reservation,
     admittedAt,
+    ...(proposalPrompt === undefined ? {} : { prompt: proposalPrompt }),
+    ...(proposalManifest === undefined ? {} : { proposalManifest }),
   };
 }
 
@@ -264,13 +280,31 @@ export async function finalizeAuditUsage(
     }
     fileIdentifier = result.id;
   }
+  const completed =
+    response.ok &&
+    authorization.reservation.kind === 'message' &&
+    authorization.prompt !== undefined &&
+    isUsableProposal(
+      authorization.prompt,
+      await readJsonBody(response),
+      authorization.proposalManifest ?? [],
+    );
   await finalizeAuditAuthorityRequest(
     authorization.reservation,
     authorization.storeOrigin,
     response.ok,
     fileIdentifier,
     env,
+    completed,
   );
+}
+
+async function readJsonBody(response: Response): Promise<unknown> {
+  try {
+    return (await response.clone().json()) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Release a reservation when audit dispatch throws before it can return a response. */
@@ -464,7 +498,10 @@ function isAttemptLimit(value: unknown): value is 2 | null {
   return value === 2 || value === null;
 }
 
-function validateAuditMessage(value: unknown): string[] {
+function validateAuditMessage(value: unknown): {
+  fileIdentifiers: string[];
+  texts: string[];
+} {
   const body = asRecord(value);
   if (!body || !Array.isArray(body.messages) || body.messages.length !== 1) {
     throw invalidArgument('A grader inference must contain exactly one user message.');
@@ -474,6 +511,7 @@ function validateAuditMessage(value: unknown): string[] {
     throw invalidArgument('A grader inference must contain exactly one structured user message.');
   }
   const fileIdentifiers: string[] = [];
+  const texts: string[] = [];
   for (const rawBlock of message.content) {
     const block = asRecord(rawBlock);
     if (!block || (block.type !== 'text' && block.type !== 'image' && block.type !== 'document')) {
@@ -481,6 +519,7 @@ function validateAuditMessage(value: unknown): string[] {
     }
     if (block.type === 'text') {
       if (typeof block.text !== 'string') throw invalidArgument('A text block must contain text.');
+      texts.push(block.text);
       continue;
     }
     const source = asRecord(block.source);
@@ -489,7 +528,7 @@ function validateAuditMessage(value: unknown): string[] {
     }
     fileIdentifiers.push(source.file_id);
   }
-  return [...new Set(fileIdentifiers)];
+  return { fileIdentifiers: [...new Set(fileIdentifiers)], texts };
 }
 
 function resolveStatusCallbackUrl(claimed: string, env: Env): string {
