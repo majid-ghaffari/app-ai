@@ -227,9 +227,9 @@ export async function handleMessages(
     };
     if (result.stopReason === 'max-output-tokens') {
       log.warn('QC inference reached max_tokens', completion);
-    } else {
-      log.info('Inference completed', completion);
+      throw truncatedReply(entry.maxTokens);
     }
+    log.info('Inference completed', completion);
     return await registeredMessagesResponse(
       result,
       inferenceRequest,
@@ -246,6 +246,14 @@ export async function handleMessages(
     });
     return errorResponseFrom(error, corsHeaders, 'Internal proxy server error');
   }
+}
+
+function truncatedReply(maxTokens: number): WorkerError {
+  return new WorkerError("The AI model's reply was cut off at its output limit.", {
+    status: 502,
+    exceptionType: 'InferenceTruncatedException',
+    messageDetail: `stop_reason max_tokens at max_tokens ${maxTokens}`,
+  });
 }
 
 function validateFreeVisualVerifyBody(

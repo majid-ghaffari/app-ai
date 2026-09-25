@@ -15,7 +15,7 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 - **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `onboarding-review`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
-- **maxTokens:** 8192 — the whole-store payload (a verdict per page) needs more output room than the single-page review's 2048 (mirrors how `onboarding-batch-all` bumped 4096→8192 over `onboarding-batch`).
+- **maxTokens:** the documented maximum output of the model its route selects (`128000` for the balanced tier's `claude-sonnet-5`), a ceiling rather than a spend; thinking and the answer share it ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
 - **Effort:** adaptive `low` fast path → `medium` recovery. Lib marks recovery after missing page coverage, parse/schema failure, `max_tokens`, explicit uncertainty/escalation, or failed quality invariants.
 - **Attachments:** none. The lib uploads every page's after-render screenshots per request.
 

@@ -11,7 +11,7 @@ The lib reuses at most four already-uploaded price-bearing tiles, prioritized fr
 ## Contract
 
 - **Model:** `balanced` tier, low effort.
-- **maxTokens:** 512.
+- **maxTokens:** the documented maximum output of the model its route selects (`128000` for the balanced tier's `claude-sonnet-5`), a ceiling rather than a spend; thinking and the answer share it ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
 - **Tools/attachments:** none.
 - **Input:** selected existing image file IDs followed by `activeCurrency` and deterministic candidates.
 - **Output:** JSON-only `{ "visualActions": [{ "action": "setCurrencyFormat", "args": ... }] }`; no page corrections, CSS, prose, or additional actions.

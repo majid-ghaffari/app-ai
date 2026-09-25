@@ -12,7 +12,7 @@ It is the demand-first sibling of the single-page [`onboarding-batch`](onboardin
 
 - **Purpose:** Given ONE store page the merchant is looking at, plus the request they TYPED, return ONE JSON plan for the whole page — which boxes to place, at which numbered candidate (INSERT `before`/`after`, or `replace`), and how to style each so it looks native — honoring the merchant's explicit demand FIRST, then rounding out the page with best practice.
 - **Additive-only placement:** `position` is `before`/`after` ONLY — the prompt never emits `replace`; merchant sections (including a theme's own static product grid) always stay, and a green manifest candidate serves as a boundary + style reference. Every box's `appearancePatch` carries its playbook `Style` explicitly (`carousel` default; Cart Upsell `slider`; Product FBT `bundle`); only Recently Viewed anchors at the footer boundary.
-- **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist. The body omits `model` so the registry is authoritative. `maxTokens: 4096`.
+- **Model:** the `balanced` tier (currently `claude-sonnet-5`) — the same reasoner class as `onboarding-batch` and the `proposals` strategist. The body omits `model` so the registry is authoritative. `maxTokens`: the documented maximum output of the model its route selects (`128000` for the balanced tier's `claude-sonnet-5`), a ceiling rather than a spend; thinking and the answer share it ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none (`attachments: []`). The lib uploads the page's two screenshots per request.
 - **Box vocabulary + page vocabulary:** from the shared [`_shared-box-vocab.md`](../../src/prompts/onboarding-shared/_shared-box-vocab.md) block, the same list the onboarding propose uses.
@@ -96,7 +96,7 @@ The composed system text is the STABLE, shop-independent prefix (a `cache_contro
 
 [`test/optimize-demand-prompt.test.ts`](../../test/optimize-demand-prompt.test.ts) pins:
 
-- **(a) Registry resolution** — resolves by name to non-trivial text, `usesTools: false`, `clientTools` undefined; the model equals `onboarding-batch`'s model and equals `ENV.MODEL_BALANCED`; `maxTokens === 4096`.
+- **(a) Registry resolution** — resolves by name to non-trivial text, `usesTools: false`, `clientTools` undefined; the model equals `onboarding-batch`'s model and equals `ENV.MODEL_BALANCED`; `maxTokens === 128000`.
 - **(b) Frozen cache-first order** — the composed text contains the `_block-user-demand.md` block (marker `"The merchant's explicit request comes FIRST"`) placed RIGHT AFTER the intro and BEFORE the placement instruction, in the order intro → demand → mobile-first (`"Mobile is the majority of ecommerce shoppers"`) → box-placement (`"INSERT anchors (violet)"`).
 - **(c) Demand block is optimize-only** — it must NOT leak into `onboarding-batch` / `-all`, `onboarding-review`, or `cartdrawer-batch-all`.
 - **(d) Single-page output contract** — the text states `` `page` and `boxes` ``, contains `"page": "Product"`, has NO `"pages": {` wrapper, and explicitly states NO `progressBar` key / NO off-page `segments` / `discounts` keys; all seven per-box fields (`boxType`, `position`, `anchorNumber`, `styleReferenceSelector`, `appearancePatch`, `appearancePatchMobile`, `reasoning`) appear.

@@ -937,3 +937,38 @@ message body the non-streaming API returns: every `message_start` member, the co
 every member the one or more `message_delta` events carry, such as a refusal's `stop_details`. A
 stream answer with no body is an invalid provider response, never a success. The `/messages`
 response contract stays one JSON message.
+
+### Conductor prompts carry their model's maximum output
+
+Every conductor prompt — the onboarding proposals, reviews, QC gate, CSS specialist and currency
+recovery, the cart-drawer proposal and review, and `optimize-demand` — declares the semantic budget
+`MODEL_MAXIMUM_OUTPUT` in `src/prompt-registry.ts`. `getSystemPrompt` resolves it to the documented
+maximum output of whichever model the prompt's route selects, through `modelMaxOutputTokens` in
+`src/inference/model-catalog.ts`: in production 128000 for `claude-sonnet-5` on the balanced tier and
+64000 for `claude-haiku-4-5`, the fast-tier QC gate
+([Models overview](https://platform.claude.com/docs/en/about-claude/models/overview), "Max output").
+The catalog records a limit per model generation, as model-id prefixes where the longest match wins:
+the current Claude families at 128000 (Fable, Opus, Sonnet) and 64000 (Haiku), the earlier
+`claude-opus-4-5` and `claude-sonnet-4-5` at 64000 (their model pages), GPT-5 at 128000
+([GPT-5.2](https://developers.openai.com/api/docs/models/gpt-5.2)), and Gemini 3 at 65536
+([Gemini 3 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-preview)). A settings-only
+route change therefore carries its own model's ceiling, and a model whose generation records no limit
+fails route resolution before any provider call. Gemini's one output budget covers thinking and the
+answer, so its adapter never asks for more than that model maximum.
+
+Two provider facts make any smaller number a guess that can break a run. On `claude-sonnet-5` a
+request that omits `thinking` runs adaptive thinking, and `max_tokens` is a hard limit on thinking
+plus the answer together, so the room a prompt leaves for its JSON shrinks with every token the
+model spends reasoning; `effort` steers how much it thinks, but it does not reserve anything for the
+answer. And the ceiling costs nothing when unused: output is billed as produced, and
+[OTPM rate limits](https://platform.claude.com/docs/en/api/rate-limits) count only the tokens
+generated, since `max_tokens` does not factor into them. `claude-haiku-4-5` runs without thinking
+unless a request enables it, which none does.
+
+A reply the model stopped at `max_tokens` is incomplete. Registered `/messages` answers it `502`,
+`{ "Message": "The AI model's reply was cut off at its output limit.", "ExceptionType":
+"InferenceTruncatedException", "MessageDetail": "stop_reason max_tokens at max_tokens <n>" }`, after
+logging it at `warn` with its QC telemetry, so a truncated proposal is never delivered, and never
+counted, as a success. Registered prompts stream upstream
+([One upstream inference deadline, owned by app-ai](#one-upstream-inference-deadline-owned-by-app-ai)),
+which is the transport the provider recommends for budgets this large.

@@ -343,6 +343,18 @@ describe('Gemini request translation', () => {
     },
   );
 
+  it('never asks for more than the model can output when the answer budget is its maximum', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(completion())));
+    await new GeminiGenerateContentAdapter(GEMINI_ENV).complete(
+      request({ effort: 'high', maxOutputTokens: 65_536 }),
+    );
+    expect(sentBody(fetchCall(fetchMock, 0).init).generationConfig).toMatchObject({
+      thinkingConfig: { thinkingLevel: 'high' },
+      maxOutputTokens: 65_536,
+    });
+  });
+
   it('keeps the canonical answer budget whole for an effort-free request', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(new Response(JSON.stringify(completion())));

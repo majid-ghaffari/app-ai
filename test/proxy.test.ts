@@ -662,6 +662,11 @@ describe('handleHealth', () => {
     for (const broken of [
       { ...ENV, ENVIRONMENT: 'production', MODEL_FAST: 'mistral-large-3' },
       { ...ENV, ENVIRONMENT: 'production', MODEL_OVERRIDES: 'onboarding-chat=gemini-3-pro' },
+      {
+        ...ENV,
+        ENVIRONMENT: 'production',
+        MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},onboarding-visual=gpt-4.1,onboarding-qc-gate=gpt-4.1`,
+      },
     ]) {
       const res = handleHealth(CORS, broken, undefined, 'fc00704');
       expect(res.status).toBe(503);
@@ -670,7 +675,37 @@ describe('handleHealth', () => {
         Message: 'App AI service is not ready.',
         ExceptionType: 'ServiceUnavailableException',
       });
-      expect(JSON.stringify(body)).not.toMatch(/mistral|gemini|MODEL_|onboarding-chat/);
+      expect(JSON.stringify(body)).not.toMatch(/mistral|gemini|gpt|MODEL_|onboarding-/);
+    }
+  });
+
+  it('answers the same status-only 503 through the Worker route for an unrecorded model generation', async () => {
+    vi.stubGlobal('__APP_AI_REV__', 'fc00704');
+    vi.resetModules();
+    try {
+      const { default: builtWorker } = await import('../src/index');
+      const production: Env = { ...ENV, ENVIRONMENT: 'production' };
+      const healthy = await builtWorker.fetch(
+        new Request('https://app-ai.test/health'),
+        production,
+      );
+      expect(healthy.status).toBe(200);
+      expect(((await healthy.json()) as { buildRev: string }).buildRev).toBe('fc00704');
+
+      const unrecorded = await builtWorker.fetch(new Request('https://app-ai.test/health'), {
+        ...production,
+        MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},onboarding-visual=gpt-4.1,onboarding-qc-gate=gpt-4.1`,
+      });
+      expect(unrecorded.status).toBe(503);
+      const body = (await unrecorded.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        Message: 'App AI service is not ready.',
+        ExceptionType: 'ServiceUnavailableException',
+      });
+      expect(JSON.stringify(body)).not.toMatch(/gpt|MODEL_|onboarding-/);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
     }
   });
 
@@ -2357,7 +2392,7 @@ describe('canonical tool serialization', () => {
 });
 
 describe('handleMessages — registry max_tokens EXACT', () => {
-  // A `balanced` entry whose registry `maxTokens` is 8192 — the EXACT value the
+  // A `balanced` entry whose registry `maxTokens` is 128000 — the EXACT value the
   // registry forces onto the wire regardless of the client's ask. Pinned to the
   // registry so a future entry-token change flows into this expectation.
   const EXACT_PROMPT = 'onboarding-batch-all';
@@ -2386,11 +2421,11 @@ describe('handleMessages — registry max_tokens EXACT', () => {
     return sentBody(fetchCall(fetchMock, idx).init).max_tokens;
   }
 
-  it('pins the exact entry to the registry (8192)', () => {
-    expect(EXACT).toBe(8192);
+  it('pins the exact entry to the registry (128000)', () => {
+    expect(EXACT).toBe(128000);
   });
 
-  it('a BELOW-registry client max_tokens (4096) is set to exactly the registry value (8192)', async () => {
+  it('a BELOW-registry client max_tokens (4096) is set to exactly the registry value (128000)', async () => {
     expect(
       await forwardedMaxTokens(
         { max_tokens: 4096, messages: [{ role: 'user', content: 'go' }] },
@@ -2399,18 +2434,18 @@ describe('handleMessages — registry max_tokens EXACT', () => {
     ).toBe(EXACT);
   });
 
-  it('an ABOVE-registry client max_tokens (16000) is OVERRIDDEN down to the registry value (no cap kept, no floor)', async () => {
-    // The OLD floor behavior (Math.max) preserved 16000; exact-registry overrides
+  it('an ABOVE-registry client max_tokens (200000) is OVERRIDDEN down to the registry value (no cap kept, no floor)', async () => {
+    // The OLD floor behavior (Math.max) preserved 200000; exact-registry overrides
     // it to the entry value. This is the load-bearing "no floor / no client read" proof.
     expect(
       await forwardedMaxTokens(
-        { max_tokens: 16000, messages: [{ role: 'user', content: 'go' }] },
+        { max_tokens: 200000, messages: [{ role: 'user', content: 'go' }] },
         EXACT_PROMPT,
       ),
     ).toBe(EXACT);
   });
 
-  it('SETS the registry value (8192) when the client omits max_tokens entirely', async () => {
+  it('SETS the registry value (128000) when the client omits max_tokens entirely', async () => {
     const sent = await forwardedMaxTokens(
       { messages: [{ role: 'user', content: 'go' }] },
       EXACT_PROMPT,

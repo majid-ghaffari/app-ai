@@ -157,6 +157,20 @@ describe('GET /prompts — master gate', () => {
     expect(body.prompts.find((prompt) => prompt.name === 'chat')?.valid).toBe(true);
   });
 
+  it("reports a prompt whose configured model's output limit is not recorded", async () => {
+    stubPersonalizer(Number(ENV.MASTER_SUBSCRIBER_ID));
+    const env: Env = {
+      ...ENV,
+      MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},onboarding-visual=gpt-4.1,onboarding-qc-gate=gpt-4.1`,
+    };
+    const response = await worker.fetch(promptsRequest(), env);
+    const body = (await response.json()) as PromptsBody;
+    const broken = body.prompts.find((prompt) => prompt.name === 'onboarding-batch-all');
+    expect(broken?.valid).toBe(false);
+    expect(broken?.error).toMatch(/No maximum output is recorded for model "gpt-4\.1"/);
+    expect(body.prompts.find((prompt) => prompt.name === 'probe-currency')?.valid).toBe(true);
+  });
+
   it('reports which prompts run on a provider that ignores their cache markers', async () => {
     stubPersonalizer(Number(ENV.MASTER_SUBSCRIBER_ID));
     // Gemini caches a stable prefix implicitly and honours no per-block marker.

@@ -14,7 +14,8 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 - **Consistency is in scope, page-wide:** sibling strips on the page share one visual rhythm (card size, corner treatment, arrows); a deviating strip gets a `styleBox` aligning it to the page's dominant treatment (the `bundle`-style FBT + the progress bar are exempt natures). Internal-looking TITLES (`_LS` suffix, raw type names) are reported in `feedback` with a `failureClass` and NO correction (no title verb exists).
 - **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `visual-verify`.
-- **Effort:** `low` — preserves the output budget for the required JSON, including when this route is the whole-store fallback.
+- **Max tokens:** the documented maximum output of the model its route selects (`128000` for the balanced tier's `claude-sonnet-5`), a ceiling rather than a spend; thinking and the answer share it ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
+- **Effort:** `low` — keeps adaptive thinking short, including when this route is the whole-store fallback.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
 - **Attachments:** none. The lib uploads the after-render screenshot per request.
 

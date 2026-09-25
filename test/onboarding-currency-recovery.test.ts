@@ -14,7 +14,7 @@ describe('onboarding-currency-recovery', () => {
   it('is a bounded JSON-only visual-action contract without a hardcoded currency', () => {
     const entry = getSystemPrompt('onboarding-currency-recovery', ENV);
     expect(entry.model).toBe(ENV.MODEL_BALANCED);
-    expect(entry.maxTokens).toBe(512);
+    expect(entry.maxTokens).toBe(128000);
     expect(entry.usesTools).toBe(false);
     expect(entry.prompt).toContain('visualActions');
     expect(entry.prompt).toContain('setCurrencyFormat');

@@ -6,10 +6,10 @@
  *   • /messages (header-selected propose + review prompts): the wire value equals
  *     `getSystemPrompt(name).maxTokens` whether the caller omitted `max_tokens`,
  *     sent a SMALLER one (old floor path), or sent a LARGER one (would-be cap);
- *   • the concrete literals — propose `onboarding-batch-all` = 8192, both review
- *     routes (`onboarding-review` = 2048, `onboarding-review-all` = 8192) — so a
- *     change to a registry literal changes the wire one-for-one and no hidden
- *     4096 default / floor / cap survives;
+ *   • the concrete literals — every conductor prompt carries its model's documented
+ *     maximum output: 128000 for the balanced-tier claude-sonnet-5 routes and 64000
+ *     for the fast-tier claude-haiku-4-5 QC gate — so a change to a registry value
+ *     changes the wire one-for-one and no smaller guessed budget survives;
  *   • /chat (placement) uses the registry `maxTokens` exactly, overriding a
  *     client-sent budget.
  *
@@ -19,6 +19,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 import { getSystemPrompt } from '../src/prompt-registry';
+import type { Env } from '../src/config';
 import { handleMessages } from '../src/handlers/messages';
 import { handleChat } from '../src/handlers/chat';
 import {
@@ -42,6 +43,7 @@ function jsonOk(data: unknown, status = 200): Response {
 async function messagesBody(
   systemPrompt: string,
   body: Record<string, unknown>,
+  env: Env = ENV,
 ): Promise<ReturnType<typeof sentBody>> {
   const fetchMock = stubFetch();
   fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));
@@ -53,11 +55,11 @@ async function messagesBody(
       'X-Personalizer-System-Prompt': systemPrompt,
       // The onboarding routes enforce the ruleset handshake; supply the matching
       // header so the request reaches Anthropic (the version is not what's tested).
-      'X-Personalizer-Ruleset-Version': getSystemPrompt(systemPrompt, ENV).rulesetVersion ?? '',
+      'X-Personalizer-Ruleset-Version': getSystemPrompt(systemPrompt, env).rulesetVersion ?? '',
     },
     body: JSON.stringify(body),
   });
-  await handleMessages(req, ENV, CORS);
+  await handleMessages(req, env, CORS);
   const idx = fetchedUrls(fetchMock).findIndex((u) => u.endsWith('/v1/messages'));
   if (idx < 0) throw new Error('no /v1/messages call was made');
   return sentBody(fetchCall(fetchMock, idx).init);
@@ -67,12 +69,16 @@ async function messagesBody(
 // concrete registry literals. Reading these off `getSystemPrompt` too would hide a
 // typo, so the literals are pinned HERE and the registry is asserted to match.
 const EXACT_ROUTES: Array<{ name: string; maxTokens: number; kind: 'propose' | 'review' }> = [
-  { name: 'onboarding-batch', maxTokens: 4096, kind: 'propose' },
-  { name: 'onboarding-batch-all', maxTokens: 8192, kind: 'propose' },
-  { name: 'onboarding-review', maxTokens: 2048, kind: 'review' },
-  { name: 'onboarding-review-all', maxTokens: 8192, kind: 'review' },
-  { name: 'onboarding-review-gate-all', maxTokens: 1536, kind: 'review' },
-  { name: 'onboarding-currency-recovery', maxTokens: 512, kind: 'review' },
+  { name: 'onboarding-batch', maxTokens: 128000, kind: 'propose' },
+  { name: 'onboarding-batch-all', maxTokens: 128000, kind: 'propose' },
+  { name: 'onboarding-review', maxTokens: 128000, kind: 'review' },
+  { name: 'onboarding-review-all', maxTokens: 128000, kind: 'review' },
+  { name: 'onboarding-review-gate-all', maxTokens: 64000, kind: 'review' },
+  { name: 'onboarding-css-review', maxTokens: 128000, kind: 'review' },
+  { name: 'onboarding-currency-recovery', maxTokens: 128000, kind: 'review' },
+  { name: 'cartdrawer-batch-all', maxTokens: 128000, kind: 'propose' },
+  { name: 'cartdrawer-review-all', maxTokens: 128000, kind: 'review' },
+  { name: 'optimize-demand', maxTokens: 128000, kind: 'propose' },
 ];
 
 describe('registry max_tokens is EXACT on /messages (no floor, no cap, no client read)', () => {
@@ -80,10 +86,8 @@ describe('registry max_tokens is EXACT on /messages (no floor, no cap, no client
     for (const { name, maxTokens } of EXACT_ROUTES) {
       expect(getSystemPrompt(name, ENV).maxTokens).toBe(maxTokens);
     }
-    // The whole-store propose + review both budget 8192; the single-page review is
-    // the tightest (2048). None is the old 4096 default in disguise.
-    expect(getSystemPrompt('onboarding-batch-all', ENV).maxTokens).toBe(8192);
-    expect(getSystemPrompt('onboarding-review-all', ENV).maxTokens).toBe(8192);
+    expect(getSystemPrompt('onboarding-batch-all', ENV).maxTokens).toBe(128000);
+    expect(getSystemPrompt('onboarding-review-all', ENV).maxTokens).toBe(128000);
   });
 
   for (const { name, maxTokens } of EXACT_ROUTES) {
@@ -115,12 +119,70 @@ describe('registry max_tokens is EXACT on /messages (no floor, no cap, no client
     });
   }
 
-  it('no hidden 4096 default survives for a non-4096 route (onboarding-review sends 2048, not 4096)', async () => {
+  it('no hidden 4096 default survives for a conductor route (onboarding-review sends 128000, not 4096)', async () => {
     const sent = await messagesBody('onboarding-review', {
       max_tokens: 4096,
       messages: [{ role: 'user', content: 'go' }],
     });
-    expect(sent.max_tokens).toBe(2048);
+    expect(sent.max_tokens).toBe(128000);
+  });
+});
+
+describe("a conductor prompt's budget is its selected model's maximum output", () => {
+  const routedTo = (routes: string): Env => ({
+    ...ENV,
+    MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},${routes}`,
+  });
+
+  it('follows a settings-only route change to a model with a lower limit', async () => {
+    const env = routedTo('onboarding-visual=claude-sonnet-4-5');
+    expect(getSystemPrompt('onboarding-batch-all', env).maxTokens).toBe(64000);
+    const sent = await messagesBody(
+      'onboarding-batch-all',
+      { messages: [{ role: 'user', content: 'go' }] },
+      env,
+    );
+    expect(sent.model).toBe('claude-sonnet-4-5');
+    expect(sent.max_tokens).toBe(64000);
+  });
+
+  it('resolves every catalogued generation the route can select', () => {
+    expect(getSystemPrompt('onboarding-review-all', ENV).maxTokens).toBe(128000);
+    expect(
+      getSystemPrompt('onboarding-review-all', routedTo('onboarding-review-all=claude-opus-4-5'))
+        .maxTokens,
+    ).toBe(64000);
+    expect(
+      getSystemPrompt('onboarding-review-all', routedTo('onboarding-review-all=claude-opus-4-8'))
+        .maxTokens,
+    ).toBe(128000);
+    expect(
+      getSystemPrompt(
+        'onboarding-review-all',
+        routedTo('onboarding-visual=gpt-5.2,onboarding-qc-gate=gpt-5.2'),
+      ).maxTokens,
+    ).toBe(128000);
+    expect(
+      getSystemPrompt(
+        'onboarding-review-gate-all',
+        routedTo('onboarding-visual=gemini-3-pro,onboarding-qc-gate=gemini-3-pro'),
+      ).maxTokens,
+    ).toBe(65536);
+  });
+
+  it('fails before provider I/O on a model whose maximum output is not recorded', () => {
+    expect(() =>
+      getSystemPrompt(
+        'onboarding-batch-all',
+        routedTo('onboarding-visual=gpt-4.1,onboarding-qc-gate=gpt-4.1'),
+      ),
+    ).toThrow(/No maximum output is recorded for model "gpt-4\.1"/);
+  });
+
+  it('leaves a fixed budget fixed whatever the route selects', () => {
+    expect(
+      getSystemPrompt('probe-currency', routedTo('onboarding-visual=claude-sonnet-4-5')).maxTokens,
+    ).toBe(512);
   });
 });
 

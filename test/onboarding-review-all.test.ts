@@ -59,9 +59,7 @@ describe('onboarding-review-all registry entry', () => {
     expect(entry.clientTools).toBeUndefined();
     // No bundled attachments — the lib uploads every page's after-render screenshots per run.
     expect(entry.attachments).toEqual([]);
-    // Whole-store payload needs more output room than the single-page review (2048).
-    const singlePage = getSystemPrompt('onboarding-review', ENV);
-    expect(entry.maxTokens).toBeGreaterThan(singlePage.maxTokens);
+    expect(entry.maxTokens).toBe(128000);
     expect(entry.effort).toBeUndefined();
     expect(entry.adaptiveEffort).toEqual({ default: 'low', escalated: 'medium' });
   });
@@ -228,7 +226,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
     expect(sent.output_config).toEqual({ effort: 'medium' });
   });
 
-  it('logs truncation, usage, latency, and QC dimensions without retaining evidence content', async () => {
+  it('never returns a reply stopped at its output limit as a success, and logs it without evidence content', async () => {
     const warn = vi.fn();
     const info = vi.fn();
     const logger: Logger = {
@@ -260,7 +258,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
       ),
     );
 
-    await handleMessages(
+    const response = await handleMessages(
       messagesRequest(
         { messages: [{ role: 'user', content: 'SENSITIVE USER EVIDENCE' }] },
         'onboarding-review-all',
@@ -285,7 +283,7 @@ describe('POST /messages — onboarding-review-all routing', () => {
       'QC inference reached max_tokens',
       expect.objectContaining({
         model: ENV.MODEL_BALANCED,
-        maxTokens: 8192,
+        maxTokens: 128000,
         effort: 'low',
         stopReason: 'max-output-tokens',
         usage: {
@@ -309,6 +307,12 @@ describe('POST /messages — onboarding-review-all routing', () => {
     expect(JSON.stringify([...warn.mock.calls, ...info.mock.calls])).not.toMatch(
       /SENSITIVE (USER|MODEL) EVIDENCE/,
     );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      Message: "The AI model's reply was cut off at its output limit.",
+      ExceptionType: 'InferenceTruncatedException',
+      MessageDetail: 'stop_reason max_tokens at max_tokens 128000',
+    });
   });
 
   it('returns the Anthropic envelope with the assistant whole-store verdict JSON unchanged', async () => {

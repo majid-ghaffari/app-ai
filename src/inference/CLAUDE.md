@@ -19,7 +19,14 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   configuration; what a model IS is a fact and lives here. A family prefix
   resolves to exactly one provider: two accounts serving one vendor's weights
   are separated at the prefix rather than guessed, and the catalog rejects a
-  nested prefix pair that would resolve to different providers.
+  nested prefix pair that would resolve to different providers. It also records
+  each model generation's documented maximum output (`modelMaxOutputTokens`,
+  longest prefix wins, throwing for an unrecorded generation), which the
+  registry's `MODEL_MAXIMUM_OUTPUT` budget resolves through and the Gemini
+  adapter caps its shared thinking-plus-answer budget at. The limits are model-id
+  prefixes: a family entry states its current generation and a narrower entry an
+  earlier one with a lower limit. `/health` readiness and `GET /prompts` resolve
+  every prompt's budget, so an unrecorded generation is reported before a request.
 - Adapters accept only fully resolved `ModelProfile`/`FilePolicy` authority from
   the registry path. They do not infer providers from model names.
 - The runtime never switches on a provider. Adapter selection belongs only in

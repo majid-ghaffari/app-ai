@@ -53,7 +53,7 @@ describe('cart-drawer prompts — registry resolution + model class', () => {
     // Both are the `balanced` tier — the same Sonnet reasoner class.
     expect(drawer.model).toBe(onboarding.model);
     expect(drawer.model).toBe(ENV.MODEL_BALANCED);
-    expect(drawer.maxTokens).toBe(4096);
+    expect(drawer.maxTokens).toBe(128000);
   });
 
   it('cartdrawer-review-all is the `balanced` tier (Sonnet), like onboarding-review-all', () => {
@@ -62,7 +62,7 @@ describe('cart-drawer prompts — registry resolution + model class', () => {
     // Both are the `balanced` tier — the same Sonnet reasoner class.
     expect(drawer.model).toBe(onboarding.model);
     expect(drawer.model).toBe(ENV.MODEL_BALANCED);
-    expect(drawer.maxTokens).toBe(2048);
+    expect(drawer.maxTokens).toBe(128000);
   });
 });
 

@@ -37,6 +37,9 @@ or changes the inference response.
   provider I/O. Unknown-selector compatibility must never hide a missing
   `MODEL_*` binding. Registered `/messages` prompts preserve non-effort output
   configuration while replacing only caller effort with registry policy.
+- A registered `/messages` reply the model stopped at `max_tokens` is never a
+  success: it is logged at `warn` and answered 502 `InferenceTruncatedException`
+  ([docs/DECISIONS.md → Conductor prompts carry their model's maximum output](../../docs/DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
 - A `/messages` request naming no registered prompt is a bounded Anthropic-wire
   passthrough: the caller owns its conversation, the registry's
   `getUnregisteredMessagesRoute` owns the model and `max_tokens` (a caller-sent

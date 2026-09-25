@@ -18,7 +18,7 @@ describe('onboarding-review-gate-all', () => {
   it('is a compact fast-tier, correction-free prompt', () => {
     const entry = getSystemPrompt('onboarding-review-gate-all', ENV);
     expect(entry.model).toBe(ENV.MODEL_FAST);
-    expect(entry.maxTokens).toBe(1536);
+    expect(entry.maxTokens).toBe(64000);
     expect(entry.usesTools).toBe(false);
     expect(entry.attachments).toEqual([]);
     expect(entry.prompt).toContain('issueCodes');
@@ -48,7 +48,7 @@ describe('onboarding-review-gate-all', () => {
     const index = fetchedUrls(fetchMock).findIndex((url) => url.endsWith('/v1/messages'));
     const body = sentBody(fetchCall(fetchMock, index).init);
     expect(body.model).toBe(ENV.MODEL_FAST);
-    expect(body.max_tokens).toBe(1536);
+    expect(body.max_tokens).toBe(64000);
     expect(body.system).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

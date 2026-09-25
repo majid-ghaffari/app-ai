@@ -59,7 +59,7 @@ describe('optimize-demand — registry resolution + model class', () => {
     // Both are the `balanced` tier — the same Sonnet reasoner class.
     expect(optimize.model).toBe(onboarding.model);
     expect(optimize.model).toBe(ENV.MODEL_BALANCED);
-    expect(optimize.maxTokens).toBe(4096);
+    expect(optimize.maxTokens).toBe(128000);
   });
 });
 

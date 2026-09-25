@@ -15,7 +15,7 @@ It is registered like a probe (header-selected on `POST /messages`, JSON-only, n
 - **`addBox` is additive-only:** its `position` is `before`/`after` (never `replace`) — corrections re-place OUR boxes; merchant content always stays.
 - **Model:** the `balanced` tier (currently `claude-sonnet-5`), like `onboarding-review` / `onboarding-review-all`.
 - **Tools:** none (one-shot JSON, `usesTools: false`, no `clientTools`).
-- **maxTokens:** 2048 — a SINGLE surface's verdict fits the single-page review budget (matches `onboarding-review`), not the whole-store `onboarding-review-all` bump to 8192 (which pays for a verdict PER PAGE).
+- **maxTokens:** the documented maximum output of the model its route selects (`128000` for the balanced tier's `claude-sonnet-5`), a ceiling rather than a spend; thinking and the answer share it ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)).
 - **Attachments:** none. The lib uploads the open drawer's after-render screenshots per request.
 
 ### Input (what the lib provides)

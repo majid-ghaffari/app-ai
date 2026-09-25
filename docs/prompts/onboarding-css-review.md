@@ -8,7 +8,8 @@ emit managed `advancedCss` visual actions.
 
 - Endpoint: `POST /messages` with `X-Personalizer-System-Prompt: onboarding-css-review`.
 - Prompt group: `onboarding-visual`, whose model profile resolves to `MODEL_BALANCED`; medium
-  effort, 2048 output tokens, no tools.
+  effort, the documented maximum output of the model its route selects (`128000` for `claude-sonnet-5`) as its ceiling
+  ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)), no tools.
 - Handshake: carries `rulesetVersion`, so a caller's `X-Personalizer-Ruleset-Version` must match.
 - Input: the flagged CURRENT pages at both widths, the applied plan, render evidence, prior
   history, and the currently managed visual actions — the same uploaded references the holistic

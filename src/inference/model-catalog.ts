@@ -204,6 +204,39 @@ export interface ModelFamily {
   readonly filePolicy: FilePolicyName;
 }
 
+const MODEL_OUTPUT_LIMITS: readonly (readonly [prefix: string, maxOutputTokens: number])[] = [
+  ['claude-fable-', 128_000],
+  ['claude-opus-', 128_000],
+  ['claude-opus-4-5', 64_000],
+  ['claude-sonnet-', 128_000],
+  ['claude-sonnet-4-5', 64_000],
+  ['claude-haiku-', 64_000],
+  ['gpt-5', 128_000],
+  ['gemini-3', 65_536],
+];
+
+/**
+ * The most output tokens one request to `model` may ask for. Throws for a model whose generation
+ * the catalog records no limit for, so a prompt sized to its model's maximum fails before provider
+ * I/O rather than at the provider.
+ */
+export function modelMaxOutputTokens(model: string): number {
+  let limit: number | null = null;
+  let matchedLength = 0;
+  for (const [prefix, maxOutputTokens] of MODEL_OUTPUT_LIMITS) {
+    if (model.startsWith(prefix) && prefix.length > matchedLength) {
+      limit = maxOutputTokens;
+      matchedLength = prefix.length;
+    }
+  }
+  if (limit === null) {
+    throw new Error(
+      `No maximum output is recorded for model "${model}" in src/inference/model-catalog.ts, so a prompt sized to its model's maximum output cannot run on it.`,
+    );
+  }
+  return limit;
+}
+
 /** Every catalogued family, in declaration order. */
 export function listModelFamilies(): readonly ModelFamily[] {
   return MODEL_FAMILIES;
@@ -301,6 +334,11 @@ export function validateModelCatalog(): void {
   for (const name of listFilePolicies()) {
     if (!MODEL_FAMILIES.some((family) => family.filePolicy === name)) {
       throw new Error(`Orphan file policy: ${name}`);
+    }
+  }
+  for (const [prefix] of MODEL_OUTPUT_LIMITS) {
+    if (![...prefixes.keys()].some((familyPrefix) => prefix.startsWith(familyPrefix))) {
+      throw new Error(`Output limit prefix "${prefix}" belongs to no model family`);
     }
   }
 }

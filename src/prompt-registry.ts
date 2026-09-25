@@ -14,6 +14,7 @@ import type {
 import {
   BOUNDED_FREE_VISUAL_MODEL,
   getFilePolicy,
+  modelMaxOutputTokens,
   resolveModelFamily,
   type FilePolicyName,
   type ModelProfileName,
@@ -202,6 +203,13 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
  */
 export const ONBOARDING_RULESET_VERSION = 'limespot-onboarding-playbook-v2';
 
+/**
+ * A registry output budget that resolves to the documented maximum output of whichever model the
+ * prompt's route selects. It is a ceiling, not a spend: unused output tokens cost nothing and do
+ * not count toward rate limits.
+ */
+export const MODEL_MAXIMUM_OUTPUT = 'model-maximum' as const;
+
 /** A file prepended to the first message (uploaded via the Files API dedup). */
 export interface PromptAttachment {
   content: string;
@@ -313,7 +321,8 @@ type SystemPromptDefinition = Omit<
   | 'apiFamily'
   | 'filePolicy'
   | 'capabilities'
->;
+  | 'maxTokens'
+> & { maxTokens: number | typeof MODEL_MAXIMUM_OUTPUT };
 
 const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
   'image-selection': {
@@ -489,7 +498,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     prompt: prompts.onboardingBatch,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     injectsBrainDefaults: true,
-    maxTokens: 4096,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     effort: 'low',
     usesTools: false,
     description:
@@ -519,7 +528,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     prompt: prompts.onboardingBatchAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     injectsBrainDefaults: true,
-    maxTokens: 8192,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     effort: 'medium',
     usesTools: false,
     description:
@@ -540,7 +549,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     group: 'onboarding-visual',
     prompt: prompts.onboardingReview,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
-    maxTokens: 2048,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     effort: 'low',
     usesTools: false,
     description:
@@ -562,7 +571,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     group: 'onboarding-visual',
     prompt: prompts.onboardingReviewAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
-    maxTokens: 8192,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     adaptiveEffort: { default: 'low', escalated: 'medium' },
     usesTools: false,
     description:
@@ -579,7 +588,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     group: 'onboarding-qc-gate',
     prompt: prompts.onboardingReviewGateAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
-    maxTokens: 1536,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     usesTools: false,
     description:
       'Fast holistic onboarding QC gate over bounded desktop/mobile evidence. Returns one compact pass/issue-code verdict per page and never emits corrections; only failed, uncertain, or uncovered pages enter the balanced detailed reviewer.',
@@ -592,7 +601,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
   'onboarding-currency-recovery': {
     group: 'onboarding-visual',
     prompt: prompts.onboardingCurrencyRecovery,
-    maxTokens: 512,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     effort: 'low',
     usesTools: false,
     description:
@@ -607,7 +616,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     group: 'onboarding-visual',
     prompt: prompts.onboardingCssReview,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
-    maxTokens: 2048,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     effort: 'medium',
     usesTools: false,
     description:
@@ -633,7 +642,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     prompt: prompts.cartdrawerBatchAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     injectsBrainDefaults: true,
-    maxTokens: 4096,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     usesTools: false,
     description:
       'Cart-drawer SINGLE-SURFACE PROPOSE; given the OPEN cart drawer (a rendered overlay) at desktop + mobile widths + the numbered candidate manifest (INSERT anchors + any REPLACE grids inside the drawer), returns { boxes: [ { boxType, position, anchorNumber, styleReferenceSelector?, appearancePatch, appearancePatchMobile, reasoning } ], progressBar?: { position, anchorNumber, reasoning } } — the `boxes` array plus the OPTIONAL Smart Progress Bar slot (the SECOND host of the bar: top of the drawer; omitted when the drawer already shows a threshold bar; no `pages` wrapper, no segments/discounts). Favors compact cross-sell/upsell strips that fit the narrow drawer below the line items and above the checkout CTA. Structured output, the conductor applies it box-by-box. Sonnet, no tools.',
@@ -655,7 +664,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     group: 'cartdrawer-visual',
     prompt: prompts.cartdrawerReviewAll,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
-    maxTokens: 2048,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     usesTools: false,
     description:
       'Cart-drawer SINGLE-SURFACE REVIEW; given the OPEN cart drawer AFTER the plan was applied (desktop + mobile after-render screenshots) + the applied plan, returns a flat JSON verdict { pass, feedback, corrections, failureClass } for the drawer (no `pages` wrapper) — failureClass classifies a failure as NON-CRITICAL "placement" vs CRITICAL "styling" (including a box that overflows the narrow drawer). Corrections limited to styleBox / addBox / removeBox, each targeting the drawer implicitly (no page field). Sonnet, no tools.',
@@ -680,7 +689,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     prompt: prompts.optimizeDemand,
     rulesetVersion: ONBOARDING_RULESET_VERSION,
     injectsBrainDefaults: true,
-    maxTokens: 4096,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
     usesTools: false,
     description:
       "On-demand OPTIMIZE PROPOSE; given ONE page (name + full-page desktop + mobile screenshots + the numbered candidate manifest) + the merchant's typed DEMAND, returns { page, boxes: [ { boxType, position, anchorNumber, styleReferenceSelector?, appearancePatch, appearancePatchMobile, reasoning } ] } — the per-page box shape (no `pages` wrapper, no progressBar, no segments/discounts), honoring the merchant's explicit request FIRST then best practice. Structured output, the conductor applies it box-by-box then QCs via onboarding-review. Sonnet, no tools.",
@@ -1197,6 +1206,7 @@ export function describePromptRoutes(env: Env): readonly PromptRouteDescription[
     try {
       const profile = getModelProfile(name, env);
       const { modelProfile, filePolicy } = resolveRoute(group, name, env);
+      getSystemPrompt(name, env);
       return {
         ...shared,
         model: profile.model,
@@ -1246,7 +1256,10 @@ export function providersInUse(env: Env): ReadonlySet<ProviderName> {
  */
 export function validateModelRouting(env: Env): void {
   for (const group of listPromptGroups()) getGroupModelRoute(group, env);
-  for (const name of listPromptNames()) getModelProfile(name, env);
+  for (const name of listPromptNames()) {
+    getModelProfile(name, env);
+    getSystemPrompt(name, env);
+  }
   getUnregisteredMessagesRoute(env);
   assertFreeVisualVerifyRoute(env);
 }
@@ -1336,6 +1349,10 @@ export function getSystemPrompt(name: string, env: Env): SystemPromptEntry {
     ...definition,
     name: promptName,
     tier: PROMPT_GROUPS[definition.group].tier,
+    maxTokens:
+      definition.maxTokens === MODEL_MAXIMUM_OUTPUT
+        ? modelMaxOutputTokens(profile.model)
+        : definition.maxTokens,
     model: profile.model,
     modelProfile,
     provider: profile.provider,

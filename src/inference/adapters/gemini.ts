@@ -28,6 +28,7 @@ import {
   geminiSharedOutputBudget,
   type GeminiThinkingLevel,
 } from './gemini-output-budget';
+import { modelMaxOutputTokens } from '../model-catalog';
 
 interface GeminiFunctionCall extends Readonly<Record<string, unknown>> {
   readonly id: string;
@@ -427,7 +428,10 @@ function toGeminiPayload(request: InferenceRequest, env: Env): GeminiTranslation
   const translated = toGeminiContents(request, env);
   const level = thinkingLevel(request);
   const generationConfig: Record<string, unknown> = {
-    maxOutputTokens: geminiSharedOutputBudget(request.maxOutputTokens, level),
+    maxOutputTokens: Math.min(
+      geminiSharedOutputBudget(request.maxOutputTokens, level),
+      modelMaxOutputTokens(request.modelProfile.model),
+    ),
     thinkingConfig: { thinkingLevel: level },
   };
   if (request.stopSequences?.length) generationConfig.stopSequences = [...request.stopSequences];

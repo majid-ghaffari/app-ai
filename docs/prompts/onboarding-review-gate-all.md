@@ -9,7 +9,8 @@ pages together on the registry's `fast` tier and returns compact per-page pass/f
 - Prompt group: `onboarding-qc-gate`, whose model profile resolves to `MODEL_FAST`. The group
   borrows the `onboarding-visual` provider file route, so the gate and the detailed reviewer read
   one uploaded evidence set.
-- Budget: 1536 output tokens; no tools and no effort setting.
+- Budget: the documented maximum output of the model its route selects (`64000` for the fast tier's `claude-haiku-4-5`), a
+  ceiling rather than a spend ([DECISIONS.md → Conductor prompts carry their model's maximum output](../DECISIONS.md#conductor-prompts-carry-their-models-maximum-output)); no tools and no effort setting.
 - Input: a DATA manifest plus at most first/middle/last current-render tiles per width and page,
   including deterministic render evidence when available.
 - Output: JSON-only `{ "pages": { "<page>": { "pass": boolean, "issueCodes": [] } } }`.

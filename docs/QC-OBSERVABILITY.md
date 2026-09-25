@@ -18,8 +18,10 @@ Each record includes:
 
 Failures use the configured error/fatal routes and retain the same safe dimensions. Responses,
 screenshot/file IDs, manifest text, model content, and merchant evidence are not copied into QC
-telemetry. Production must route `warn` to a durable sink so `max_tokens` is visible; route `info`
-to a durable sink to measure successful latency and token distributions.
+telemetry. A reply stopped at `max_tokens` is logged at `warn` and answered as a 502
+`InferenceTruncatedException`, never as a success. Production must route `warn` to a durable sink so
+`max_tokens` is visible; route `info` to a durable sink to measure successful latency and token
+distributions.
 
 ## SLO query and release gate
 
