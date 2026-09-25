@@ -183,7 +183,7 @@ proposal request supersedes a pending one instead of being refused: a request wh
 transport timed out and disconnected never holds the session. The superseded request is mirrored as
 `failed`, and its late outcome, if the worker still produces one, changes nothing.
 
-### One abuse ceiling per run, derived from the grader plan
+### One abuse ceiling, derived from the grader plan
 
 `src/lib/audit-plan.ts` derives the most one run can need from the plan the conductor follows:
 
@@ -199,17 +199,23 @@ slices an audit session's capture to at most two tiles, and the proposal-only au
 before the QC walk, so a run captures each page once per width.
 
 That planned run is 28 uploads and 6 proposal inference requests. A run's ceiling is the plan times
-`AUDIT_RUN_HEADROOM` (production `2`): 56 uploads and 12 inference requests. For scale, one
+`AUDIT_RUN_HEADROOM` (production `2`): 56 uploads and 12 inference requests. Inference requests are
+held to it per run. Uploads are held to it per session — `AUDIT_MAX_RUNS` runs' worth, 224 uploads in
+production — because an attempt that fails before its proposal leaves no boundary the server can
+see: its uploads and those of the attempt that retries it arrive in the same run, and a per-run count
+refused the third attempt of a 7-page store after two such failures. Every attempt draws on the
+session allowance until it is spent. For scale, one
 measured five-page run on a live SHOPLINE storefront made 18 uploads (1.14 MB in total, the largest
 193 KB) and one proposal request of 17.5 KB. The ceiling follows the page vocabulary, so a conductor
 that audits another page kind raises it without a configuration change. Every inference request a
 run reserves counts, including one later superseded or failed, so a lifted key cannot fan concurrent
-paid calls out past it. An upload or inference beyond the ceiling answers 429 `AuditQuotaException`.
+paid calls out past it. An upload beyond the session allowance or an inference beyond the run ceiling answers 429
+`AuditQuotaException`.
 
 One upload is at most `AUDIT_MAX_UPLOAD_BYTES` (8 MB) and one inference request at most
 `AUDIT_MAX_MESSAGE_BYTES` (1 MB) of serialized JSON — the extension's own transport limits, far
-above anything the conductor sends. There is no aggregate byte cap: a run's bytes are bounded by its
-upload ceiling times the upload size limit.
+above anything the conductor sends. There is no aggregate byte cap: a session's bytes are bounded by
+its upload allowance times the upload size limit.
 
 The Durable Object reserves before paid upstream work, counts concurrent reservations, records
 returned file IDs atomically, commits successful calls, and releases a reservation on an upstream

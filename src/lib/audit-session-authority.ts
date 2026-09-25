@@ -4,8 +4,9 @@
  * One Durable Object is addressed by the website-signed audit identifier. It
  * consumes activation identifiers once, permits one active browser session,
  * preserves the public completion count across reissued links, divides the
- * session into grader runs held to one plan-derived ceiling each, owns each
- * run's provider file identifiers, and durably retries ordered website status
+ * session into grader runs held to one plan-derived inference ceiling each,
+ * lets the uploads of every attempt draw on one session allowance of that many
+ * runs' planned uploads, owns each run's provider file identifiers, and durably retries ordered website status
  * callbacks to the destination the activation signed.
  */
 
@@ -316,9 +317,10 @@ export class AuditSessionAuthority implements DurableObject {
           session = startNextRun(session);
         }
         const pendingUploads = Object.values(session.pending).filter(
-          (item) => item.kind === 'upload' && inCurrentRun(item, session),
+          (item) => item.kind === 'upload' && admittedBySession(item, session),
         );
-        if (session.runUploads + pendingUploads.length >= ceiling.uploads) return 429;
+        const sessionUploads = ceiling.uploads * auditMaxRuns(this.env);
+        if (session.uploadCount + pendingUploads.length >= sessionUploads) return 429;
         await storage.put(SESSION_STORAGE_KEY, {
           ...session,
           pending: {

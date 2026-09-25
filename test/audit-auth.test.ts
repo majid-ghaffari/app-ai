@@ -912,8 +912,8 @@ describe('audit session authorization', () => {
     ).toBe(200);
   });
 
-  it('holds a run to its upload ceiling and releases reservations after upstream failure', async () => {
-    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1' });
+  it('holds a session to its upload allowance and releases reservations after upstream failure', async () => {
+    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1', AUDIT_MAX_RUNS: '1' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValueOnce(
@@ -940,7 +940,7 @@ describe('audit session authorization', () => {
   });
 
   it('releases an upload reservation when the upstream fetch throws so the request can be retried', async () => {
-    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1' });
+    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1', AUDIT_MAX_RUNS: '1' });
     const session = await exchange(env);
     const fetchMock = stubFetch();
     fetchMock.mockImplementation(
@@ -1005,7 +1005,7 @@ describe('audit session authorization', () => {
   });
 
   it('releases an upload reservation when the tenant sealing key is rejected before dispatch', async () => {
-    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1' });
+    const env = durableEnv({ AUDIT_RUN_HEADROOM: '1', AUDIT_MAX_RUNS: '1' });
     const session = await exchange(env);
     const { TOKEN_ENCRYPTION_SECRET: _absent, ...missingSecretEnv } = env;
     const fetchMock = stubFetch();
@@ -1507,6 +1507,24 @@ describe('grader runs in one audit session', () => {
     expect(((await fifthRun.json()) as { Message: string }).Message).toBe(
       'This grader session has no retries remaining.',
     );
+  });
+
+  it('keeps a later attempt within its upload allowance after earlier attempts failed before inference', async () => {
+    const SEVEN_PAGE_ATTEMPT_UPLOADS = 7 * 2 * 2;
+    const env = durableEnv();
+    const session = await exchange(env);
+    const upstream = graderUpstream(() => 200);
+
+    await uploadTiles(env, session.accessToken, SEVEN_PAGE_ATTEMPT_UPLOADS);
+    await uploadTiles(env, session.accessToken, SEVEN_PAGE_ATTEMPT_UPLOADS);
+    const thirdAttempt = await uploadTiles(env, session.accessToken, SEVEN_PAGE_ATTEMPT_UPLOADS);
+    const proposal = await worker.fetch(messageRequest(session.accessToken, thirdAttempt), env);
+
+    expect(proposal.status).toBe(200);
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['completed', 1],
+    ]);
   });
 
   async function sessionExpiringDuringProposal(auditIdentifier: string): Promise<{

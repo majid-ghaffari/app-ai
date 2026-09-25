@@ -507,11 +507,11 @@ updates when the onboarding conductor uploads many screenshot tiles in parallel.
 `auditIdentifier`. It consumes activation identifiers, permits one live session, atomically reserves
 paid work, owns provider file IDs, and preserves the public two-completion count across expired
 sessions and reissued links. Failed inference releases the attempt number; only a run's first
-successful proposal inference consumes it. Audit scope remains five onboarding upload destinations
+proposal inference that returned a usable proposal consumes it. Audit scope remains five onboarding upload destinations
 and two proposal inference prompts; the server forces registry model/budget/effort and never calls
 Brain.
 
-A per-run abuse ceiling derived from the grader plan, the runs a session may start, and per-request
+An abuse ceiling derived from the grader plan, the runs a session may start, and per-request
 size limits are app-ai's paid-work guard (decision 33). Cross-session activation,
 identity/IP, daily-budget, and kill-switch controls belong to the limespot.com issuer, with provider
 hard spending controls outside it. App-ai HMAC-signs immutable `started`/`failed`/`completed` events
@@ -896,7 +896,7 @@ much evidence the conductor gathers and how often it repairs its proposal is Lim
 app-ai no longer holds a legitimate run to any fixed number.
 
 What remains is of two kinds. The abuse ceiling exists because a session key can be lifted from the
-browser: it applies per run and is derived in `src/lib/audit-plan.ts` from the plan the conductor
+browser. It is derived in `src/lib/audit-plan.ts` from the plan the conductor
 follows — the page vocabulary the proposal prompts plan, both widths, the tiles a width takes, and
 the proposal's bounded repairs and sends — times a configured headroom. A recapture is not a second
 upload: lib uploads a width's capture only when it returned an image and recaptures only a width
@@ -914,6 +914,14 @@ request supersedes a pending one, because the conductor never sends one while it
 another. A request whose caller disconnected therefore never holds the session, which is what made
 every retry after a transport timeout fail until the session expired. A superseded request still
 counts toward its run's ceiling, so concurrency cannot buy more paid calls than the ceiling allows.
+
+Inference requests are held per run, because a proposal reservation is the boundary the server
+sees. Uploads are not: an attempt that fails before its proposal — a capture that broke mid-store —
+leaves no trace the server can tell apart from the uploads of the attempt that follows it, so a
+per-run upload count let two such attempts of a 7-page store exhaust the run before the third reached
+the model. The upload allowance is therefore the session's: `AUDIT_MAX_RUNS` times the per-run
+planned uploads times the headroom, the same total a session could upload before, drawn on by
+every attempt in any run until it is spent.
 
 ### One upstream inference deadline, owned by app-ai
 

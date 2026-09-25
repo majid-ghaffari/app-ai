@@ -51,8 +51,10 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   both widths, the tiles a width takes, and the proposal's repairs and sends — times
   `AUDIT_RUN_HEADROOM`; a recapture adds no upload, because lib uploads only a
   capture that returned an image. `test/audit-plan.test.ts` pins the vocabulary to
-  the prompt text. `audit-session-authority.ts` opens a fresh run on the first
-  upload after a proposal was reserved, lets a new proposal request supersede a
+  the prompt text. `audit-session-authority.ts` holds inference requests to that
+  ceiling per run and uploads to `AUDIT_MAX_RUNS` runs' worth per session, since an
+  attempt that fails before its proposal leaves no run boundary; it opens a fresh
+  run on the first upload after a proposal was reserved, lets a new proposal request supersede a
   pending one, and limits only what a person chooses: runs per session and
   completed public runs, the latter refusing the upload that would open another
   run. Session expiry refuses new reservations only: a reservation records the

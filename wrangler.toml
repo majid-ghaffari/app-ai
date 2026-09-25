@@ -124,9 +124,10 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 AUDIT_STATUS_ORIGINS = "https://limespot.com"
 AUDIT_SESSION_TTL_SECONDS = "1800"
 # A session runs the Grader at most AUDIT_MAX_RUNS times: its first run and the
-# retries Studio offers. Each run is held to one abuse ceiling derived from the
-# grader plan (src/lib/audit-plan.ts) times AUDIT_RUN_HEADROOM; the conductor's
-# own runs never approach it. The byte limits bound one upload and one
+# retries Studio offers. One abuse ceiling is derived from the grader plan
+# (src/lib/audit-plan.ts) times AUDIT_RUN_HEADROOM: each run's inference
+# requests are held to it, and the session's uploads to AUDIT_MAX_RUNS runs of
+# it; the conductor's own attempts never approach it. The byte limits bound one upload and one
 # inference request and match the extension's own transport limits.
 AUDIT_MAX_RUNS = "4"
 AUDIT_RUN_HEADROOM = "2"
