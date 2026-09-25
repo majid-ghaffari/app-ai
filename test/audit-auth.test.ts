@@ -990,12 +990,14 @@ describe('audit session authorization', () => {
     // The reservation the authorization took is released, so the attempt is
     // reported failed and the next inference after the key is configured is
     // served instead of answering 409 until the session expires.
+    await deliverStatusEvents(env);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
       ['failed', 1],
     ]);
     const retried = await worker.fetch(messageRequest(session.accessToken, []), env);
     expect(retried.status).toBe(200);
+    await deliverStatusEvents(env);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
       ['failed', 1],
@@ -1083,6 +1085,7 @@ describe('audit session authorization', () => {
     );
     expect(fetchMock.mock.calls.length).toBe(providerCallsBeforeThirdRun);
 
+    await deliverStatusEvents(env);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
       ['completed', 1],
@@ -1135,6 +1138,7 @@ describe('audit session authorization', () => {
     expect(
       (await worker.fetch(messageRequest(session.accessToken, [retryReference]), env)).status,
     ).toBe(200);
+    await deliverStatusEvents(env);
     expect(callbacks.map(({ status, attemptNumber }) => [status, attemptNumber])).toEqual([
       ['started', 1],
       ['failed', 1],
@@ -1179,6 +1183,7 @@ describe('audit session authorization', () => {
       );
     }
 
+    await deliverStatusEvents(env);
     expect(callbacks).toEqual([
       ['started', 1],
       ['failed', 1],
@@ -1323,7 +1328,8 @@ describe('audit session authorization', () => {
     ]);
   });
 
-  it('retains callback events through an outage and retries the immutable outbox in order', async () => {
+  it('retries a status event the website could not take from the alarm, in order, with the same body', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
     const auditIdentifier = 'audit-callback-outbox';
     const env = durableEnv();
     const session = await exchange(
@@ -1355,17 +1361,93 @@ describe('audit session authorization', () => {
     });
 
     expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
-    expect(callbackBodies).toHaveLength(2);
-    expect(callbackBodies[1]).toBe(callbackBodies[0]);
+    expect(callbackBodies).toEqual([]);
+    await deliverStatusEvents(env);
+    expect(callbackBodies).toHaveLength(1);
+    await deliverStatusEvents(env);
+    expect(callbackBodies, 'the retry waits for its backoff').toHaveLength(1);
 
     callbackAvailable = true;
-    await authorityFor(env, auditIdentifier).alarm();
+    vi.setSystemTime(Date.now() + 60_000);
+    await deliverStatusEvents(env);
 
-    expect(callbackBodies).toHaveLength(4);
-    expect(callbackBodies[2]).toBe(callbackBodies[0]);
-    expect(callbackBodies.slice(2).map((body) => JSON.parse(body))).toMatchObject([
+    expect(callbackBodies).toHaveLength(3);
+    expect(callbackBodies[1]).toBe(callbackBodies[0]);
+    expect(callbackBodies.slice(1).map((body) => JSON.parse(body))).toMatchObject([
       { status: 'started', attemptNumber: 1 },
       { status: 'completed', attemptNumber: 1 },
+    ]);
+  });
+
+  it('never makes an upload or inference wait on the website status callback', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    let markCallbackAttempted = (): void => {};
+    const callbackAttempted = new Promise<void>((resolve) => {
+      markCallbackAttempted = resolve;
+    });
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        markCallbackAttempted();
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    });
+
+    const waitedOnCallback = callbackAttempted.then(() => 'waited on the status callback');
+    const tiles = await Promise.race([uploadTiles(env, session.accessToken, 1), waitedOnCallback]);
+    expect(Array.isArray(tiles)).toBe(true);
+    const proposal = await Promise.race([
+      worker
+        .fetch(messageRequest(session.accessToken, tiles as string[]), env)
+        .then((response) => response.status),
+      waitedOnCallback,
+    ]);
+    expect(proposal).toBe(200);
+  });
+
+  it('drops a status event the website refuses for good so the events behind it are delivered', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const delivered: Array<[unknown, number]> = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const status = event.status === 'started' ? 409 : 204;
+        delivered.push([event.status, status]);
+        return new Response(null, { status });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    });
+
+    expect((await worker.fetch(messageRequest(session.accessToken, []), env)).status).toBe(200);
+    await deliverStatusEvents(env);
+
+    expect(delivered).toEqual([
+      ['started', 409],
+      ['completed', 204],
     ]);
   });
 
@@ -1416,6 +1498,7 @@ describe('audit session authorization', () => {
     const retry = await uploadTiles(env, session.accessToken, 1);
     expect((await worker.fetch(messageRequest(session.accessToken, retry), env)).status).toBe(200);
 
+    await deliverStatusEvents(env);
     expect(callbackTargets).toEqual(Array.from({ length: 4 }, () => signedCallbackUrl));
     expect(callbackTargets).not.toContain(AUDIT_STATUS_CALLBACK_URL);
     vi.useRealTimers();
@@ -1521,6 +1604,7 @@ describe('grader runs in one audit session', () => {
     const proposal = await worker.fetch(messageRequest(session.accessToken, thirdAttempt), env);
 
     expect(proposal.status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 1],
       ['completed', 1],
@@ -1583,6 +1667,7 @@ describe('grader runs in one audit session', () => {
     expect(await response.json()).toMatchObject({
       content: [{ type: 'text', text: USABLE_PROPOSAL }],
     });
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 1],
       ['completed', 1],
@@ -1780,6 +1865,7 @@ describe('grader runs in one audit session', () => {
 
     upstream.releaseHeldInference();
     expect((await abandoned).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 1],
       ['failed', 1],
@@ -1801,6 +1887,7 @@ describe('grader runs in one audit session', () => {
     expect(stale.status).toBe(403);
     const proposal = await worker.fetch(messageRequest(session.accessToken, retry), env);
     expect(proposal.status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 1],
       ['failed', 1],
@@ -1902,6 +1989,7 @@ describe('grader runs in one audit session', () => {
     const upstream = graderUpstream(answer, holdUpload);
     const tiles = await uploadTiles(env, session.accessToken, 2);
     expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks.splice(0)).toEqual([
       ['started', 1],
       ['completed', 1],
@@ -1927,6 +2015,7 @@ describe('grader runs in one audit session', () => {
 
     expect((await worker.fetch(messageRequest(accessToken, tiles), env)).status).toBe(200);
     expect((await worker.fetch(messageRequest(accessToken, tiles), env)).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 2],
       ['completed', 2],
@@ -1963,6 +2052,7 @@ describe('grader runs in one audit session', () => {
     });
 
     expect((await worker.fetch(messageRequest(accessToken, retry), env)).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 2],
       ['completed', 2],
@@ -1991,6 +2081,7 @@ describe('grader runs in one audit session', () => {
 
     upstream.releaseHeldInference();
     expect((await proposal).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 2],
       ['completed', 2],
@@ -2026,6 +2117,7 @@ describe('grader runs in one audit session', () => {
     );
 
     expect((await worker.fetch(messageRequest(accessToken, retry), env)).status).toBe(200);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([
       ['started', 2],
       ['completed', 2],
@@ -2082,6 +2174,7 @@ describe('grader runs in one audit session', () => {
       worker.fetch(uploadRequest(accessToken, 'third-run.webp'), env),
     );
     expect(upstream.inferenceCalls()).toBe(1);
+    await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([]);
   });
 

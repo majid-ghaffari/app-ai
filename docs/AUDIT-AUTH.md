@@ -297,10 +297,15 @@ The raw JSON body has exactly these fields:
 }
 ```
 
-`status` is `started`, `completed`, or `failed`. Failed delivery leaves the immutable event at the
-head of the outbox; a delivery attempt is bounded to five seconds so website latency cannot hold the
-audit indefinitely. The Durable Object alarm retries in order with the same body and
-`eventIdentifier` but a fresh signature timestamp. Website D1 deduplicates `eventIdentifier`,
+`status` is `started`, `completed`, or `failed`. Delivery is asynchronous: exchange, reserve and
+finalize only append the event and set the Durable Object alarm, so no upload or inference ever waits
+on the website. The alarm delivers the outbox in order, each attempt bounded to five seconds, with the
+same body and `eventIdentifier` but a fresh signature timestamp. An attempt that may succeed later —
+no answer, a timeout, a 5xx, or a 401, 408, 425 or 429 — leaves the immutable event at the head and
+retries it a minute later. Any other 4xx, such as the website's 404 for an unknown audit or its 409
+for a conflicting event, is a refusal resending cannot change: the event is dropped with a warning
+log, so it can never hold the events behind it. The alarm reschedules itself whenever events remain,
+including after a handler failure. Website D1 deduplicates `eventIdentifier`,
 allows `started -> failed -> started -> completed` for one attempt number, and treats completed as
 terminal. It reports remaining public runs and refuses new public activations after two mirrored
 completions; app-ai still enforces the cap if the mirror is delayed.

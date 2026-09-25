@@ -23,7 +23,7 @@ describe('audit audit status callback', () => {
       .mockResolvedValue(new Response(null, { status: 204 }));
 
     await expect(deliverAuditStatusEvent(event, AUDIT_STATUS_CALLBACK_URL, ENV)).resolves.toBe(
-      true,
+      'delivered',
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -40,26 +40,38 @@ describe('audit audit status callback', () => {
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('keeps delivery retryable when the endpoint is unavailable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+  it.each([
+    [503, 'retry'],
+    [500, 'retry'],
+    [401, 'retry'],
+    [429, 'retry'],
+    [404, 'rejected'],
+    [409, 'rejected'],
+  ] as const)('classifies a %i answer as %s', async (status, delivery) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status }));
     await expect(
-      deliverAuditStatusEvent(
-        {
-          version: 1,
-          eventIdentifier: 'event-2',
-          auditIdentifier: 'audit-2',
-          sessionIdentifier: 'session-2',
-          storeOrigin: 'https://store.example',
-          attemptNumber: 2,
-          status: 'failed',
-          occurredAt: 1_777_000_001,
-        },
-        AUDIT_STATUS_CALLBACK_URL,
-        ENV,
-      ),
-    ).resolves.toBe(false);
+      deliverAuditStatusEvent(SECOND_EVENT, AUDIT_STATUS_CALLBACK_URL, ENV),
+    ).resolves.toBe(delivery);
+  });
+
+  it('keeps delivery retryable when the endpoint cannot be reached', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network down'));
+    await expect(
+      deliverAuditStatusEvent(SECOND_EVENT, AUDIT_STATUS_CALLBACK_URL, ENV),
+    ).resolves.toBe('retry');
   });
 });
+
+const SECOND_EVENT = {
+  version: 1,
+  eventIdentifier: 'event-2',
+  auditIdentifier: 'audit-2',
+  sessionIdentifier: 'session-2',
+  storeOrigin: 'https://store.example',
+  attemptNumber: 2,
+  status: 'failed',
+  occurredAt: 1_777_000_001,
+} as const;
 
 async function expectedSignature(value: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(

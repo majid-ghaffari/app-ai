@@ -14,6 +14,7 @@ import { auditMaxRuns, auditSessionAuthority, type Env } from '../config';
 import { auditRunCeiling } from './audit-plan';
 import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
+import { createLoggingRuntime } from './logger';
 import { WorkerError } from './responses';
 import { reserveFreeVisualVerificationSlot } from './inference-quota-authority';
 
@@ -76,6 +77,11 @@ interface SessionRecord {
   readonly completedReservations: readonly string[];
   readonly abandonedReservations: readonly string[];
   readonly statusOutbox: readonly AuditStatusEvent[];
+  /**
+   * When the alarm next attempts the outbox head after a delivery that may succeed later. Absent
+   * while the head has not failed, so a new event is delivered on the next alarm immediately.
+   */
+  readonly statusRetryAt?: number;
 }
 
 const FRESH_RUN = {
@@ -250,9 +256,12 @@ export class AuditSessionAuthority implements DurableObject {
   }
 
   async alarm(): Promise<void> {
-    await this.expirePendingSession();
-    await this.flushStatusOutbox();
-    await this.scheduleAlarm();
+    try {
+      await this.expirePendingSession();
+      await this.flushStatusOutbox();
+    } finally {
+      await this.scheduleAlarm();
+    }
   }
 
   private async exchange(input: ExchangeInput): Promise<Response> {
@@ -295,10 +304,7 @@ export class AuditSessionAuthority implements DurableObject {
       await storage.put(SESSION_STORAGE_KEY, session);
       return 201;
     });
-    if (status === 201) {
-      await this.flushStatusOutbox();
-      await this.scheduleAlarm();
-    }
+    if (status === 201) await this.scheduleAlarm();
     return internalResponse(status);
   }
 
@@ -366,10 +372,7 @@ export class AuditSessionAuthority implements DurableObject {
       } satisfies SessionRecord);
       return 200;
     });
-    if (status === 200) {
-      await this.flushStatusOutbox();
-      await this.scheduleAlarm();
-    }
+    if (status === 200) await this.scheduleAlarm();
     return internalResponse(status);
   }
 
@@ -450,10 +453,7 @@ export class AuditSessionAuthority implements DurableObject {
       } satisfies SessionRecord);
       return 204;
     });
-    if (status === 204) {
-      await this.flushStatusOutbox();
-      await this.scheduleAlarm();
-    }
+    if (status === 204) await this.scheduleAlarm();
     return internalResponse(status);
   }
 
@@ -472,15 +472,33 @@ export class AuditSessionAuthority implements DurableObject {
       const session = await this.state.storage.get<SessionRecord>(SESSION_STORAGE_KEY);
       const event = session?.statusOutbox[0];
       if (!session || !event) return;
-      if (!(await deliverAuditStatusEvent(event, session.statusCallbackUrl, this.env))) return;
+      if (session.statusRetryAt !== undefined && session.statusRetryAt > Date.now()) return;
+      const delivery = await deliverAuditStatusEvent(event, session.statusCallbackUrl, this.env);
+      if (delivery === 'rejected') {
+        createLoggingRuntime(this.env)
+          .logger('AuditSessionAuthority')
+          .warn('The website permanently rejected an audit status event; it was dropped', {
+            auditIdentifier: event.auditIdentifier,
+            eventIdentifier: event.eventIdentifier,
+            attemptNumber: event.attemptNumber,
+            status: event.status,
+          });
+      }
       await this.state.storage.transaction(async (storage) => {
         const current = await storage.get<SessionRecord>(SESSION_STORAGE_KEY);
         if (!current || current.statusOutbox[0]?.eventIdentifier !== event.eventIdentifier) return;
-        await storage.put(SESSION_STORAGE_KEY, {
-          ...current,
-          statusOutbox: current.statusOutbox.slice(1),
-        } satisfies SessionRecord);
+        const { statusRetryAt: _previous, ...settled } = current;
+        await storage.put(
+          SESSION_STORAGE_KEY,
+          delivery === 'retry'
+            ? ({
+                ...current,
+                statusRetryAt: Date.now() + CALLBACK_RETRY_MILLISECONDS,
+              } satisfies SessionRecord)
+            : ({ ...settled, statusOutbox: current.statusOutbox.slice(1) } satisfies SessionRecord),
+        );
       });
+      if (delivery === 'retry') return;
     }
   }
 
@@ -489,7 +507,9 @@ export class AuditSessionAuthority implements DurableObject {
     if (!session) return;
     const now = Date.now();
     const candidates: number[] = [];
-    if (session.statusOutbox.length > 0) candidates.push(now + CALLBACK_RETRY_MILLISECONDS);
+    if (session.statusOutbox.length > 0) {
+      candidates.push(Math.max(now, session.statusRetryAt ?? now));
+    }
     const sessionExpiry = session.expiresAt * 1000;
     if (sessionExpiry > now) candidates.push(sessionExpiry);
     const leaseEnds = Object.values(session.pending).flatMap((reservation) =>

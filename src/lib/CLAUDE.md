@@ -36,6 +36,12 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   `statusCallbackUrl` — BEFORE it consumes the one-time activation, so a
   deployment error cannot burn an otherwise valid link. Delivery outages belong
   to the Durable Object outbox, not to the exchange.
+- Status delivery never runs in a request: exchange, reserve and finalize append
+  to the outbox and set the alarm, and only the alarm calls the website.
+  `audit-status.ts` classifies each attempt as delivered, retry (no answer,
+  timeout, 5xx, 401/408/425/429 — the head waits a minute), or rejected (any other
+  4xx — the event is dropped with a warning so it cannot block the ones behind
+  it).
 - `resolveStatusCallbackUrl` is where app-ai keeps the decision the website does
   not own: the signed claim carries the path, and only an absolute URL with no
   credentials, query, or fragment whose origin is in `AUDIT_STATUS_ORIGINS`

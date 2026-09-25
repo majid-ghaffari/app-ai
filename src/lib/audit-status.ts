@@ -6,6 +6,14 @@ const CALLBACK_TIMEOUT_MILLISECONDS = 5_000;
 
 export type AuditStatus = 'started' | 'completed' | 'failed';
 
+/**
+ * What one delivery attempt established: the website recorded the event, the website refused it for
+ * good (so resending the same event cannot succeed), or it may succeed on a later attempt.
+ */
+export type AuditStatusDelivery = 'delivered' | 'rejected' | 'retry';
+
+const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 425, 429]);
+
 export interface AuditStatusEvent {
   readonly version: 1;
   readonly eventIdentifier: string;
@@ -19,14 +27,14 @@ export interface AuditStatusEvent {
 
 /**
  * Deliver one immutable event to the destination the audit's activation signed
- * and this deployment allowlisted. Callers retain it for retry unless this
- * returns true.
+ * and this deployment allowlisted. Callers retain it for retry only while this
+ * returns `retry`.
  */
 export async function deliverAuditStatusEvent(
   event: AuditStatusEvent,
   statusCallbackUrl: string,
   env: Env,
-): Promise<boolean> {
+): Promise<AuditStatusDelivery> {
   try {
     const body = JSON.stringify(event);
     const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -44,12 +52,17 @@ export async function deliverAuditStatusEvent(
         body,
         signal: controller.signal,
       });
-      return response.ok;
+      if (response.ok) return 'delivered';
+      return response.status >= 400 &&
+        response.status < 500 &&
+        !RETRYABLE_CLIENT_STATUSES.has(response.status)
+        ? 'rejected'
+        : 'retry';
     } finally {
       clearTimeout(timeout);
     }
   } catch {
-    return false;
+    return 'retry';
   }
 }
 
