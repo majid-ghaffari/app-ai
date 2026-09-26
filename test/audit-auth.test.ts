@@ -1908,6 +1908,7 @@ describe('grader runs in one audit session', () => {
     readonly totalUploadBytes: number;
     readonly messageCount: number;
     readonly run: number;
+    readonly runUploads: number;
     readonly fileIdentifiers: readonly string[];
     readonly pending: Readonly<
       Record<string, { readonly kind: string; readonly run?: number; readonly uploadBytes: number }>
@@ -2124,7 +2125,7 @@ describe('grader runs in one audit session', () => {
     ]);
   });
 
-  it('writes the whole-session totals a rolled-back worker without runs enforces its limits from', async () => {
+  it('writes the totals and run upload count that rolled-back workers enforce their limits from', async () => {
     const auditIdentifier = 'audit-rollback-totals';
     const { env, accessToken, upstream } = await sessionWithCompletedProposal(
       auditIdentifier,
@@ -2138,6 +2139,7 @@ describe('grader runs in one audit session', () => {
     const record = await storedRunSession(env, auditIdentifier);
     expect(record).toMatchObject({
       run: 2,
+      runUploads: 1,
       uploadCount: 3,
       totalUploadBytes: 3 * 'tile-0.webp'.length,
       messageCount: 1,
@@ -2155,6 +2157,7 @@ describe('grader runs in one audit session', () => {
     upstream.releaseHeldUploads();
     expect((await held).status).toBe(200);
     expect(await storedRunSession(env, auditIdentifier)).toMatchObject({
+      runUploads: 2,
       uploadCount: 4,
       totalUploadBytes: 3 * 'tile-0.webp'.length + 'held-retry.webp'.length,
       pending: {},

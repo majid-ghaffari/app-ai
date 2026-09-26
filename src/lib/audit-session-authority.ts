@@ -60,8 +60,9 @@ interface SessionRecord {
   readonly sessionIdentifier: string;
   readonly expiresAt: number;
   /**
-   * Whole-session totals of successful uploads, their bytes, and successful inference requests:
-   * the counts a worker version without runs enforces its limits from.
+   * Whole-session totals of successful uploads, their bytes, and successful inference requests.
+   * The upload total holds the session's upload allowance; worker versions without runs enforce
+   * their limits from all three.
    */
   readonly uploadCount: number;
   readonly totalUploadBytes: number;

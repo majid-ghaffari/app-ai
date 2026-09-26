@@ -349,11 +349,14 @@ carries no run number: it counts toward, and lands in, whichever run is current 
 a retry upload admitted before the cutover is owned by the run its sibling uploads open after it.
 
 The session record also carries whole-session totals — successful uploads, their bytes and
-successful inference requests — and every pending reservation its upload bytes. The authority
-enforces nothing from them; they are the counts a worker version without runs enforces its fixed
-limits from. A rollback to such a version therefore reads finite counts for every session the
-current worker wrote and holds it to those limits, rather than comparing absent fields that never
-refuse anything.
+successful inference requests — and every pending reservation its upload bytes. The successful
+uploads the session admitted, with the uploads it has pending, are what its upload allowance is
+held against. The byte and inference totals, and each run's own count of successful uploads, hold
+nothing in the current worker: they are the counts earlier worker versions enforce their limits
+from, the whole-session limits of a version without runs and the per-run upload ceiling of the first
+version with runs. A rollback to either therefore reads finite counts for every session the current
+worker wrote and holds it to those limits, rather than comparing absent fields that never refuse
+anything.
 
 Clearing an owned file identifier removes audit authorization to reference it; it does not promise
 immediate deletion of the underlying provider evidence. Anthropic's content-hash dedup layer may

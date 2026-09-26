@@ -86,9 +86,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   other reply is mirrored `failed` and leaves the attempt for the next request. A session stored without runs is read as its first run, derived from its
   stored counters and pending reservations and not yet completed, so its next
   proposal is admitted as an attempt as that shape promised; a reservation it
-  admitted carries no run and lands in whichever run is current. The record also
-  keeps the whole-session totals a worker without runs enforces its limits from,
-  so a rollback still holds live sessions to them. The model is stated in
+  admitted carries no run and lands in whichever run is current. The session's
+  successful uploads, with its pending ones, hold its upload allowance; the
+  record also keeps the byte and inference totals and each run's upload count
+  that earlier worker versions enforce their limits from, so a rollback still
+  holds live sessions to them. The model is stated in
   `docs/AUDIT-AUTH.md`.
 - A separately addressed `AuditSessionAuthority` instance is the strongly consistent UTC-day
   counter for the master-only protected visual route. It determines the current UTC date inside
