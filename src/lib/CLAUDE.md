@@ -95,4 +95,8 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - A separately addressed `AuditSessionAuthority` instance is the strongly consistent UTC-day
   counter for the master-only protected visual route. It determines the current UTC date inside
   the authority, resets on the next UTC date, and returns 429 after the configured limit without
-  requiring a new Durable Object class migration.
+  requiring a new Durable Object class migration. Diagnostics stop before the configured
+  acceptance reserve, while acceptance requests may use the entire daily allowance. The canonical
+  inference request carries quota class separately from caller metadata. The internal
+  request's `limit` member is the class's effective ceiling; a request carrying only `limit` is
+  admitted as an acceptance reservation with no reserve.

@@ -63,6 +63,7 @@ import {
   fileTenantScope,
   resolveInferenceMessageFileReferences,
 } from '../inference/file-references';
+import type { FreeVisualVerificationQuotaClass } from '../lib/inference-quota-authority';
 import type { Env } from '../config';
 
 /** Advisory threshold; it changes only logging, never request acceptance. */
@@ -413,6 +414,10 @@ async function buildInferenceRequest(
   const sampling = parseSampling(body);
   const stopSequences = parseStopSequences(body.stop_sequences);
   const metadata = parseInferenceMetadata(body.metadata);
+  const visualQuotaClass =
+    entry.name === FREE_VISUAL_VERIFY_PROMPT
+      ? parseFreeVisualVerificationQuotaClass(request)
+      : undefined;
   const serviceTier = parseServiceTier(body.service_tier);
   const tools = parseCompatibilityTools(body.tools, entry.provider);
   const toolChoice = parseCompatibilityToolChoice(body.tool_choice);
@@ -430,6 +435,7 @@ async function buildInferenceRequest(
     ...(sampling ? { sampling } : {}),
     ...(stopSequences ? { stopSequences } : {}),
     ...(metadata ? { metadata } : {}),
+    ...(visualQuotaClass ? { visualQuotaClass } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(toolChoice ? { toolChoice } : {}),
     ...(continuation ? { continuation } : {}),
@@ -437,6 +443,15 @@ async function buildInferenceRequest(
       ? {}
       : { deadlineStartedAt: requestPolicy.deadlineStartedAt }),
   };
+}
+
+function parseFreeVisualVerificationQuotaClass(request: Request): FreeVisualVerificationQuotaClass {
+  const value = request.headers.get('X-Personalizer-Visual-Quota-Class') ?? 'diagnostic';
+  if (value === 'diagnostic' || value === 'acceptance') return value;
+  throw new WorkerError('Protected visual verification quota class is invalid.', {
+    status: 400,
+    exceptionType: 'ArgumentException',
+  });
 }
 
 function continuationRoute(

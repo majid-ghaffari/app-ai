@@ -32,7 +32,9 @@ or changes the inference response.
   Workers AI binding; ordinary `visual-verify` remains on its production route.
   The router exposes it only when Brain proves `AdministerAllSubscribers` and
   verifies the Cloudflare-only route. The adapter reserves the strongly consistent
-  daily quota after validating the canonical request and immediately before binding I/O.
+  daily quota after validating the canonical request and immediately before binding I/O. The
+  quota-class header accepts only `diagnostic` or `acceptance`; missing means diagnostic. The
+  handler carries it in the typed canonical request authority and leaves caller metadata unchanged.
 - A known prompt with missing route configuration fails closed before file or
   provider I/O. Unknown-selector compatibility must never hide a missing
   `MODEL_*` binding. Registered `/messages` prompts preserve non-effort output
@@ -62,7 +64,10 @@ or changes the inference response.
   shape. In production it is also readiness: a required secret not set (a
   provider's key counting only while a resolved route uses that provider) or
   model bindings that do not route every prompt answer 503 with a status-only
-  envelope — no secret name, binding, or model id. The reason goes to the log.
+  envelope — no secret name, binding, or model id. Provider-specific bindings and configuration
+  required by a resolved route are validated there too; the protected Workers AI route checks its
+  binding, authority, internal origin, enable switch, daily limit, and acceptance reserve. The
+  reason goes to the log.
 - A merchant route hit by an absent required secret answers the generic
   `SECRET_CONFIGURATION_PUBLIC_MESSAGE` envelope (`../lib/responses.ts`); the
   secret's name and the secret-store instruction stay in the thrown

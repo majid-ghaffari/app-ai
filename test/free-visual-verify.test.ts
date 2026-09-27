@@ -151,6 +151,12 @@ function request(content: readonly unknown[] = VALID_CONTENT): Request {
   return requestWithMessages([{ role: 'user', content }]);
 }
 
+function requestWithQuotaClass(quotaClass: string): Request {
+  const value = request();
+  value.headers.set('X-Personalizer-Visual-Quota-Class', quotaClass);
+  return value;
+}
+
 function requestWithMessages(messages: readonly unknown[]): Request {
   return requestWithBody({ messages });
 }
@@ -219,15 +225,23 @@ describe('free visual verification', () => {
   it('returns the real Workers AI verdict in the established messages envelope', async () => {
     const verdict = JSON.stringify({ pass: true, reason: 'fully painted', fix: null });
     const run = vi.fn().mockResolvedValue(workersAiSuccess(verdict));
+    const quota = quotaNamespace();
     const env = {
       ...ENV,
       MODEL_OVERRIDES: `free-render-verification=${MODEL}`,
       AI: { run },
+      AUDIT_SESSIONS: quota.namespace,
     };
 
-    const response = await handleMessages(request(), env, CORS, undefined, {
-      tenantScope: 'tenant',
-    });
+    const response = await handleMessages(
+      requestWithQuotaClass('acceptance'),
+      env,
+      CORS,
+      undefined,
+      {
+        tenantScope: 'tenant',
+      },
+    );
 
     expect(response.status, await response.clone().text()).toBe(200);
     const body = (await response.json()) as {
@@ -235,6 +249,13 @@ describe('free visual verification', () => {
     };
     expect(body.content).toEqual([{ type: 'text', text: verdict }]);
     expect(run).toHaveBeenCalledOnce();
+    const reservation = quota.reserve.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(reservation.body))).toEqual({
+      limit: 8,
+      dailyLimit: 8,
+      acceptanceReserve: 4,
+      quotaClass: 'acceptance',
+    });
     expect(run).toHaveBeenCalledWith(
       MODEL,
       expect.objectContaining({
@@ -260,6 +281,71 @@ describe('free visual verification', () => {
       }),
       expect.objectContaining({ returnRawResponse: true }),
     );
+  });
+
+  it('rejects an unknown quota class before reservation or inference', async () => {
+    const run = vi.fn();
+    const quota = quotaNamespace();
+
+    const response = await handleMessages(
+      requestWithQuotaClass('priority'),
+      { ...ENV, AI: { run }, AUDIT_SESSIONS: quota.namespace },
+      CORS,
+      undefined,
+      { tenantScope: 'tenant' },
+    );
+
+    expect(response.status).toBe(400);
+    expect(run).not.toHaveBeenCalled();
+    expect(quota.reserve).not.toHaveBeenCalled();
+  });
+
+  it('sends the reduced effective ceiling for explicit diagnostic reservations', async () => {
+    const verdict = JSON.stringify({ pass: true, reason: 'diagnostic verdict', fix: null });
+    const quota = quotaNamespace();
+    const response = await handleMessages(
+      requestWithQuotaClass('diagnostic'),
+      {
+        ...ENV,
+        AI: { run: vi.fn().mockResolvedValue(workersAiSuccess(verdict)) },
+        AUDIT_SESSIONS: quota.namespace,
+      },
+      CORS,
+      undefined,
+      { tenantScope: 'tenant' },
+    );
+
+    expect(response.status).toBe(200);
+    const reservation = quota.reserve.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(reservation.body))).toEqual({
+      limit: 4,
+      dailyLimit: 8,
+      acceptanceReserve: 4,
+      quotaClass: 'diagnostic',
+    });
+  });
+
+  it('does not derive quota authority from caller metadata', async () => {
+    const verdict = JSON.stringify({ pass: true, reason: 'diagnostic verdict', fix: null });
+    const quota = quotaNamespace();
+    const adapter = new CloudflareWorkersAiAdapter({
+      ...ENV,
+      AI: { run: vi.fn().mockResolvedValue(workersAiSuccess(verdict)) },
+      AUDIT_SESSIONS: quota.namespace,
+    });
+
+    await adapter.complete({
+      ...canonicalRequest(ENV),
+      metadata: { protectedVisualQuotaClass: 'acceptance' },
+    });
+
+    const reservation = quota.reserve.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(reservation.body))).toEqual({
+      limit: 4,
+      dailyLimit: 8,
+      acceptanceReserve: 4,
+      quotaClass: 'diagnostic',
+    });
   });
 
   it.each([
@@ -693,7 +779,12 @@ describe('free visual verification', () => {
       authority.fetch(
         new Request('https://inference-quota.internal/reserve-free-visual-verification', {
           method: 'POST',
-          body: JSON.stringify({ limit: 2 }),
+          body: JSON.stringify({
+            limit: 2,
+            dailyLimit: 2,
+            acceptanceReserve: 1,
+            quotaClass: 'acceptance',
+          }),
         }),
       );
 
@@ -705,6 +796,96 @@ describe('free visual verification', () => {
     vi.setSystemTime('2026-09-20T00:00:01.000Z');
     expect((await reserve()).status).toBe(201);
     vi.useRealTimers();
+  });
+
+  it('accepts the legacy authority request through a mixed-version rollout', async () => {
+    const values = new Map<string, unknown>();
+    interface TestStorage {
+      get(key: string): Promise<unknown>;
+      put(key: string, value: unknown): Promise<void>;
+      transaction<T>(callback: (transaction: TestStorage) => Promise<T>): Promise<T>;
+    }
+    const storage: TestStorage = {
+      get: async (key: string) => values.get(key),
+      put: async (key: string, value: unknown) => {
+        values.set(key, value);
+      },
+      transaction: async <T>(callback: (transaction: typeof storage) => Promise<T>) =>
+        callback(storage),
+    };
+    const authority = new AuditSessionAuthority({ storage } as unknown as DurableObjectState, ENV);
+    const reserve = () =>
+      authority.fetch(
+        new Request('https://inference-quota.internal/reserve-free-visual-verification', {
+          method: 'POST',
+          body: JSON.stringify({ limit: 2 }),
+        }),
+      );
+
+    expect((await reserve()).status).toBe(201);
+    expect((await reserve()).status).toBe(201);
+    expect((await reserve()).status).toBe(429);
+  });
+
+  it('rejects an inconsistent effective ceiling before storage', async () => {
+    const storage = {
+      transaction: vi.fn(),
+    } as unknown as DurableObjectStorage;
+    const authority = new AuditSessionAuthority({ storage } as unknown as DurableObjectState, ENV);
+
+    const response = await authority.fetch(
+      new Request('https://inference-quota.internal/reserve-free-visual-verification', {
+        method: 'POST',
+        body: JSON.stringify({
+          limit: 8,
+          dailyLimit: 8,
+          acceptanceReserve: 4,
+          quotaClass: 'diagnostic',
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(storage.transaction).not.toHaveBeenCalled();
+  });
+
+  it('reserves the final daily slots for complete acceptance runs', async () => {
+    const values = new Map<string, unknown>();
+    interface TestStorage {
+      get(key: string): Promise<unknown>;
+      put(key: string, value: unknown): Promise<void>;
+      transaction<T>(callback: (transaction: TestStorage) => Promise<T>): Promise<T>;
+    }
+    const storage: TestStorage = {
+      get: async (key: string) => values.get(key),
+      put: async (key: string, value: unknown) => {
+        values.set(key, value);
+      },
+      transaction: async <T>(callback: (transaction: typeof storage) => Promise<T>) =>
+        callback(storage),
+    };
+    const authority = new AuditSessionAuthority({ storage } as unknown as DurableObjectState, ENV);
+    const reserve = (quotaClass: 'diagnostic' | 'acceptance') =>
+      authority.fetch(
+        new Request('https://inference-quota.internal/reserve-free-visual-verification', {
+          method: 'POST',
+          body: JSON.stringify({
+            limit: quotaClass === 'diagnostic' ? 4 : 8,
+            dailyLimit: 8,
+            acceptanceReserve: 4,
+            quotaClass,
+          }),
+        }),
+      );
+
+    for (let requestNumber = 0; requestNumber < 4; requestNumber += 1) {
+      expect((await reserve('diagnostic')).status).toBe(201);
+    }
+    expect((await reserve('diagnostic')).status).toBe(429);
+    for (let requestNumber = 0; requestNumber < 4; requestNumber += 1) {
+      expect((await reserve('acceptance')).status).toBe(201);
+    }
+    expect((await reserve('acceptance')).status).toBe(429);
   });
 
   it.each([

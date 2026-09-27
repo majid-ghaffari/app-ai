@@ -13,6 +13,7 @@ import { silentLoggingRuntime, type LoggingRuntime } from '../lib/logger';
 import { BUILD_REV, isAttributableBuildRevision } from '../build-rev';
 import {
   deploymentEnvironment,
+  freeVisualVerifyAcceptanceReserve,
   freeVisualVerifyDailyLimit,
   freeVisualVerifyEnabled,
   auditSessionAuthority,
@@ -81,6 +82,7 @@ function productionReadinessFailure(env: Env): Error | null {
       auditSessionAuthority(env);
       inferenceQuotaInternalOrigin(env);
       freeVisualVerifyDailyLimit(env);
+      freeVisualVerifyAcceptanceReserve(env);
       if (!freeVisualVerifyEnabled(env)) {
         throw new Error('Protected visual verification is disabled.');
       }

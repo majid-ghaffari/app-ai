@@ -180,6 +180,7 @@ export interface Env {
   readonly AI?: WorkersAiBinding;
   readonly FREE_VISUAL_VERIFY_ENABLED?: string;
   readonly FREE_VISUAL_VERIFY_DAILY_LIMIT?: string;
+  readonly FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE?: string;
   readonly INFERENCE_QUOTA_INTERNAL_ORIGIN?: string;
   /**
    * OPTIONAL override for the Brain-defaults source URL (lib/brain-defaults.ts).
@@ -250,6 +251,7 @@ type RequiredVarName =
   | 'MODEL_FRONTIER'
   | 'FREE_VISUAL_VERIFY_ENABLED'
   | 'FREE_VISUAL_VERIFY_DAILY_LIMIT'
+  | 'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE'
   | 'INFERENCE_QUOTA_INTERNAL_ORIGIN'
   | 'CLAUDE_API_KEY'
   | 'AUDIT_ACTIVATION_SIGNING_SECRET'
@@ -598,6 +600,14 @@ export function freeVisualVerifyDailyLimit(env: Env): number {
   return value;
 }
 
+export function freeVisualVerifyAcceptanceReserve(env: Env): number {
+  const value = positiveIntegerVar(env, 'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE');
+  if (value >= freeVisualVerifyDailyLimit(env)) {
+    throw new Error('FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE must be below the daily limit.');
+  }
+  return value;
+}
+
 /**
  * The HKDF root every app-ai-sealed token is derived from — opaque file
  * references, inference continuations, and the tenant pseudonym that binds
@@ -742,7 +752,8 @@ function positiveIntegerVar(
     | 'AUDIT_RUN_HEADROOM'
     | 'AUDIT_MAX_UPLOAD_BYTES'
     | 'AUDIT_MAX_MESSAGE_BYTES'
-    | 'FREE_VISUAL_VERIFY_DAILY_LIMIT',
+    | 'FREE_VISUAL_VERIFY_DAILY_LIMIT'
+    | 'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE',
 ): number {
   const raw = requireVar(env, name);
   const value = Number(raw);

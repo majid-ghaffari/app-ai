@@ -9,9 +9,16 @@ A Cloudflare Worker that validates merchant context and runs a provider-neutral 
 The protected visual judge requires Brain's `AdministerAllSubscribers` proof, an enabled deployment
 switch, a route pinned to the exact Cloudflare Workers AI model `@cf/qwen/qwen3.8-27b`, and an atomic UTC-day
 reservation from a separately addressed `AuditSessionAuthority` instance after request validation
-and immediately before the Workers AI binding is called. Reusing the deployed authority class keeps
-preview uploads migration-free. Brain's authorization proof must deploy before this worker, and
-this worker must pass its authenticated route smoke before lib points protected CI at it.
+and immediately before the Workers AI binding is called. Focused diagnostics stop before the
+configured acceptance reserve. The handler places the protected header in typed request authority;
+caller metadata never selects a quota class. The internal reservation contract is documented in
+[src/lib/CLAUDE.md](src/lib/CLAUDE.md). Reusing the deployed authority class keeps preview uploads
+migration-free. Brain's authorization proof must deploy before this worker, and this worker must
+pass its authenticated route smoke before lib points protected CI at it. A lib build without the
+quota-class header is diagnostic and can use only the daily limit minus the reserve. Because that
+header requires this worker's CORS allowlist, rollback removes the lib sender before this worker.
+Production `/health` validates the protected route's binding, authority, internal origin, enable
+switch, daily limit, and acceptance reserve before reporting the deployment ready.
 
 ## Project docs
 

@@ -7,6 +7,8 @@
  * interpretation by the shared runtime.
  */
 
+import type { FreeVisualVerificationQuotaClass } from './inference-quota-authority';
+
 /**
  * Every provider a configured model id can resolve to
  * (`src/inference/model-catalog.ts`). Naming one whose adapter is absent fails
@@ -285,6 +287,7 @@ export interface InferenceRequest {
   readonly sampling?: InferenceSampling;
   readonly stopSequences?: readonly string[];
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly visualQuotaClass?: FreeVisualVerificationQuotaClass;
   /** Provider-neutral pass-through for an explicitly requested service class. */
   readonly serviceTier?: string;
   readonly tools: readonly CanonicalToolDefinition[];

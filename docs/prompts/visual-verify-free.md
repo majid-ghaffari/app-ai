@@ -14,7 +14,10 @@ model resolves to Cloudflare Workers AI without moving the customer-facing route
   `@cf/qwen/qwen3.8-27b` through `cloudflare/cloudflare-workers-ai`.
 - Quota: a separately addressed `AuditSessionAuthority` instance admits at most
   `FREE_VISUAL_VERIFY_DAILY_LIMIT` valid binding calls per UTC day; configuration cannot exceed
-  eight. It derives the UTC date itself. Invalid JSON, invalid media, oversized evidence, bad
+  eight. `X-Personalizer-Visual-Quota-Class` is `diagnostic` or `acceptance`; an absent header is
+  diagnostic. Diagnostics stop at the daily limit minus
+  `FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE`, while acceptance requests may use the whole daily
+  allowance. It derives the UTC date itself. Invalid JSON, invalid media, oversized evidence, bad
   routing, and missing bindings do not consume quota.
 - Kill switch: `FREE_VISUAL_VERIFY_ENABLED` must remain enabled for inference.
 
@@ -33,7 +36,8 @@ authenticated smoke verdict. Lib enables the protected endpoint only after those
 
 The public request is `POST /messages` with
 `X-Personalizer-System-Prompt: visual-verify-free`, a master Context-ID, and one user message. The
-message content contains exactly one inline base64 PNG block and one text block within the limits
+quota-class header states whether the request belongs to a focused diagnostic or a complete
+acceptance pass. The message content contains exactly one inline base64 PNG block and one text block within the limits
 above. The image is the rendered screenshot. The text carries the intent, cleaned HTML excerpt,
 console lines, computed styles, target rectangle, and center-point hit test. Pixels are the primary
 evidence; DOM presence alone is not proof that the target painted.
@@ -45,6 +49,9 @@ exactly one leading IHDR through consecutive IDAT chunks and a CRC-valid termina
 unknown critical chunks, validates the IHDR format, and incrementally decompresses into the exact
 bounded scanline buffer. Excess output, invalid lengths, and invalid filters fail before quota is
 reserved.
+
+The internal authority request contract is documented in
+[src/lib/CLAUDE.md](../../src/lib/CLAUDE.md).
 
 The adapter converts that canonical request into Qwen's OpenAI-compatible multimodal shape:
 

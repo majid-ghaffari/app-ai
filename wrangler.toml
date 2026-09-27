@@ -110,6 +110,7 @@ MODEL_FRONTIER = "claude-opus-4-8"
 MODEL_OVERRIDES = "free-render-verification=@cf/qwen/qwen3.8-27b"
 FREE_VISUAL_VERIFY_ENABLED = "true"
 FREE_VISUAL_VERIFY_DAILY_LIMIT = "8"
+FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE = "4"
 INFERENCE_QUOTA_INTERNAL_ORIGIN = "https://inference-quota.internal"
 
 # ── Anthropic ──

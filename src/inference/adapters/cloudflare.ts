@@ -93,7 +93,7 @@ async function runModel(request: InferenceRequest, env: Env): Promise<unknown> {
   if (request.sampling?.topP !== undefined) input.top_p = request.sampling.topP;
   if (request.sampling?.topK !== undefined) input.top_k = request.sampling.topK;
   const binding = workersAiBinding(env);
-  await reserveFreeVisualVerification(env);
+  await reserveFreeVisualVerification(env, request.visualQuotaClass ?? 'diagnostic');
   try {
     const response = await binding.run(request.modelProfile.model, input, {
       returnRawResponse: true,

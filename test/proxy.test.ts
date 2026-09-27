@@ -116,6 +116,7 @@ describe('cors', () => {
     const h = getCorsHeaders(requestWithOrigin('https://shop.example.com'), ENV);
     // The lib SENDS this custom request header on the onboarding handshake.
     expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-Ruleset-Version');
+    expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-Visual-Quota-Class');
     expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-QC-Attempt');
     expect(h['Access-Control-Allow-Headers']).toContain('X-Personalizer-QC-Capture-Ms');
     expect(h['Access-Control-Expose-Headers']).toBeUndefined();
@@ -765,6 +766,26 @@ describe('handleHealth', () => {
       'fc00704',
     );
     expect(configured.status).toBe(200);
+  });
+
+  it('fails production health closed when the acceptance reserve is missing or invalid', () => {
+    const { FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE: _reserve, ...withoutReserve } = ENV;
+    expect(
+      handleHealth(CORS, { ...withoutReserve, ENVIRONMENT: 'production' }, undefined, 'fc00704')
+        .status,
+    ).toBe(503);
+    expect(
+      handleHealth(
+        CORS,
+        {
+          ...ENV,
+          ENVIRONMENT: 'production',
+          FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE: '8',
+        },
+        undefined,
+        'fc00704',
+      ).status,
+    ).toBe(503);
   });
 
   it('requires the evidence bucket when a production prompt routes to Kimi', () => {
@@ -2287,6 +2308,27 @@ describe('handleMessages', () => {
         },
       },
     ]);
+  });
+
+  it('keeps protected quota headers out of ordinary prompt routing and metadata', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(jsonOk(anthropicMessage()));
+    const request = messagesRequest(
+      {
+        metadata: { protectedVisualQuotaClass: 'acceptance', user_id: 'merchant-7' },
+        messages: [{ role: 'user', content: 'inspect this' }],
+      },
+      'onboarding-review',
+    );
+    request.headers.set('X-Personalizer-Visual-Quota-Class', 'acceptance');
+
+    const response = await handleMessages(request, ENV, CORS);
+
+    expect(response.status).toBe(200);
+    expect(sentBody(fetchCall(fetchMock, 0).init).metadata).toEqual({
+      protectedVisualQuotaClass: 'acceptance',
+      user_id: 'merchant-7',
+    });
   });
 
   it('replays Anthropic thinking and redacted-thinking blocks from assistant history', async () => {

@@ -93,8 +93,9 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - The Cloudflare adapter accepts one inline image, emits Qwen's OpenAI-compatible
   multimodal message shape, disables thinking, propagates request cancellation,
   enforces the documented text/token/PNG byte-and-dimension free-allocation bounds,
-  reserves the protected daily quota only after validation, and reads raw binding
-  responses so provider status and error codes survive normalization.
+  reserves the protected daily quota only after validation under the canonical diagnostic or
+  acceptance class, never derives that class from caller metadata, and reads raw binding responses
+  so provider status and error codes survive normalization.
 - Paid local/test provider calls require the explicit channel opt-in documented
   in the root and `docs/TESTING.md`.
 - OpenAI is factory-selectable for deterministic adapter tests and the explicit

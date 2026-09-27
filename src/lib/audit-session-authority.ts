@@ -16,7 +16,10 @@ import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline'
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { createLoggingRuntime } from './logger';
 import { WorkerError } from './responses';
-import { reserveFreeVisualVerificationSlot } from './inference-quota-authority';
+import {
+  reserveFreeVisualVerificationSlot,
+  type FreeVisualVerificationQuotaClass,
+} from './inference-quota-authority';
 
 const SESSION_STORAGE_KEY = 'session';
 const CALLBACK_RETRY_MILLISECONDS = 60_000;
@@ -129,6 +132,9 @@ interface FinalizeInput {
 
 interface FreeVisualVerificationReserveInput {
   readonly limit: number;
+  readonly dailyLimit?: number;
+  readonly acceptanceReserve?: number;
+  readonly quotaClass?: FreeVisualVerificationQuotaClass;
 }
 
 /** Data required to create one atomic audit-session record. */
@@ -381,7 +387,30 @@ export class AuditSessionAuthority implements DurableObject {
     input: FreeVisualVerificationReserveInput,
   ): Promise<Response> {
     if (!Number.isSafeInteger(input.limit) || input.limit <= 0) return internalResponse(400);
-    const accepted = await reserveFreeVisualVerificationSlot(this.state.storage, input.limit);
+    const legacy =
+      input.dailyLimit === undefined &&
+      input.acceptanceReserve === undefined &&
+      input.quotaClass === undefined;
+    let policy: Parameters<typeof reserveFreeVisualVerificationSlot>[1];
+    if (legacy) {
+      policy = { dailyLimit: input.limit, acceptanceReserve: 0, quotaClass: 'acceptance' };
+    } else {
+      const { dailyLimit, acceptanceReserve, quotaClass } = input;
+      if (
+        !Number.isSafeInteger(dailyLimit) ||
+        typeof dailyLimit !== 'number' ||
+        dailyLimit <= 0 ||
+        !Number.isSafeInteger(acceptanceReserve) ||
+        typeof acceptanceReserve !== 'number' ||
+        acceptanceReserve <= 0 ||
+        acceptanceReserve >= dailyLimit ||
+        (quotaClass !== 'diagnostic' && quotaClass !== 'acceptance') ||
+        input.limit !== (quotaClass === 'acceptance' ? dailyLimit : dailyLimit - acceptanceReserve)
+      )
+        return internalResponse(400);
+      policy = { dailyLimit, acceptanceReserve, quotaClass };
+    }
+    const accepted = await reserveFreeVisualVerificationSlot(this.state.storage, policy);
     return internalResponse(accepted ? 201 : 429);
   }
 

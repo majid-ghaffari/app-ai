@@ -40,6 +40,7 @@ import {
   auditSessionSigningSecret,
   auditSessionTtlSeconds,
   freeVisualVerifyDailyLimit,
+  freeVisualVerifyAcceptanceReserve,
   freeVisualVerifyEnabled,
   inferenceQuotaInternalOrigin,
   missingRequiredSecretNames,
@@ -273,9 +274,16 @@ describe('config accessors — missing config = error (no fallback defaults)', (
   it('protected visual verification configuration fails fast', () => {
     expect(freeVisualVerifyEnabled(ENV)).toBe(true);
     expect(freeVisualVerifyDailyLimit(ENV)).toBe(8);
+    expect(freeVisualVerifyAcceptanceReserve(ENV)).toBe(4);
     expect(() =>
       freeVisualVerifyDailyLimit({ ...ENV, FREE_VISUAL_VERIFY_DAILY_LIMIT: '9' }),
     ).toThrow(/must not exceed 8/);
+    expect(() =>
+      freeVisualVerifyAcceptanceReserve({
+        ...ENV,
+        FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE: '8',
+      }),
+    ).toThrow(/must be below the daily limit/);
     expect(inferenceQuotaInternalOrigin(ENV)).toBe('https://inference-quota.internal');
     expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
     expect(() => freeVisualVerifyEnabled({ ...ENV, FREE_VISUAL_VERIFY_ENABLED: 'maybe' })).toThrow(
@@ -627,6 +635,7 @@ describe('production [vars] — the deployed configuration values', () => {
       'MODEL_FRONTIER',
       'FREE_VISUAL_VERIFY_ENABLED',
       'FREE_VISUAL_VERIFY_DAILY_LIMIT',
+      'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE',
       'INFERENCE_QUOTA_INTERNAL_ORIGIN',
       'LOG_TARGETS_TRACE',
       'LOG_TARGETS_DEBUG',
