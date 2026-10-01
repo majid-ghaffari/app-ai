@@ -34,7 +34,7 @@ Payload for a public, one-store activation:
   "issuer": "limespot-website",
   "audience": "app-ai",
   "tokenIdentifier": "<unique opaque identifier, 1..256 characters>",
-  "auditIdentifier": "<stable D1 UUID for this lead and exact store origin>",
+  "auditIdentifier": "<stable D1 UUID for this store>",
   "attemptLimit": 2,
   "email": "verified-merchant@example.com",
   "emailVerified": true,
@@ -81,7 +81,14 @@ generator aimed at a host of the attacker's choosing.
 `issuedAt` and `expiresAt` are integer epoch seconds. The token must be currently
 valid and its declared lifetime cannot exceed 15 minutes. `auditIdentifier` is bounded to 128
 characters. Public activations require `attemptLimit: 2`; staff activations require
-`attemptLimit: null`. Public entitlement matches the requested normalized origin exactly.
+`attemptLimit: null`. Public entitlement accepts a requested normalized origin that is the same
+store as `entitlement.storeOrigin`: the same scheme and port, and hosts equal once one leading
+`www.` label, where present, is removed from each, so a store that redirects its bare domain to its
+`www.` form, or the reverse, is authorized on both. No other subdomain is equivalent and nothing
+crosses domains (`src/lib/store-origin.ts`). A public session is bound to the signed
+`entitlement.storeOrigin`, whichever form the exchange requested, so its status events name the
+store by the origin the website recorded for its run, and a website that still compares that origin
+exactly keeps accepting them. A staff session is bound to the origin the exchange requested.
 Multi-store entitlement is accepted only when the signed, verified email ends in
 `@limespot.com`; it permits choosing any origin for that one exchange, while the
 activation identifier remains one-use. The website issuer creates a fresh
@@ -128,7 +135,7 @@ The session JWT uses the same exact HS256 header and this payload:
 
 The extension background worker sends `Authorization: Bearer ls_audit_<session
 JWT>` and `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`. App-ai requires
-that explicit store-origin header to equal the signed `storeOrigin`. MV3
+that explicit store-origin header to be the same store as the signed `storeOrigin`. MV3
 background requests have a `chrome-extension://…` Origin (or none), and browser
 JavaScript cannot set the forbidden HTTP `Origin` header, so HTTP Origin is not
 the storefront proof. The extension must derive the dedicated header from the
@@ -255,7 +262,10 @@ non-2xx response or thrown dispatch.
   releases a lapsed lease on its own schedule, whichever session is current, and mirrors it
   `failed`; a result that still arrives afterwards reaches its caller without being counted. A
   reservation carried into a reissued session never counts toward that session's upload or
-  inference totals.
+  inference totals, and its status events keep the session identifier and store origin of the
+  session that admitted it, even when the reissued session is bound to the store's other form. A
+  reservation an earlier worker admitted without its origin takes the origin of the session it is
+  carried out of.
 
 There is no cross-session app-ai spend counter. The limespot.com issuer therefore
 owns the global controls: email-verification attempt limits, per-identity/IP

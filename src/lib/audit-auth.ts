@@ -24,6 +24,7 @@ import {
   type AuditAuthorityReservation,
 } from './audit-session-authority';
 import { WorkerError } from './responses';
+import { isSameStoreOrigin } from './store-origin';
 import {
   isUsableProposal,
   readProposalManifest,
@@ -117,8 +118,12 @@ export async function exchangeAuditActivation(
   if (activation.expiresAt - activation.issuedAt > MAX_ACTIVATION_LIFETIME_SECONDS) {
     throw unauthorized('The activation token lifetime is too long.');
   }
-  const storeOrigin = normalizeStoreOrigin(storeUrl);
-  assertActivationEntitlement(activation, storeOrigin);
+  const requestedOrigin = normalizeStoreOrigin(storeUrl);
+  assertActivationEntitlement(activation, requestedOrigin);
+  const storeOrigin =
+    activation.entitlement.type === 'store-origin'
+      ? activation.entitlement.storeOrigin
+      : requestedOrigin;
   const statusCallbackUrl = resolveStatusCallbackUrl(activation.statusCallbackUrl, env);
   const sessionSigningSecret = auditSessionSigningSecret(env);
   auditStatusSigningSecret(env);
@@ -442,7 +447,10 @@ function assertActivationEntitlement(claims: ActivationClaims, requestedOrigin: 
   } catch {
     throw unauthorized('The activation token store entitlement is invalid.');
   }
-  if (entitledOrigin !== claims.entitlement.storeOrigin || entitledOrigin !== requestedOrigin) {
+  if (
+    entitledOrigin !== claims.entitlement.storeOrigin ||
+    !isSameStoreOrigin(entitledOrigin, requestedOrigin)
+  ) {
     throw forbidden('The activation token is not entitled for this storefront origin.');
   }
 }
@@ -568,7 +576,7 @@ function normalizeStoreOrigin(storeUrl: string): string {
 
 function assertRequestStoreOrigin(request: Request, storeOrigin: string): void {
   const claimedOrigin = request.headers.get('X-LimeSpot-Audit-Store-Origin');
-  if (claimedOrigin !== storeOrigin) {
+  if (claimedOrigin === null || !isSameStoreOrigin(claimedOrigin, storeOrigin)) {
     throw forbidden('The grader request does not match its activated storefront origin.');
   }
 }

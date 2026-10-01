@@ -543,6 +543,182 @@ describe('audit session authorization', () => {
     expect(cappedStaffResponse.status).toBe(401);
   });
 
+  it('authorizes a public activation on both the bare and the www form of its store, and nowhere else', async () => {
+    const bareOrigin = 'https://example-store.test';
+    const wwwOrigin = 'https://www.example-store.test';
+    const env = durableEnv();
+    const exchangeOn = async (entitled: string, storeUrl: string): Promise<Response> =>
+      worker.fetch(
+        new Request('https://app-ai.test/audit/session/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activationToken: await activationToken(env, crypto.randomUUID(), {
+              type: 'store-origin',
+              storeOrigin: entitled,
+            }),
+            storeUrl,
+          }),
+        }),
+        env,
+      );
+
+    const landedOnWww = await exchangeOn(bareOrigin, `${wwwOrigin}/collections/all`);
+    expect(landedOnWww.status).toBe(201);
+    expect((await exchangeOn(wwwOrigin, `${bareOrigin}/`)).status).toBe(201);
+    expect((await exchangeOn(bareOrigin, 'https://WWW.Example-Store.test/')).status).toBe(201);
+    for (const elsewhere of [
+      'https://shop.example-store.test',
+      'https://evilexample-store.test',
+      'https://www.www.example-store.test',
+      'https://example-store.test:8443',
+      'https://example-store.test.evil.test',
+    ]) {
+      const refused = await exchangeOn(bareOrigin, `${elsewhere}/`);
+      expect(refused.status, elsewhere).toBe(403);
+      expect(await refused.json()).toMatchObject({ ExceptionType: 'AuditScopeException' });
+    }
+
+    const session = (await landedOnWww.json()) as { accessToken: string };
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify(anthropicFileRecord('file-same-store')), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    const uploadFrom = (storeOrigin: string): Request => {
+      const request = uploadRequest(session.accessToken, `tile-${storeOrigin.length}.webp`);
+      request.headers.set('X-LimeSpot-Audit-Store-Origin', storeOrigin);
+      return request;
+    };
+    expect((await worker.fetch(uploadFrom(wwwOrigin), env)).status).toBe(200);
+    expect((await worker.fetch(uploadFrom(bareOrigin), env)).status).toBe(200);
+    for (const elsewhere of ['https://shop.example-store.test', 'https://evilexample-store.test']) {
+      const refused = await worker.fetch(uploadFrom(elsewhere), env);
+      expect(refused.status, elsewhere).toBe(403);
+    }
+  });
+
+  it('keeps one public audit authority across both forms of its store, and the authority refuses another store', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
+    const env = durableEnv({ AUDIT_SESSION_TTL_SECONDS: '1' });
+    const auditIdentifier = 'audit-stable-same-store';
+    const exchangeOn = async (
+      tokenIdentifier: string,
+      entitledOrigin: string,
+      storeUrl: string,
+    ): Promise<Response> =>
+      worker.fetch(
+        new Request('https://app-ai.test/audit/session/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activationToken: await activationToken(
+              env,
+              tokenIdentifier,
+              { type: 'store-origin', storeOrigin: entitledOrigin },
+              'merchant@example.com',
+              auditIdentifier,
+            ),
+            storeUrl,
+          }),
+        }),
+        env,
+      );
+
+    const first = await exchangeOn(
+      'same-store-first',
+      'https://example-store.test',
+      'https://www.example-store.test/',
+    );
+    expect(first.status).toBe(201);
+    vi.advanceTimersByTime(2_000);
+    const otherForm = await exchangeOn(
+      'same-store-second',
+      'https://www.example-store.test',
+      'https://example-store.test/',
+    );
+    expect(otherForm.status).toBe(201);
+    vi.advanceTimersByTime(2_000);
+    const otherStore = await exchangeOn(
+      'same-store-third',
+      'https://shop.example-store.test',
+      'https://shop.example-store.test/',
+    );
+    expect(otherStore.status).toBe(403);
+    expect(await otherStore.json()).toMatchObject({
+      ExceptionType: 'AuditScopeException',
+      Message: 'The grader identity does not match its existing authority.',
+    });
+    vi.useRealTimers();
+  });
+
+  it('reports a public session under the store origin its activation signed, whichever form the tab opened', async () => {
+    const env = durableEnv();
+    const bareOrigin = 'https://example-store.test';
+    const wwwOrigin = 'https://www.example-store.test';
+    const exchanged = await worker.fetch(
+      new Request('https://app-ai.test/audit/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: await activationToken(env, 'signed-origin-status', {
+            type: 'store-origin',
+            storeOrigin: bareOrigin,
+          }),
+          storeUrl: `${wwwOrigin}/collections/all`,
+        }),
+      }),
+      env,
+    );
+    expect(exchanged.status).toBe(201);
+    const session = (await exchanged.json()) as { accessToken: string };
+    const reportedOrigins: unknown[] = [];
+    const fetchMock = stubFetch();
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        reportedOrigins.push(
+          (JSON.parse(String(init?.body)) as { storeOrigin: unknown }).storeOrigin,
+        );
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const fromWww = (request: Request): Request => {
+      request.headers.set('X-LimeSpot-Audit-Store-Origin', wwwOrigin);
+      return request;
+    };
+
+    const upload = await worker.fetch(
+      fromWww(uploadRequest(session.accessToken, 'tile.webp')),
+      env,
+    );
+    expect(upload.status).toBe(200);
+    const fileIdentifier = ((await upload.json()) as { id: string }).id;
+    const proposal = await worker.fetch(
+      fromWww(messageRequest(session.accessToken, [fileIdentifier])),
+      env,
+    );
+    expect(proposal.status).toBe(200);
+
+    await deliverStatusEvents(env);
+    expect(reportedOrigins.length).toBeGreaterThan(0);
+    expect(new Set(reportedOrigins)).toEqual(new Set([bareOrigin]));
+  });
+
   it('preserves one public audit authority across reissued activation tokens', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
@@ -1713,22 +1889,29 @@ describe('grader runs in one audit session', () => {
     ]);
   });
 
-  it('releases a reservation at its own lease while a reissued session is active', async () => {
-    const auditIdentifier = 'audit-expiry-reissued';
-    const { env, upstream, proposal, sessionIdentifier, expiresAt, admittedAt } =
-      await sessionExpiringDuringProposal(auditIdentifier);
+  const COUNTERPART_STORE_ORIGIN = STORE_ORIGIN.replace('https://', 'https://www.');
 
-    vi.setSystemTime(expiresAt + 1000);
+  async function reissueOnCounterpartForm(env: Env, auditIdentifier: string): Promise<string> {
     const reissued = await exchange(
       env,
       await activationToken(
         env,
         `${auditIdentifier}-reissued-token`,
-        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        { type: 'store-origin', storeOrigin: COUNTERPART_STORE_ORIGIN },
         'merchant@example.com',
         auditIdentifier,
       ),
     );
+    return reissued.sessionIdentifier;
+  }
+
+  it('releases a reservation at its own lease under its admitting origin while a counterpart-form session is active', async () => {
+    const auditIdentifier = 'audit-expiry-reissued';
+    const { env, upstream, proposal, sessionIdentifier, expiresAt, admittedAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(expiresAt + 1000);
+    const reissuedSessionIdentifier = await reissueOnCounterpartForm(env, auditIdentifier);
     await deliverStatusEvents(env);
     expect(upstream.callbacks).toEqual([['started', 1]]);
 
@@ -1739,10 +1922,67 @@ describe('grader runs in one audit session', () => {
       ['started', 1],
       ['failed', 1],
     ]);
-    expect(upstream.callbackEvents.at(-1)?.sessionIdentifier).toBe(sessionIdentifier);
+    expect(upstream.callbackEvents.at(-1)).toMatchObject({
+      sessionIdentifier,
+      storeOrigin: STORE_ORIGIN,
+    });
     const record = await storedRunSession(env, auditIdentifier);
-    expect(record.sessionIdentifier).toBe(reissued.sessionIdentifier);
+    expect(record.sessionIdentifier).toBe(reissuedSessionIdentifier);
     expect(record.pending).toEqual({});
+    upstream.releaseHeldInference();
+    await proposal;
+  });
+
+  it('finalizes a carried proposal under its admitting origin after a counterpart-form session replaced its own', async () => {
+    const auditIdentifier = 'audit-expiry-reissued-finalized';
+    const { env, upstream, proposal, sessionIdentifier, expiresAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+
+    vi.setSystemTime(expiresAt + 1000);
+    await reissueOnCounterpartForm(env, auditIdentifier);
+    upstream.releaseHeldInference();
+    expect((await proposal).status).toBe(200);
+    await deliverStatusEvents(env);
+
+    expect(upstream.callbacks).toEqual([
+      ['started', 1],
+      ['completed', 1],
+    ]);
+    expect(
+      upstream.callbackEvents.map((event) => [event.sessionIdentifier, event.storeOrigin]),
+    ).toEqual([
+      [sessionIdentifier, STORE_ORIGIN],
+      [sessionIdentifier, STORE_ORIGIN],
+    ]);
+  });
+
+  it('reports a reservation an earlier worker admitted under the origin of the session it was carried out of', async () => {
+    const auditIdentifier = 'audit-expiry-reissued-unstamped';
+    const { env, upstream, proposal, sessionIdentifier, expiresAt, admittedAt } =
+      await sessionExpiringDuringProposal(auditIdentifier);
+    const storage = storageFor(env, auditIdentifier);
+    const stored = (await storage.get<Record<string, unknown>>('session')) as {
+      pending: Record<string, Record<string, unknown>>;
+    };
+    await storage.put('session', {
+      ...stored,
+      pending: Object.fromEntries(
+        Object.entries(stored.pending).map(
+          ([identifier, { storeOrigin: _origin, ...reservation }]) => [identifier, reservation],
+        ),
+      ),
+    });
+
+    vi.setSystemTime(expiresAt + 1000);
+    await reissueOnCounterpartForm(env, auditIdentifier);
+    vi.setSystemTime(admittedAt + LEASE_MILLISECONDS + 1000);
+    await deliverStatusEvents(env);
+
+    expect(upstream.callbackEvents.at(-1)).toMatchObject({
+      status: 'failed',
+      sessionIdentifier,
+      storeOrigin: STORE_ORIGIN,
+    });
     upstream.releaseHeldInference();
     await proposal;
   });
@@ -2150,6 +2390,7 @@ describe('grader runs in one audit session', () => {
         run: 2,
         uploadBytes: 'held-retry.webp'.length,
         sessionIdentifier: expect.any(String),
+        storeOrigin: STORE_ORIGIN,
         admittedAt: expect.any(Number),
       },
     ]);

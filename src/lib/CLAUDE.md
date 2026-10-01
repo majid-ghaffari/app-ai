@@ -41,6 +41,13 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Continuation values stay opaque. An adapter may set `requiredOnNextTurn` when
   its state must be echoed after an ordinary terminal assistant turn; handlers
   only seal/carry the value and never interpret the provider payload.
+- Storefront-origin equality on the audit path goes through `isSameStoreOrigin`
+  in `store-origin.ts`: a store's bare domain and its `www.` form are one store,
+  and nothing else is. The exchange entitlement, the request's
+  `X-LimeSpot-Audit-Store-Origin` header and the authority's reissued-exchange
+  check use it; the session-to-authority binding and every other origin check
+  stay exact. A public session carries the signed entitlement origin, never the
+  requested form, so its status events name the store as the website recorded it.
 - `audit-auth.ts` resolves every dependency an exchange needs — the session
   signing key, the callback signing key, and the activation's allowlisted
   `statusCallbackUrl` — BEFORE it consumes the one-time activation, so a

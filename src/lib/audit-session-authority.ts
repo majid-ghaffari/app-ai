@@ -16,6 +16,7 @@ import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline'
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { createLoggingRuntime } from './logger';
 import { WorkerError } from './responses';
+import { isSameStoreOrigin } from './store-origin';
 import {
   reserveFreeVisualVerificationSlot,
   type FreeVisualVerificationQuotaClass,
@@ -50,6 +51,12 @@ interface PendingReservation {
    */
   readonly sessionIdentifier?: string;
   readonly admittedAt?: number;
+  /**
+   * The store origin of the session that admitted this reservation, which its status events name
+   * even after a session for the store's other form replaces that one. A reservation an earlier
+   * worker admitted without it takes the origin of the session it is carried out of.
+   */
+  readonly storeOrigin?: string;
 }
 
 interface SessionRecord {
@@ -278,7 +285,7 @@ export class AuditSessionAuthority implements DurableObject {
       if (
         existing &&
         (existing.auditIdentifier !== input.auditIdentifier ||
-          existing.storeOrigin !== input.storeOrigin ||
+          !isSameStoreOrigin(existing.storeOrigin, input.storeOrigin) ||
           existing.attemptLimit !== input.attemptLimit)
       ) {
         return 403;
@@ -303,7 +310,7 @@ export class AuditSessionAuthority implements DurableObject {
         ...NO_SESSION_TOTALS,
         run: 1,
         ...FRESH_RUN,
-        pending: expired?.pending ?? {},
+        pending: expired ? withAdmittingOrigin(expired.pending, expired.storeOrigin) : {},
         completedReservations: [],
         abandonedReservations: expired?.abandonedReservations ?? [],
         statusOutbox: expired?.statusOutbox ?? [],
@@ -343,6 +350,7 @@ export class AuditSessionAuthority implements DurableObject {
               run: session.run,
               uploadBytes: input.uploadBytes,
               sessionIdentifier: session.sessionIdentifier,
+              storeOrigin: session.storeOrigin,
               admittedAt: Date.now(),
             },
           },
@@ -370,6 +378,7 @@ export class AuditSessionAuthority implements DurableObject {
             uploadBytes: 0,
             ...(session.runCompleted ? {} : { attemptNumber }),
             sessionIdentifier: session.sessionIdentifier,
+            storeOrigin: session.storeOrigin,
             admittedAt: Date.now(),
           },
         },
@@ -456,11 +465,11 @@ export class AuditSessionAuthority implements DurableObject {
       const statusOutbox = [...session.statusOutbox];
       if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
         statusOutbox.push(
-          statusEvent(
+          reservationStatusEvent(
             session,
+            reservation,
             reservation.attemptNumber,
             completesAttempt ? 'completed' : 'failed',
-            reservation.sessionIdentifier,
           ),
         );
       }
@@ -563,7 +572,7 @@ function releaseExpiredSession(session: SessionRecord, now: number): SessionReco
     released.push(identifier);
     if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
       statusOutbox.push(
-        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+        reservationStatusEvent(session, reservation, reservation.attemptNumber, 'failed'),
       );
     }
   }
@@ -589,7 +598,7 @@ function releaseLapsedReservations(session: SessionRecord, nowMilliseconds: numb
   for (const [, reservation] of lapsed) {
     if (reservation.kind === 'message' && reservation.attemptNumber !== undefined) {
       statusOutbox.push(
-        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+        reservationStatusEvent(session, reservation, reservation.attemptNumber, 'failed'),
       );
     }
   }
@@ -647,7 +656,7 @@ function abandonPendingInferences(session: SessionRecord): SessionRecord {
   for (const [, reservation] of abandoned) {
     if (reservation.attemptNumber !== undefined) {
       statusOutbox.push(
-        statusEvent(session, reservation.attemptNumber, 'failed', reservation.sessionIdentifier),
+        reservationStatusEvent(session, reservation, reservation.attemptNumber, 'failed'),
       );
     }
   }
@@ -698,17 +707,45 @@ function statusEvent(
   attemptNumber: number,
   status: AuditStatus,
   sessionIdentifier: string = session.sessionIdentifier,
+  storeOrigin: string = session.storeOrigin,
 ): AuditStatusEvent {
   return {
     version: 1,
     eventIdentifier: crypto.randomUUID(),
     auditIdentifier: session.auditIdentifier,
     sessionIdentifier,
-    storeOrigin: session.storeOrigin,
+    storeOrigin,
     attemptNumber,
     status,
     occurredAt: epochSeconds(),
   };
+}
+
+function reservationStatusEvent(
+  session: SessionRecord,
+  reservation: PendingReservation,
+  attemptNumber: number,
+  status: AuditStatus,
+): AuditStatusEvent {
+  return statusEvent(
+    session,
+    attemptNumber,
+    status,
+    reservation.sessionIdentifier,
+    reservation.storeOrigin,
+  );
+}
+
+function withAdmittingOrigin(
+  pending: Readonly<Record<string, PendingReservation>>,
+  storeOrigin: string,
+): Record<string, PendingReservation> {
+  return Object.fromEntries(
+    Object.entries(pending).map(([identifier, reservation]) => [
+      identifier,
+      reservation.storeOrigin === undefined ? { ...reservation, storeOrigin } : reservation,
+    ]),
+  );
 }
 
 function authorityStub(auditIdentifier: string, env: Env): DurableObjectStub {
