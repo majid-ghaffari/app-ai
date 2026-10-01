@@ -134,7 +134,8 @@ The session JWT uses the same exact HS256 header and this payload:
 ```
 
 The extension background worker sends `Authorization: Bearer ls_audit_<session
-JWT>` and `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`. App-ai requires
+JWT>`, `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`, and the
+`X-LimeSpot-Audit-Plan-Version` it follows (see "The plan is versioned" below). App-ai requires
 that explicit store-origin header to be the same store as the signed `storeOrigin`. MV3
 background requests have a `chrome-extension://…` Origin (or none), and browser
 JavaScript cannot set the forbidden HTTP `Origin` header, so HTTP Origin is not
@@ -192,41 +193,130 @@ transport timed out and disconnected never holds the session. The superseded req
 
 ### One abuse ceiling, derived from the grader plan
 
-`src/lib/audit-plan.ts` derives the most one run can need from the plan the conductor follows:
+`src/lib/audit-plan.ts` derives the most one run can need from the way the conductor captures and
+proposes, which is Studio onboarding's own:
 
-- every page kind the proposal prompts plan — their page vocabulary, pinned to the prompt text by
-  `test/audit-plan.test.ts` — read at desktop and mobile width, with at most two tiles a width;
-- one whole-store proposal, repaired at most twice and sent at most twice.
+- every page kind the proposal prompts plan — their page vocabulary of seven, pinned to the prompt
+  text by `test/audit-plan.test.ts` — read at desktop and mobile width;
+- every tile Studio's capture cuts one width of a page into, at most 24;
+- the whole-store proposal sent at most four times, then a per-page proposal for every page, each
+  request repaired at most twice.
 
-A recapture adds no upload. In lib, `relayCaptureRaw` (`packages/storefront/src/admin/ai/agent/batch-runner.ts`)
-enqueues a width's upload only after its capture returned a non-empty image, and
-`readPuppetsWithOneRecapture` recaptures only a width that returned none, so each width of a page
-contributes one capture. `enqueueRawCapture` (`packages/storefront/src/admin/ai/agent/onb-capture-queue.ts`)
-slices an audit session's capture to at most two tiles, and the proposal-only audit conductor exits
-before the QC walk, so a run captures each page once per width.
+**Tiles.** `sliceImageIntoTiles` (`packages/storefront/src/admin/ai/page-perception.ts`) cuts a
+capture into `TILE_MAX_HEIGHT` (1,500 px) tiles that overlap by `TILE_OVERLAP` (100 px): a capture
+`H` pixels tall yields one tile up to 1,500 px and `⌈(H − 100) / 1,400⌉` beyond. Lib caps neither the
+page height nor the tile count. A capture is one canvas, so the tallest canvas the browser holds —
+32,767 px in Chrome, where the extension runs — bounds it: `⌈32,667 / 1,400⌉ = 24` tiles. Scaling a
+desktop capture to at most 1,200 px wide and capturing a page taller than 3,000 px at 0.7 scale only
+shortens the raster.
 
-That planned run is 28 uploads and 6 proposal inference requests. A run's ceiling is the plan times
-`AUDIT_RUN_HEADROOM` (production `2`): 56 uploads and 12 inference requests. Inference requests are
-held to it per run. Uploads are held to it per session — `AUDIT_MAX_RUNS` runs' worth, 224 uploads in
-production — because an attempt that fails before its proposal leaves no boundary the server can
-see: its uploads and those of the attempt that retries it arrive in the same run, and a per-run count
-refused the third attempt of a 7-page store after two such failures. Every attempt draws on the
-session allowance until it is spent. For scale, one
+**Uploads.** Each tile is one `/files` upload naming `onboarding-batch-all` and `onboarding-batch`;
+an audit session uploads no HTML and no review capture. A recapture adds no upload. In lib,
+`relayCaptureRaw` (`packages/storefront/src/admin/ai/agent/batch-runner.ts`) enqueues a width's
+upload only after its capture returned a non-empty image, and `readPuppetsWithOneRecapture`
+recaptures only a width that returned none, so each width of a page contributes one capture. The
+proposal-only audit conductor exits before the QC walk, so a run captures each page once per width.
+
+**Inference requests.** `resolveAllPlans` (`batch-runner.ts`) sends the whole-store
+`onboarding-batch-all` request and sends it again after a failure the same request can recover from:
+`inferenceAttemptsFor` (`packages/storefront/src/admin/ai/brain/inference-provider-error.ts`)
+allows four attempts after a 429 and three after a 5xx or 408. Each attempt is repaired at most twice
+(`MAX_BATCH_REPAIR_ATTEMPTS`, `packages/storefront/src/admin/ai/brain/batch-output.ts`), three
+requests in all. When the whole-store request answers 413 or its reply leaves a page out, every page
+it did not plan gets its own `onboarding-batch` request from the tiles already uploaded, repaired at
+most twice and never resent. Neither retry uploads anything, so both stay in the run whose tiles they
+read.
+
+| Allowance                                      | Uploads | Inference requests | Arithmetic                                                                |
+| ---------------------------------------------- | ------: | -----------------: | ------------------------------------------------------------------------- |
+| Planned run                                    |     336 |                 33 | 7 page kinds × 2 widths × 24 tiles; (1 + 2 repairs) × (4 sends + 7 pages) |
+| Run ceiling, `AUDIT_RUN_HEADROOM` `2`          |     672 |                 66 | planned run × 2                                                           |
+| Session upload allowance, `AUDIT_MAX_RUNS` `4` |   2,688 |                  — | run ceiling × 4                                                           |
+
+The Grader walks at most five of those page kinds — Home, Product, Collection, Cart and Search, in
+lib's `packages/storefront/src/admin/ai/agent/onboarding-page-order.ts` — so its own worst run is
+`5 × 2 × 24 = 240` uploads and `(1 + 2) × (4 + 5) = 27` inference requests. Its two public attempts
+in one session come to 480 uploads, and all four runs a session may start to 960, against the
+session's 2,688; each run's 27 requests sit against the run's 66. The margin is the headroom of 2 on
+top of the seven-kind plan, which already exceeds the five pages the Grader reads. For scale, a
 measured five-page run on a live SHOPLINE storefront made 18 uploads (1.14 MB in total, the largest
-193 KB) and one proposal request of 17.5 KB. The ceiling follows the page vocabulary, so a conductor
-that audits another page kind raises it without a configuration change. Every inference request a
-run reserves counts, including one later superseded or failed, so a lifted key cannot fan concurrent
-paid calls out past it. An upload beyond the session allowance or an inference beyond the run ceiling answers 429
-`AuditQuotaException`.
+193 KB) and one proposal request of 17.5 KB; a run on another live storefront made 39 uploads, and
+runs on development stores 19 to 26.
+
+Inference requests are held to the run ceiling per run. Uploads are held to it per session —
+`AUDIT_MAX_RUNS` runs' worth — because an attempt that fails before its proposal leaves no boundary
+the server can see: its uploads and those of the attempt that retries it arrive in the same run, and a
+per-run count refused the third attempt of a 7-page store after two such failures. Every attempt
+draws on the session allowance until it is spent. The ceiling follows the page vocabulary, so a
+conductor that audits another page kind raises it without a configuration change. Every inference
+request a run reserves counts, including one later superseded or failed, so a lifted key cannot fan
+concurrent paid calls out past it. An upload beyond the session allowance or an inference beyond the
+run ceiling answers 429 `AuditQuotaException`.
 
 One upload is at most `AUDIT_MAX_UPLOAD_BYTES` (8 MB) and one inference request at most
-`AUDIT_MAX_MESSAGE_BYTES` (1 MB) of serialized JSON — the extension's own transport limits, far
-above anything the conductor sends. There is no aggregate byte cap: a session's bytes are bounded by
-its upload allowance times the upload size limit.
+`AUDIT_MAX_MESSAGE_BYTES` (1 MB) of serialized JSON. A tile is a JPEG of at most 1,200 × 1,500 px,
+far under the upload limit. A whole-store request names its tiles by file reference, about 750 bytes
+each: the seven-kind plan's 336 tiles serialize to 271 KB, which `test/audit-auth.test.ts` admits.
+The rest of the request is at most 12 candidates a page with 2,000-character excerpts, 168 KB for
+seven pages, which leaves more than 500 KB of the limit for the previous reply a repair carries. The
+extension enforces the same two limits before it sends (its `lib/contracts.ts`), so they stay as they
+are: raising one here alone would admit no larger request. There is no aggregate byte or token cap: a
+session's bytes are bounded by its upload allowance times the upload size limit.
 
 The Durable Object reserves before paid upstream work, counts concurrent reservations, records
 returned file IDs atomically, commits successful calls, and releases a reservation on an upstream
 non-2xx response or thrown dispatch.
+
+The whole session is one Durable Object entry, and Cloudflare holds a SQLite-backed object's key and
+value together to 2 MB. A file reference is about 750 bytes, so a run holding the session's 2,688
+uploads by reference would pass that limit near its 2,500th upload and fail to record a file the
+provider had already accepted. The run therefore owns each file as the SHA-256 digest of its
+reference, 43 characters, and checks a proposal's references by their digests. A session that spends
+its whole upload allowance in one run then stores about 230 KB, which `test/audit-auth.test.ts`
+proves through `worker.fetch` against a storage fake that refuses an entry past 2 MB.
+
+The status outbox, the abandoned-reservation identifiers and the consumed activation identifiers
+carry into every reissued session. While callbacks fail, each failed inference leaves a `started` and
+a `failed` event, up to 528 a session at the production ceilings, so reissued sessions would grow the
+record until a write failed, possibly just after a paid inference returned. The authority therefore
+refuses every reservation, with 503 `AuditSessionBacklogException` and before any provider call,
+while the stored record serializes past 1 MB (`SESSION_RECORD_BUDGET_BYTES`). Between reservations
+the record grows only by finalizing work already reserved — one status event for the one pending
+inference a session can hold, and for an upload a digest in place of its larger pending entry — and
+by an exchange's activation identifier. It keeps the latest 1,024 consumed activation identifiers:
+an activation exchanges at most 900 seconds after it is issued and each exchange waits for the
+previous session to expire, at least a second, so every activation still able to exchange is among
+them. It keeps the latest two sessions' worth of abandoned reservation identifiers (5,904 at the
+production limits), more than can still finalize inside any reservation's lease. Once callbacks are
+delivered the outbox drains and reservations resume. `test/audit-auth.test.ts` runs a callback
+outage across reissued sessions at the full 66-request churn against the 2 MB-refusing fake: the
+fifth session's inference is refused at a 1.0 MB record, where without the budget the tenth
+session's write fails past 2 MB.
+
+### The plan is versioned
+
+The plan above is version 1 of a contract lib and app-ai share. A Grader client names the version it
+follows in `X-LimeSpot-Audit-Plan-Version` on `POST /audit/session/exchange`, `POST /files` and
+`POST /messages`. `SUPPORTED_AUDIT_PLAN_VERSIONS` in `src/lib/audit-plan.ts` lists the versions this
+worker holds an allowance for, beside the plan values themselves.
+
+| Version | Capture                                                                                                | Proposal                                                                                                    | Allowance                                                                          |
+| ------: | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+|       1 | 7 page kinds × 2 widths × at most 24 tiles: 1,500 px tiles overlapping by 100 px of a 32,767 px canvas | the whole-store request sent at most 4 times, then one per-page request a page, each repaired at most twice | 672 uploads and 66 inference requests a run, 2,688 uploads a session (table above) |
+
+A request naming any other value — a version this worker does not list, or anything other than a
+bare positive integer — answers 409 `AuditPlanVersionException` with `MessageDetail`
+`audit_plan_version_unsupported`. The exchange checks it before it reads or consumes the activation,
+and `/files` and `/messages` check it after the bearer and store origin and before any reservation,
+so a refused request spends nothing.
+
+A missing declaration uses the current plan, so a client that sends no header keeps working.
+
+A lib change to any input the plan mirrors — the page kinds, the widths, the tile height or overlap,
+the whole-store sends, the per-page requests or the repairs — is a new plan version. Lib names it,
+app-ai adds it here with its allowance, and the worker deploys before the client that sends it. A
+worker that has not learned the version refuses the run at its exchange rather than failing it with
+429 partway through.
 
 ### User choices are limited where they are made
 
@@ -367,6 +457,11 @@ from, the whole-session limits of a version without runs and the per-run upload 
 version with runs. A rollback to either therefore reads finite counts for every session the current
 worker wrote and holds it to those limits, rather than comparing absent fields that never refuse
 anything.
+
+A run's stored ownership entries may be SHA-256 digests or file references, and the authority
+accepts a proposal reference that matches either form. An authority that matches file references
+only refuses, with 403 `AuditScopeException` and before any reservation, a proposal naming files
+stored as digests; the retry's fresh uploads are stored as references there and admitted.
 
 Clearing an owned file identifier removes audit authorization to reference it; it does not promise
 immediate deletion of the underlying provider evidence. Anthropic's content-hash dedup layer may

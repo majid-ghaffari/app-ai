@@ -24,6 +24,7 @@ const STORE_ORIGIN = 'https://lsdev.myshopline.com';
 const USABLE_PROPOSAL = JSON.stringify({ pages: { Home: { boxes: [] } } });
 const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
 const PAST_ACTIVATION_CEILING_MILLISECONDS = 1_000_000;
+const DURABLE_OBJECT_ENTRY_LIMIT_BYTES = 2_000_000;
 
 interface NamedDurableObjectId {
   readonly name: string;
@@ -42,8 +43,17 @@ class MemoryDurableStorage {
   }
 
   async put(key: string, value: unknown): Promise<void> {
+    const entryBytes = serializedEntryBytes(key, value);
+    if (entryBytes > DURABLE_OBJECT_ENTRY_LIMIT_BYTES) {
+      throw new RangeError(
+        `Durable Object entry "${key}" is ${entryBytes} bytes, past the ${DURABLE_OBJECT_ENTRY_LIMIT_BYTES}-byte key and value limit.`,
+      );
+    }
+    this.largestEntryBytes = Math.max(this.largestEntryBytes, entryBytes);
     this.values.set(key, value);
   }
+
+  largestEntryBytes = 0;
 
   async deleteAll(): Promise<void> {
     this.values.clear();
@@ -74,6 +84,11 @@ class MemoryDurableStorage {
       release();
     }
   }
+}
+
+function serializedEntryBytes(key: string, value: unknown): number {
+  const encoder = new TextEncoder();
+  return encoder.encode(key).byteLength + encoder.encode(JSON.stringify(value ?? null)).byteLength;
 }
 
 function durableEnv(overrides: Partial<Env> = {}): Env {
@@ -254,10 +269,11 @@ function messageRequest(
   accessToken: string,
   fileIdentifiers: readonly string[],
   manifest = 'PAGE Home: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..6',
+  prompt = 'onboarding-batch-all',
 ): Request {
   return new Request('https://app-ai.test/messages', {
     method: 'POST',
-    headers: auditHeaders(accessToken, 'onboarding-batch-all'),
+    headers: auditHeaders(accessToken, prompt),
     body: JSON.stringify({
       model: 'caller-chosen-expensive-model',
       tools: [{ name: 'caller_tool' }],
@@ -1683,6 +1699,22 @@ describe('audit session authorization', () => {
 
 describe('grader runs in one audit session', () => {
   const FIVE_PAGE_RUN_UPLOADS = 5 * 2 * 2;
+  const GRADER_PAGES = ['Home', 'Collection', 'Product', 'Cart', 'Search'] as const;
+  const WHOLE_STORE_SENDS = 4;
+  const CALLS_PER_SEND = 3;
+  const RUN_MESSAGES = (WHOLE_STORE_SENDS + GRADER_PAGES.length) * CALLS_PER_SEND;
+
+  function wholeStoreManifest(pages: number = GRADER_PAGES.length): string {
+    const names = ['Home', 'Collection', 'Product', 'Cart', 'Search', 'SlidingCart', 'Blog'];
+    return names
+      .slice(0, pages)
+      .map((page, index) => {
+        const desktop = index * 48 + 1;
+        const mobile = desktop + 24;
+        return `PAGE ${page}: DESKTOP TILES images ${desktop}-${desktop + 23}, MOBILE TILES images ${mobile}-${mobile + 23}, CANDIDATE ANCHORS 1..6`;
+      })
+      .join('\n');
+  }
 
   interface GraderUpstream {
     readonly callbacks: Array<[unknown, unknown]>;
@@ -1696,6 +1728,7 @@ describe('grader runs in one audit session', () => {
   function graderUpstream(
     answer: (inference: number) => 'hold' | number,
     holdUpload: (upload: number) => boolean = () => false,
+    proposal = USABLE_PROPOSAL,
   ): GraderUpstream {
     const callbacks: Array<[unknown, unknown]> = [];
     const callbackEvents: Array<Record<string, unknown>> = [];
@@ -1727,7 +1760,7 @@ describe('grader runs in one audit session', () => {
       inference += 1;
       const outcome = answer(inference);
       const success = (): Response =>
-        new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])), {
+        new Response(JSON.stringify(anthropicMessage([{ type: 'text', text: proposal }])), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -2114,6 +2147,42 @@ describe('grader runs in one audit session', () => {
     ]);
   });
 
+  it('keeps the latest two sessions of abandoned reservations when it abandons another', async () => {
+    const auditIdentifier = 'audit-abandoned-retention';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        `${auditIdentifier}-token`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const upstream = graderUpstream((inference) => (inference === 1 ? 'hold' : 200));
+    const tiles = await uploadTiles(env, session.accessToken, 2);
+    const retained = 2 * 4 * (672 + 66);
+    const storage = storageFor(env, auditIdentifier);
+    const record = await storedRunSession(env, auditIdentifier);
+    await storage.put('session', {
+      ...record,
+      abandonedReservations: Array.from({ length: retained }, (_, index) => `seeded-${index}`),
+    });
+
+    const abandoned = worker.fetch(messageRequest(session.accessToken, tiles), env);
+    await vi.waitFor(() => expect(upstream.inferenceCalls()).toBe(1));
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+
+    const kept = (await storage.get<{ abandonedReservations: string[] }>('session'))
+      ?.abandonedReservations;
+    expect(kept).toHaveLength(retained);
+    expect(kept?.[0]).toBe('seeded-1');
+    expect(kept?.at(-1)).not.toMatch(/^seeded-/u);
+    upstream.releaseHeldInference();
+    expect((await abandoned).status).toBe(200);
+  });
+
   it('gives a retry after an abandoned run a fresh run of its own', async () => {
     const env = durableEnv();
     const session = await exchange(env);
@@ -2170,7 +2239,7 @@ describe('grader runs in one audit session', () => {
       readonly completedAttempts: number;
       readonly messageCount: number;
       readonly pendingAttemptNumber?: number;
-      readonly earlierRun?: StoredRunSession;
+      readonly fileReferences: readonly string[];
     },
   ): Promise<void> {
     const record = await storedRunSession(env, auditIdentifier);
@@ -2192,7 +2261,7 @@ describe('grader runs in one audit session', () => {
       uploadCount: record.uploadCount,
       totalUploadBytes: record.totalUploadBytes,
       messageCount: counts.messageCount,
-      fileIdentifiers: [...(counts.earlierRun?.fileIdentifiers ?? []), ...record.fileIdentifiers],
+      fileIdentifiers: counts.fileReferences,
       pending: Object.fromEntries(
         Object.entries(record.pending).map(([identifier, reservation]) => [
           identifier,
@@ -2252,7 +2321,11 @@ describe('grader runs in one audit session', () => {
       auditIdentifier,
       () => 200,
     );
-    await storeWithoutRuns(env, auditIdentifier, { completedAttempts: 1, messageCount: 1 });
+    await storeWithoutRuns(env, auditIdentifier, {
+      completedAttempts: 1,
+      messageCount: 1,
+      fileReferences: tiles,
+    });
 
     expect((await worker.fetch(messageRequest(accessToken, tiles), env)).status).toBe(200);
     expect((await worker.fetch(messageRequest(accessToken, tiles), env)).status).toBe(200);
@@ -2272,7 +2345,11 @@ describe('grader runs in one audit session', () => {
       auditIdentifier,
       () => 200,
     );
-    await storeWithoutRuns(env, auditIdentifier, { completedAttempts: 1, messageCount: 1 });
+    await storeWithoutRuns(env, auditIdentifier, {
+      completedAttempts: 1,
+      messageCount: 1,
+      fileReferences: tiles,
+    });
 
     await uploadTiles(env, accessToken, 1);
     expect((await worker.fetch(messageRequest(accessToken, tiles), env)).status).toBe(403);
@@ -2280,16 +2357,15 @@ describe('grader runs in one audit session', () => {
 
   it('counts a retry uploaded before its session was stored without runs and proposed after', async () => {
     const auditIdentifier = 'audit-stored-without-runs-uploaded-retry';
-    const { env, accessToken, upstream } = await sessionWithCompletedProposal(
+    const { env, accessToken, tiles, upstream } = await sessionWithCompletedProposal(
       auditIdentifier,
       () => 200,
     );
-    const earlierRun = await storedRunSession(env, auditIdentifier);
     const retry = await uploadTiles(env, accessToken, 2);
     await storeWithoutRuns(env, auditIdentifier, {
       completedAttempts: 1,
       messageCount: 1,
-      earlierRun,
+      fileReferences: [...tiles, ...retry],
     });
 
     expect((await worker.fetch(messageRequest(accessToken, retry), env)).status).toBe(200);
@@ -2305,11 +2381,10 @@ describe('grader runs in one audit session', () => {
 
   it('completes the attempt a session stored without runs admitted for its pending retry', async () => {
     const auditIdentifier = 'audit-stored-without-runs-pending-retry';
-    const { env, accessToken, upstream } = await sessionWithCompletedProposal(
+    const { env, accessToken, tiles, upstream } = await sessionWithCompletedProposal(
       auditIdentifier,
       (inference) => (inference === 2 ? 'hold' : 200),
     );
-    const earlierRun = await storedRunSession(env, auditIdentifier);
     const retry = await uploadTiles(env, accessToken, 2);
     const proposal = worker.fetch(messageRequest(accessToken, retry), env);
     await vi.waitFor(() => expect(upstream.inferenceCalls()).toBe(2));
@@ -2317,7 +2392,7 @@ describe('grader runs in one audit session', () => {
       completedAttempts: 1,
       messageCount: 1,
       pendingAttemptNumber: 2,
-      earlierRun,
+      fileReferences: [...tiles, ...retry],
     });
 
     upstream.releaseHeldInference();
@@ -2334,18 +2409,17 @@ describe('grader runs in one audit session', () => {
 
   it('gives a retry upload admitted before its session was stored without runs to the run its sibling opens', async () => {
     const auditIdentifier = 'audit-stored-without-runs-pending-upload';
-    const { env, accessToken, upstream } = await sessionWithCompletedProposal(
+    const { env, accessToken, tiles, upstream } = await sessionWithCompletedProposal(
       auditIdentifier,
       () => 200,
       (upload) => upload === 3,
     );
-    const earlierRun = await storedRunSession(env, auditIdentifier);
     const late = worker.fetch(uploadRequest(accessToken, 'late.webp'), env);
     await vi.waitFor(() => expect(upstream.uploadCalls()).toBe(3));
     await storeWithoutRuns(env, auditIdentifier, {
       completedAttempts: 1,
       messageCount: 1,
-      earlierRun,
+      fileReferences: tiles,
     });
 
     const sibling = await worker.fetch(uploadRequest(accessToken, 'sibling.webp'), env);
@@ -2363,6 +2437,34 @@ describe('grader runs in one audit session', () => {
       ['started', 2],
       ['completed', 2],
     ]);
+  });
+
+  it('records each owned file by the digest of its reference and admits ownership stored as file references', async () => {
+    const auditIdentifier = 'audit-run-recorded-by-references';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        `${auditIdentifier}-token`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const upstream = graderUpstream(() => 200);
+    const tiles = await uploadTiles(env, session.accessToken, 2);
+    const record = await storedRunSession(env, auditIdentifier);
+    expect(record.fileIdentifiers).toHaveLength(2);
+    for (const digest of record.fileIdentifiers) {
+      expect(digest).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+      expect(tiles).not.toContain(digest);
+    }
+
+    await storageFor(env, auditIdentifier).put('session', { ...record, fileIdentifiers: tiles });
+
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    expect(upstream.inferenceCalls()).toBe(1);
   });
 
   it('writes the totals and run upload count that rolled-back workers enforce their limits from', async () => {
@@ -2411,7 +2513,11 @@ describe('grader runs in one audit session', () => {
       auditIdentifier,
       () => 200,
     );
-    await storeWithoutRuns(env, auditIdentifier, { completedAttempts: 2, messageCount: 2 });
+    await storeWithoutRuns(env, auditIdentifier, {
+      completedAttempts: 2,
+      messageCount: 2,
+      fileReferences: tiles,
+    });
 
     await refusedForExhaustedAttempts(worker.fetch(messageRequest(accessToken, tiles), env));
     await refusedForExhaustedAttempts(
@@ -2422,21 +2528,459 @@ describe('grader runs in one audit session', () => {
     expect(upstream.callbacks).toEqual([]);
   });
 
-  it('holds one run to its planned proposal inferences times the headroom', async () => {
+  it('holds one run to 66 proposal inferences, its worst-case plan times the headroom', async () => {
     const env = durableEnv();
     const session = await exchange(env);
     graderUpstream(() => 503);
     const tiles = await uploadTiles(env, session.accessToken, 1);
-    const ceiling = PLANNED_AUDIT_RUN.inferences * Number(env.AUDIT_RUN_HEADROOM);
 
-    for (let inference = 1; inference <= ceiling; inference += 1) {
+    for (let inference = 1; inference <= 66; inference += 1) {
       const response = await worker.fetch(messageRequest(session.accessToken, tiles), env);
       expect(response.status, `inference ${inference}`).toBe(503);
     }
     const refused = await worker.fetch(messageRequest(session.accessToken, tiles), env);
     expect(refused.status).toBe(429);
-    expect(((await refused.json()) as { Message: string }).Message).toBe(
-      'The grader run limit has been reached.',
+    expect(await refused.json()).toMatchObject({
+      Message: 'The grader run limit has been reached.',
+      ExceptionType: 'AuditQuotaException',
+    });
+  });
+
+  it('lets two worst-case Studio-capture runs, each with every resend and per-page retry, through one session', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    const upstream = graderUpstream(
+      (inference) =>
+        ((inference - 1) % RUN_MESSAGES) + 1 < WHOLE_STORE_SENDS * CALLS_PER_SEND ? 503 : 200,
+      () => false,
+      JSON.stringify({
+        pages: Object.fromEntries(GRADER_PAGES.map((page) => [page, { boxes: [] }])),
+      }),
     );
+
+    for (let run = 1; run <= 2; run += 1) {
+      const tiles = await uploadTiles(env, session.accessToken, GRADER_PAGES.length * 2 * 24);
+      for (let send = 1; send <= WHOLE_STORE_SENDS * CALLS_PER_SEND; send += 1) {
+        const response = await worker.fetch(
+          messageRequest(session.accessToken, tiles, wholeStoreManifest()),
+          env,
+        );
+        expect(response.status, `run ${run} whole-store call ${send}`).toBe(
+          send < WHOLE_STORE_SENDS * CALLS_PER_SEND ? 503 : 200,
+        );
+      }
+      for (const [index, page] of GRADER_PAGES.entries()) {
+        const pageTiles = tiles.slice(index * 48, (index + 1) * 48);
+        for (let call = 1; call <= CALLS_PER_SEND; call += 1) {
+          const response = await worker.fetch(
+            messageRequest(
+              session.accessToken,
+              pageTiles,
+              `PAGE: ${page}\nCANDIDATE ANCHORS: 1..6`,
+              'onboarding-batch',
+            ),
+            env,
+          );
+          expect(response.status, `run ${run} ${page} call ${call}`).toBe(200);
+        }
+      }
+    }
+
+    expect(upstream.uploadCalls()).toBe(2 * 240);
+    expect(upstream.inferenceCalls()).toBe(2 * RUN_MESSAGES);
+    const third = await worker.fetch(uploadRequest(session.accessToken, 'third.webp'), env);
+    expect(third.status).toBe(429);
+    expect(await third.json()).toMatchObject({
+      Message: 'This public grader has no attempts remaining.',
+      ExceptionType: 'AuditQuotaException',
+    });
+  }, 30_000);
+
+  it('holds a session to 2688 uploads, four worst-case runs times the headroom, one run owning them all inside the Durable Object entry limit', async () => {
+    const auditIdentifier = 'audit-session-upload-allowance';
+    const env = durableEnv();
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        `${auditIdentifier}-token`,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+    );
+    const upstream = graderUpstream(() => 200);
+
+    const tiles = await uploadTiles(env, session.accessToken, 2688);
+    const refused = await worker.fetch(uploadRequest(session.accessToken, 'over.webp'), env);
+
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({
+      Message: 'The grader run limit has been reached.',
+      ExceptionType: 'AuditQuotaException',
+    });
+    expect(upstream.uploadCalls()).toBe(2688);
+    const proposal = await worker.fetch(
+      messageRequest(session.accessToken, [...tiles.slice(0, 1), ...tiles.slice(-1)]),
+      env,
+    );
+    expect(proposal.status).toBe(200);
+    expect(storageFor(env, auditIdentifier).largestEntryBytes).toBeLessThan(
+      DURABLE_OBJECT_ENTRY_LIMIT_BYTES / 4,
+    );
+  }, 30_000);
+
+  it('admits a whole-store proposal naming every tile of a worst-case seven-page run', async () => {
+    const env = durableEnv();
+    const session = await exchange(env);
+    graderUpstream(() => 200);
+    const tiles = await uploadTiles(env, session.accessToken, 7 * 2 * 24);
+
+    const proposal = await worker.fetch(
+      messageRequest(session.accessToken, tiles, wholeStoreManifest(7)),
+      env,
+    );
+
+    expect(proposal.status).toBe(200);
+  });
+});
+
+describe('audit plan versions', () => {
+  const PLAN_VERSION_HEADER = 'X-LimeSpot-Audit-Plan-Version';
+
+  interface CountingUpstream {
+    readonly uploads: () => number;
+    readonly inferences: () => number;
+  }
+
+  function countingUpstream(): CountingUpstream {
+    let uploads = 0;
+    let inferences = 0;
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    stubFetch().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+      if (url.endsWith('/v1/files')) {
+        uploads += 1;
+        return json(anthropicFileRecord(crypto.randomUUID()));
+      }
+      inferences += 1;
+      return json(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }]));
+    });
+    return { uploads: () => uploads, inferences: () => inferences };
+  }
+
+  function exchangeRequest(activation: string, planVersion: string | undefined): Request {
+    return declaring(
+      new Request('https://app-ai.test/audit/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: activation, storeUrl: `${STORE_ORIGIN}/` }),
+      }),
+      planVersion,
+    );
+  }
+
+  function declaring(request: Request, planVersion: string | undefined): Request {
+    if (planVersion !== undefined) request.headers.set(PLAN_VERSION_HEADER, planVersion);
+    return request;
+  }
+
+  async function auditActivation(env: Env, auditIdentifier: string): Promise<string> {
+    return activationToken(
+      env,
+      `${auditIdentifier}-token`,
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      auditIdentifier,
+    );
+  }
+
+  async function expectUnsupportedPlan(response: Response, label: string): Promise<void> {
+    expect(response.status, label).toBe(409);
+    expect(await response.json(), label).toEqual({
+      Message: 'This grader version is not supported. Update the LimeSpot extension and try again.',
+      ExceptionType: 'AuditPlanVersionException',
+      MessageDetail: 'audit_plan_version_unsupported',
+    });
+  }
+
+  for (const [label, planVersion] of [
+    ['plan version 1', '1'],
+    ['no plan version', undefined],
+  ] as const) {
+    it(`admits a grader naming ${label} through exchange, upload and inference`, async () => {
+      const env = durableEnv();
+      const upstream = countingUpstream();
+
+      const exchanged = await worker.fetch(
+        exchangeRequest(
+          await auditActivation(env, `audit-plan-${planVersion ?? 'none'}`),
+          planVersion,
+        ),
+        env,
+      );
+      expect(exchanged.status).toBe(201);
+      const { accessToken } = (await exchanged.json()) as { accessToken: string };
+      const upload = await worker.fetch(
+        declaring(uploadRequest(accessToken, 'tile.webp'), planVersion),
+        env,
+      );
+      expect(upload.status).toBe(200);
+      const { id } = (await upload.json()) as { id: string };
+      const proposal = await worker.fetch(
+        declaring(messageRequest(accessToken, [id]), planVersion),
+        env,
+      );
+
+      expect(proposal.status).toBe(200);
+      expect(upstream.uploads()).toBe(1);
+      expect(upstream.inferences()).toBe(1);
+    });
+  }
+
+  it('holds a grader naming no plan version to the same 66-inference run ceiling as plan version 1', async () => {
+    const env = durableEnv();
+    countingUpstream();
+    const session = await exchange(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+
+    for (const planVersion of ['1', undefined]) {
+      const response = await worker.fetch(
+        declaring(messageRequest(session.accessToken, tiles), planVersion),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+    for (let inference = 3; inference <= 66; inference += 1) {
+      const response = await worker.fetch(messageRequest(session.accessToken, tiles), env);
+      expect(response.status, `inference ${inference}`).toBe(200);
+    }
+    const refused = await worker.fetch(messageRequest(session.accessToken, tiles), env);
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ ExceptionType: 'AuditQuotaException' });
+  });
+
+  it('refuses a plan version this worker holds no allowance for with 409, before the exchange consumes its activation or a request reserves quota', async () => {
+    const auditIdentifier = 'audit-plan-unsupported';
+    const env = durableEnv();
+    const upstream = countingUpstream();
+    const activation = await auditActivation(env, auditIdentifier);
+
+    await expectUnsupportedPlan(
+      await worker.fetch(exchangeRequest(activation, '2'), env),
+      'exchange',
+    );
+    const exchanged = await worker.fetch(exchangeRequest(activation, '1'), env);
+    expect(exchanged.status).toBe(201);
+    const { accessToken } = (await exchanged.json()) as { accessToken: string };
+
+    for (const planVersion of ['2', '0', '01', '1.0', 'v1', '']) {
+      await expectUnsupportedPlan(
+        await worker.fetch(declaring(uploadRequest(accessToken, 'tile.webp'), planVersion), env),
+        `upload naming "${planVersion}"`,
+      );
+    }
+    const upload = await worker.fetch(declaring(uploadRequest(accessToken, 'tile.webp'), '1'), env);
+    expect(upload.status).toBe(200);
+    const { id } = (await upload.json()) as { id: string };
+    await expectUnsupportedPlan(
+      await worker.fetch(declaring(messageRequest(accessToken, [id]), '2'), env),
+      'inference',
+    );
+
+    expect(upstream.uploads()).toBe(1);
+    expect(upstream.inferences()).toBe(0);
+    expect(
+      await storageFor(env, auditIdentifier).get<Record<string, unknown>>('session'),
+    ).toMatchObject({ uploadCount: 1, runUploads: 1, runInferences: 0, pending: {} });
+  });
+
+  it('lets a browser preflight carry the plan version header', async () => {
+    const preflight = await worker.fetch(
+      new Request('https://app-ai.test/files', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: STORE_ORIGIN,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': `authorization, ${PLAN_VERSION_HEADER.toLowerCase()}`,
+        },
+      }),
+      durableEnv(),
+    );
+
+    expect(preflight.headers.get('Access-Control-Allow-Headers')?.split(', ')).toContain(
+      PLAN_VERSION_HEADER,
+    );
+  });
+});
+
+describe('audit session record bounds', () => {
+  const LONGEST_AUDIT_IDENTIFIER = `audit-${'x'.repeat(122)}`;
+  const SESSION_SECONDS = 1800;
+
+  interface OutageUpstream {
+    readonly inferences: () => number;
+    readonly endOutage: () => void;
+  }
+
+  function outageUpstream(): OutageUpstream {
+    let outage = true;
+    let inferences = 0;
+    stubFetch().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) {
+        return new Response(null, { status: outage ? 503 : 204 });
+      }
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      inferences += 1;
+      return new Response(
+        JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'unavailable' } }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    return {
+      inferences: () => inferences,
+      endOutage: () => {
+        outage = false;
+      },
+    };
+  }
+
+  async function exchangeFor(env: Env, tokenIdentifier: string): Promise<string> {
+    const session = await exchange(
+      env,
+      await activationToken(
+        env,
+        tokenIdentifier,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        LONGEST_AUDIT_IDENTIFIER,
+      ),
+    );
+    return session.accessToken;
+  }
+
+  async function expectBacklog(response: Response): Promise<void> {
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      Message: 'The grader is still delivering earlier status updates. Try again in a few minutes.',
+      ExceptionType: 'AuditSessionBacklogException',
+    });
+  }
+
+  it('refuses new work before a callback outage across reissued sessions at maximum inference churn carries the record to the entry limit, and resumes once delivery drains it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
+    const env = durableEnv();
+    const upstream = outageUpstream();
+    let refused: { kind: 'upload' | 'message'; accessToken: string; tiles: string[] } | null = null;
+    let sessions = 0;
+
+    while (refused === null && sessions < 12) {
+      sessions += 1;
+      const accessToken = await exchangeFor(env, `outage-session-${sessions}`);
+      for (let run = 1; run <= 4 && refused === null; run += 1) {
+        const upload = await worker.fetch(
+          uploadRequest(accessToken, `session-${sessions}-run-${run}.webp`),
+          env,
+        );
+        if (upload.status === 503) {
+          await expectBacklog(upload);
+          refused = { kind: 'upload', accessToken, tiles: [] };
+          break;
+        }
+        expect(upload.status, `session ${sessions} run ${run} upload`).toBe(200);
+        const tiles = [((await upload.json()) as { id: string }).id];
+        for (let inference = 1; inference <= 66; inference += 1) {
+          const before = upstream.inferences();
+          const response = await worker.fetch(messageRequest(accessToken, tiles), env);
+          if (response.status === 503) {
+            await expectBacklog(response);
+            expect(upstream.inferences()).toBe(before);
+            refused = { kind: 'message', accessToken, tiles };
+            break;
+          }
+          expect(response.status, `session ${sessions} run ${run} inference ${inference}`).toBe(
+            502,
+          );
+        }
+        await deliverStatusEvents(env);
+      }
+      if (refused === null) {
+        vi.setSystemTime(Date.now() + (SESSION_SECONDS + 1) * 1000);
+        await deliverStatusEvents(env);
+      }
+    }
+
+    expect(refused, 'the record never reached its budget').not.toBeNull();
+    expect(sessions).toBeGreaterThan(1);
+    const storage = storageFor(env, LONGEST_AUDIT_IDENTIFIER);
+    expect(storage.largestEntryBytes).toBeLessThan(DURABLE_OBJECT_ENTRY_LIMIT_BYTES * 0.6);
+    const backlog = await storage.get<{ statusOutbox: unknown[] }>('session');
+    expect(backlog?.statusOutbox.length).toBeGreaterThan(528);
+
+    upstream.endOutage();
+    vi.setSystemTime(Date.now() + 61_000);
+    await deliverStatusEvents(env);
+    expect((await storage.get<{ statusOutbox: unknown[] }>('session'))?.statusOutbox).toEqual([]);
+
+    if (refused === null) throw new Error('unreachable');
+    const resumed =
+      refused.kind === 'upload'
+        ? await worker.fetch(uploadRequest(refused.accessToken, 'resumed.webp'), env)
+        : await worker.fetch(messageRequest(refused.accessToken, refused.tiles), env);
+    expect(resumed.status).toBe(refused.kind === 'upload' ? 200 : 502);
+  }, 120_000);
+
+  it('keeps the latest 1,024 consumed activations, more than one activation lifetime can exchange', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'));
+    const env = durableEnv();
+    outageUpstream();
+    await exchangeFor(env, 'retention-first');
+    const storage = storageFor(env, LONGEST_AUDIT_IDENTIFIER);
+    const record = await storage.get<Record<string, unknown>>('session');
+    await storage.put('session', {
+      ...record,
+      consumedActivationIdentifiers: Array.from(
+        { length: 1024 },
+        (_, index) => `seeded-activation-${index}`,
+      ),
+    });
+
+    vi.setSystemTime(Date.now() + (SESSION_SECONDS + 1) * 1000);
+    const freshToken = await activationToken(
+      env,
+      'retention-fresh',
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      LONGEST_AUDIT_IDENTIFIER,
+    );
+    await exchange(env, freshToken);
+
+    const kept = (await storage.get<{ consumedActivationIdentifiers: string[] }>('session'))
+      ?.consumedActivationIdentifiers;
+    expect(kept).toHaveLength(1024);
+    expect(kept?.[0]).toBe('seeded-activation-1');
+    expect(kept?.at(-1)).toBe('retention-fresh');
+    const replay = await worker.fetch(
+      new Request('https://app-ai.test/audit/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: freshToken, storeUrl: `${STORE_ORIGIN}/` }),
+      }),
+      env,
+    );
+    expect(replay.status).toBe(409);
   });
 });

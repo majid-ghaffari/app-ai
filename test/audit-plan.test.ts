@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   auditRunCeiling,
+  GRADER_TILES_PER_WIDTH,
   PLANNED_AUDIT_RUN,
   PROPOSAL_PAGE_VOCABULARY,
 } from '../src/lib/audit-plan';
@@ -21,16 +22,20 @@ describe('grader run plan', () => {
     expect(pageVocabulary(onboardingBatch)).toEqual([...PROPOSAL_PAGE_VOCABULARY]);
   });
 
-  it('plans every page at both widths and two tiles a width, a recapture adding no upload', () => {
-    expect(PLANNED_AUDIT_RUN.uploads).toBe(PROPOSAL_PAGE_VOCABULARY.length * 2 * 2);
+  it("plans the most tiles Studio's capture cuts one width of a page into", () => {
+    expect(GRADER_TILES_PER_WIDTH).toBe(24);
   });
 
-  it('plans one proposal, repaired at most twice and sent at most twice', () => {
-    expect(PLANNED_AUDIT_RUN.inferences).toBe(6);
+  it('plans every page at both widths with that many tiles, a recapture adding no upload', () => {
+    expect(PLANNED_AUDIT_RUN.uploads).toBe(7 * 2 * 24);
+  });
+
+  it('plans four whole-store sends and a per-page retry of every page, each repaired at most twice', () => {
+    expect(PLANNED_AUDIT_RUN.inferences).toBe((1 + 2) * (4 + 7));
   });
 
   it('holds one run to the plan times the deployment headroom', () => {
-    expect(auditRunCeiling(ENV)).toEqual({ uploads: 56, inferences: 12 });
+    expect(auditRunCeiling(ENV)).toEqual({ uploads: 672, inferences: 66 });
     expect(auditRunCeiling({ ...ENV, AUDIT_RUN_HEADROOM: '1' })).toEqual(PLANNED_AUDIT_RUN);
   });
 });

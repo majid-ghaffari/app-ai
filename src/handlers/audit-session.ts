@@ -1,7 +1,7 @@
 /** POST /audit/session/exchange — trade a website activation token for a scoped audit session. */
 
 import type { Env } from '../config';
-import { exchangeAuditActivation } from '../lib/audit-auth';
+import { assertSupportedAuditPlan, exchangeAuditActivation } from '../lib/audit-auth';
 import { jsonResponse, WorkerError, type CorsHeaders } from '../lib/responses';
 
 /** Handle an audit-session exchange without exposing signing material to the extension. */
@@ -10,6 +10,7 @@ export async function handleAuditSessionExchange(
   env: Env,
   corsHeaders: CorsHeaders,
 ): Promise<Response> {
+  assertSupportedAuditPlan(request);
   let body: { activationToken?: unknown; storeUrl?: unknown };
   try {
     body = (await request.json()) as { activationToken?: unknown; storeUrl?: unknown };

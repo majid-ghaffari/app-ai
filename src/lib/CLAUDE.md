@@ -69,9 +69,17 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   `ls_audit_` bearer, the `AuditSessionAuthority` Durable Object, and these file
   names. The human-readable text of an error body names the feature `grader`,
   because a person reads it.
+- The grader plan is a versioned contract with lib. `audit-plan.ts` keeps
+  `SUPPORTED_AUDIT_PLAN_VERSIONS` beside the plan values, and `audit-auth.ts`
+  refuses an exchange, upload or inference whose `X-LimeSpot-Audit-Plan-Version`
+  names any other value with 409 `AuditPlanVersionException` /
+  `audit_plan_version_unsupported`, before it consumes an activation or reserves
+  quota. A request naming no version uses the current plan. A lib change to a mirrored plan input is a new
+  version, added here with its allowance before the client ships it.
 - The Grader conductor is never held to a fixed count. `audit-plan.ts` derives one
   run's abuse ceiling from the grader plan — the proposal prompts' page vocabulary,
-  both widths, the tiles a width takes, and the proposal's repairs and sends — times
+  both widths, the most tiles Studio's capture cuts a width into, and the
+  proposal's whole-store sends, per-page retries and repairs — times
   `AUDIT_RUN_HEADROOM`; a recapture adds no upload, because lib uploads only a
   capture that returned an image. `test/audit-plan.test.ts` pins the vocabulary to
   the prompt text. `audit-session-authority.ts` holds inference requests to that
@@ -97,7 +105,12 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   successful uploads, with its pending ones, hold its upload allowance; the
   record also keeps the byte and inference totals and each run's upload count
   that earlier worker versions enforce their limits from, so a rollback still
-  holds live sessions to them. The model is stated in
+  holds live sessions to them. The session record is one Durable Object entry and
+  stays inside its 2 MB limit: a run owns each file as the SHA-256 digest of its
+  reference (a stored file reference is accepted too), a reservation is refused
+  with 503 `AuditSessionBacklogException` while the stored record serializes past
+  1 MB, and the record keeps only the latest 1,024 consumed activation
+  identifiers and two sessions' worth of abandoned reservation identifiers. The model is stated in
   `docs/AUDIT-AUTH.md`.
 - A separately addressed `AuditSessionAuthority` instance is the strongly consistent UTC-day
   counter for the master-only protected visual route. It determines the current UTC date inside

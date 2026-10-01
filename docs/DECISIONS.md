@@ -914,8 +914,9 @@ app-ai no longer holds a legitimate run to any fixed number.
 
 What remains is of two kinds. The abuse ceiling exists because a session key can be lifted from the
 browser. It is derived in `src/lib/audit-plan.ts` from the plan the conductor
-follows — the page vocabulary the proposal prompts plan, both widths, the tiles a width takes, and
-the proposal's bounded repairs and sends — times a configured headroom. A recapture is not a second
+follows — the page vocabulary the proposal prompts plan, both widths, every tile Studio's capture
+cuts a width into, and the proposal's bounded sends, per-page retries and repairs — times a
+configured headroom. A recapture is not a second
 upload: lib uploads a width's capture only when it returned an image and recaptures only a width
 that returned none. It follows the
 prompt vocabulary rather than a configured number, so a conductor that audits another page kind
@@ -939,6 +940,13 @@ per-run upload count let two such attempts of a 7-page store exhaust the run bef
 the model. The upload allowance is therefore the session's: `AUDIT_MAX_RUNS` times the per-run
 planned uploads times the headroom, the same total a session could upload before, drawn on by
 every attempt in any run until it is spent.
+
+The plan mirrors lib's capture and retry behavior, so it is a versioned contract rather than a
+silent copy. The client names its plan in `X-LimeSpot-Audit-Plan-Version`, and app-ai refuses one it
+holds no allowance for with 409 at the exchange, before any run starts, instead of letting the run
+meet a 429 partway through or admitting it against a stale allowance. A version cannot give a worker
+capacity it lacks, so the worker still deploys before the client that sends a new version. A
+request naming no version uses the current plan, so a client that sends no header keeps working.
 
 ### One upstream inference deadline, owned by app-ai
 

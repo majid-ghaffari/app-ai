@@ -23,6 +23,7 @@ import {
   reserveAuditAuthorityRequest,
   type AuditAuthorityReservation,
 } from './audit-session-authority';
+import { AUDIT_PLAN_VERSION_HEADER, isSupportedAuditPlanVersion } from './audit-plan';
 import { WorkerError } from './responses';
 import { isSameStoreOrigin } from './store-origin';
 import {
@@ -178,6 +179,7 @@ export async function authorizeAuditRequest(
   if (!isAuditSessionClaims(claims)) throw unauthorized('The grader session token is invalid.');
   assertTemporalClaims(claims.issuedAt, claims.expiresAt);
   assertRequestStoreOrigin(request, claims.storeOrigin);
+  assertSupportedAuditPlan(request);
 
   const url = new URL(request.url);
   if (request.method !== 'POST' || (url.pathname !== '/files' && url.pathname !== '/messages')) {
@@ -572,6 +574,19 @@ function normalizeStoreOrigin(storeUrl: string): string {
     throw invalidArgument('The store URL must be an HTTPS storefront origin.');
   }
   return url.origin;
+}
+
+/** Refuse a grader request that names an audit plan this worker holds no allowance for. */
+export function assertSupportedAuditPlan(request: Request): void {
+  if (isSupportedAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER))) return;
+  throw new WorkerError(
+    'This grader version is not supported. Update the LimeSpot extension and try again.',
+    {
+      status: 409,
+      exceptionType: 'AuditPlanVersionException',
+      messageDetail: 'audit_plan_version_unsupported',
+    },
+  );
 }
 
 function assertRequestStoreOrigin(request: Request, storeOrigin: string): void {

@@ -13,6 +13,7 @@
 import { auditMaxRuns, auditSessionAuthority, type Env } from '../config';
 import { auditRunCeiling } from './audit-plan';
 import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline';
+import { base64UrlEncode } from '../inference/token-sealing';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
 import { createLoggingRuntime } from './logger';
 import { WorkerError } from './responses';
@@ -24,6 +25,8 @@ import {
 
 const SESSION_STORAGE_KEY = 'session';
 const CALLBACK_RETRY_MILLISECONDS = 60_000;
+const SESSION_RECORD_BUDGET_BYTES = 1_000_000;
+const RETAINED_ACTIVATION_IDENTIFIERS = 1_024;
 
 /**
  * How long past its inference deadline a reservation stays open, so a result the model returned
@@ -215,6 +218,12 @@ export async function reserveAuditAuthorityRequest(
   if (response.status === 402) throw quotaError('This public grader has no attempts remaining.');
   if (response.status === 410) throw quotaError('This grader session has no retries remaining.');
   if (response.status === 429) throw quotaError('The grader run limit has been reached.');
+  if (response.status === 503) {
+    throw new WorkerError(
+      'The grader is still delivering earlier status updates. Try again in a few minutes.',
+      { status: 503, exceptionType: 'AuditSessionBacklogException' },
+    );
+  }
   assertAuthoritySuccess(response);
   return {
     auditIdentifier: input.auditIdentifier,
@@ -315,7 +324,7 @@ export class AuditSessionAuthority implements DurableObject {
         abandonedReservations: expired?.abandonedReservations ?? [],
         statusOutbox: expired?.statusOutbox ?? [],
       };
-      await storage.put(SESSION_STORAGE_KEY, session);
+      await this.writeSession(storage, session);
       return 201;
     });
     if (status === 201) await this.scheduleAlarm();
@@ -323,10 +332,17 @@ export class AuditSessionAuthority implements DurableObject {
   }
 
   private async reserve(input: ReserveInput): Promise<Response> {
+    const referencedFiles = await Promise.all(
+      input.referencedFileIdentifiers.map(async (reference) => ({
+        reference,
+        digest: await fileReferenceDigest(reference),
+      })),
+    );
     const status = await this.state.storage.transaction(async (storage) => {
       const stored = await readSession(storage);
       if (!stored || !matchesSession(stored, input)) return 401;
       if (stored.pending[input.reservationIdentifier]) return 200;
+      if (serializedBytes(stored) > SESSION_RECORD_BUDGET_BYTES) return 503;
       const ceiling = auditRunCeiling(this.env);
 
       if (input.kind === 'upload') {
@@ -341,7 +357,7 @@ export class AuditSessionAuthority implements DurableObject {
         );
         const sessionUploads = ceiling.uploads * auditMaxRuns(this.env);
         if (session.uploadCount + pendingUploads.length >= sessionUploads) return 429;
-        await storage.put(SESSION_STORAGE_KEY, {
+        await this.writeSession(storage, {
           ...session,
           pending: {
             ...session.pending,
@@ -362,11 +378,13 @@ export class AuditSessionAuthority implements DurableObject {
       if (!stored.runCompleted && publicAttemptsExhausted(stored)) return 402;
       const attemptNumber = stored.completedAttempts + 1;
       const owned = new Set(stored.fileIdentifiers);
-      if (input.referencedFileIdentifiers.some((identifier) => !owned.has(identifier))) {
+      if (
+        referencedFiles.some(({ reference, digest }) => !owned.has(digest) && !owned.has(reference))
+      ) {
         return 403;
       }
       const session = abandonPendingInferences(stored);
-      await storage.put(SESSION_STORAGE_KEY, {
+      await this.writeSession(storage, {
         ...session,
         runInferences: session.runInferences + 1,
         runInferenceStarted: true,
@@ -424,6 +442,10 @@ export class AuditSessionAuthority implements DurableObject {
   }
 
   private async finalize(input: FinalizeInput): Promise<Response> {
+    const ownedFile =
+      typeof input.fileIdentifier === 'string' && input.fileIdentifier.length > 0
+        ? await fileReferenceDigest(input.fileIdentifier)
+        : undefined;
     const status = await this.state.storage.transaction(async (storage) => {
       const session = await readSession(storage);
       if (!session) return 401;
@@ -445,8 +467,8 @@ export class AuditSessionAuthority implements DurableObject {
       const uploaded = input.succeeded && reservation.kind === 'upload' && ownSession;
       const uploadSucceeded = uploaded && currentRun;
       const fileIdentifiers =
-        uploadSucceeded && input.fileIdentifier
-          ? [...new Set([...session.fileIdentifiers, input.fileIdentifier])]
+        uploadSucceeded && ownedFile
+          ? [...new Set([...session.fileIdentifiers, ownedFile])]
           : session.fileIdentifiers;
       const completesRun =
         input.succeeded &&
@@ -473,7 +495,7 @@ export class AuditSessionAuthority implements DurableObject {
           ),
         );
       }
-      await storage.put(SESSION_STORAGE_KEY, {
+      await this.writeSession(storage, {
         ...session,
         completedAttempts: session.completedAttempts + (completesAttempt ? 1 : 0),
         uploadCount: session.uploadCount + (uploaded ? 1 : 0),
@@ -502,7 +524,7 @@ export class AuditSessionAuthority implements DurableObject {
       const session = await readSession(storage);
       if (!session) return;
       const released = releaseLapsedReservations(releaseExpiredSession(session, now), Date.now());
-      if (released !== session) await storage.put(SESSION_STORAGE_KEY, released);
+      if (released !== session) await this.writeSession(storage, released);
     });
   }
 
@@ -539,6 +561,22 @@ export class AuditSessionAuthority implements DurableObject {
       });
       if (delivery === 'retry') return;
     }
+  }
+
+  private async writeSession(
+    storage: DurableObjectStorage | DurableObjectTransaction,
+    session: SessionRecord,
+  ): Promise<void> {
+    const ceiling = auditRunCeiling(this.env);
+    const reservationsPerSession = auditMaxRuns(this.env) * (ceiling.uploads + ceiling.inferences);
+    await storage.put(SESSION_STORAGE_KEY, {
+      ...session,
+      consumedActivationIdentifiers: latest(
+        session.consumedActivationIdentifiers,
+        RETAINED_ACTIVATION_IDENTIFIERS,
+      ),
+      abandonedReservations: latest(session.abandonedReservations, 2 * reservationsPerSession),
+    } satisfies SessionRecord);
   }
 
   private async scheduleAlarm(): Promise<void> {
@@ -746,6 +784,19 @@ function withAdmittingOrigin(
       reservation.storeOrigin === undefined ? { ...reservation, storeOrigin } : reservation,
     ]),
   );
+}
+
+function latest(entries: readonly string[], retained: number): readonly string[] {
+  return entries.length > retained ? entries.slice(entries.length - retained) : entries;
+}
+
+function serializedBytes(session: SessionRecord): number {
+  return new TextEncoder().encode(JSON.stringify(session)).byteLength;
+}
+
+async function fileReferenceDigest(fileReference: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(fileReference));
+  return base64UrlEncode(new Uint8Array(digest));
 }
 
 function authorityStub(auditIdentifier: string, env: Env): DurableObjectStub {

@@ -110,6 +110,8 @@ or changes the inference response.
 - The audit exchange and `ls_audit_…` bearer branch are the deliberate alternate
   auth path. They never call Brain and can dispatch only `POST /files` and
   `POST /messages` for its explicit onboarding proposal and QC prompt allowlist.
+  The exchange refuses an unsupported `X-LimeSpot-Audit-Plan-Version` before it
+  reads the activation.
 - AI tools are consumed ONLY through the toolset registry
   (`../toolsets/registry.ts`): each endpoint passes the subscriber's available
   integration parties and AI-tool capabilities and treats the composition as
