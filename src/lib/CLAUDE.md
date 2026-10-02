@@ -74,8 +74,10 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   refuses an exchange, upload or inference whose `X-LimeSpot-Audit-Plan-Version`
   names any other value with 409 `AuditPlanVersionException` /
   `audit_plan_version_unsupported`, before it consumes an activation or reserves
-  quota. A request naming no version uses the current plan. A lib change to a mirrored plan input is a new
-  version, added here with its allowance before the client ships it.
+  quota. A request naming no version follows plan 1. A lib change to a mirrored plan input is a new
+  version, added here with its allowance before the client ships it. Plan version 2 keeps version
+  1's capture plan and adds the Grader chat, held to `GRADER_CHAT_MESSAGE_CEILING` messages an audit
+  above any configured allowance.
 - The Grader conductor is never held to a fixed count. `audit-plan.ts` derives one
   run's abuse ceiling from the grader plan — the proposal prompts' page vocabulary,
   both widths, the most tiles Studio's capture cuts a width into, and the
@@ -120,3 +122,76 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   inference request carries quota class separately from caller metadata. The internal
   request's `limit` member is the class's effective ceiling; a request carrying only `limit` is
   admitted as an acceptance reservation with no reserve.
+- The Grader chat is audit traffic with its own accounting. `audit-auth.ts` answers a `grader-chat`
+  selector with an unreserved `GraderChatAuthorization` after the switch, plan, and strict body
+  checks; the handler reserves and finalizes it. Inside `audit-session-authority.ts` the chat keeps
+  `chatMessages`, `chatReplies`, `chatInFlight`, `chatAnswered` and `chatSettlements` apart from
+  `pending`, so no chat message is a run inference, an attempt, an upload, a status event, or a
+  superseded proposal, and no proposal ever releases a chat message. Chat opens only on a run whose
+  analysis completed. The chat state belongs to the audit, like the completion ledger: neither a
+  retry, an expiry, nor a superseding exchange resets it, so no reopened link restores a spent
+  message. Every assistant turn must match a stored transcript fingerprint of a reply this audit
+  was given.
+- A chat message is idempotent by the caller's `messageId`, bound to the audit and to a fingerprint
+  of the request's whole transcript. `chatAnswered` records each answered message identifier with
+  its transcript fingerprint and reservation, and its outcome — the `/messages` envelope, booklet
+  version and withheld flag — is stored under `chat-outcome:<messageId>` in the same transaction that
+  counts it, kept for `AUDIT_SESSION_TTL_SECONDS` and deleted by the alarm. A replay with the same
+  transcript returns that outcome with no reservation, inference or charge; the same identifier with
+  another transcript, or one whose outcome is gone, answers 400 `grader_chat_message_reused`; a
+  replay while the original is in flight answers 409 `grader_chat_busy`. A model failure answers
+  nothing, so its retry is admitted afresh.
+- Every model call is an attempt, apart from the answered allowance the visitor sees. The audit's
+  `chatAttempts` and the visitor's daily counter count each admitted message, answered or not, and
+  refuse past `GRADER_CHAT_ATTEMPTS_PER_ANSWER` (`audit-plan.ts`) times the audit's and the
+  visitor's daily allowance with 429 `grader_chat_attempt_limit`. A settlement names its outcome —
+  `answered`, `failed` once the model call began (aborted and lapsed messages included), or
+  `released` before any call — and only `released` refunds the attempt, so abandoning calls after
+  provider I/O begins cannot start unbounded paid calls.
+- Chat settlement spans three Durable Objects with no shared transaction, so the audit's ledger is
+  the authority. The message in flight names its reservation and visitor counter. Once the model
+  answered, `commitGraderChatMessage` counts the message, stores its reply fingerprint and outcome,
+  records it in `chatAnswered`, and appends a `chatSettlements` record that commits the visitor and
+  deployment counters, in one transaction, idempotent by the reservation and retried; the reply
+  leaves only after that lands. A message that produced no reply is released the same way: the
+  release removes it from flight and appends a settlement, `failed` or `released`, for both
+  counters. The handler settles and acknowledges either; the alarm settles whatever remains, a
+  minute later and each minute after, and drops a settlement older than a day. A message whose lease
+  lapses unanswered is released by the alarm, or by the next admission, with a settlement due at
+  once, and a commit for a reservation no longer in flight answers 410, which the handler returns as
+  504 `InferenceTimeoutException`, so each reservation is either committed or released, never both.
+- A valid new activation supersedes the audit's active session. `releaseSession` ends the old
+  session exactly as expiry does — run, files and totals go; completed attempts, leased
+  reservations, the outbox, consumed activations and chat state stay — and the record then names
+  only the new session, so the old bearer's next reservation answers 401 `audit_session_expired`.
+- The chat's daily limits live in `grader-chat-quota.ts`, on separately addressed
+  `AuditSessionAuthority` instances: `grader-chat-daily` and a `grader-chat-visitor:` instance named
+  by a day-scoped HMAC of `CF-Connecting-IP`, keyed from `TOKEN_ENCRYPTION_SECRET` — the raw address
+  is never stored or logged. A request captures its UTC day once, and that one value names the
+  visitor's counter and dates both holds; a counter whose own UTC day is another refuses the hold
+  with 421, and the handler releases what it took and admits the message again on the new day's
+  counters, so midnight never splits a visitor across two days. Every hold counts against its
+  counter's limit until it is explicitly committed or released, so a counter never admits past its
+  limit however late a settlement lands. Records an earlier worker stored — a flat single-day
+  counter, and an undated chat message in flight or settlement on the audit — are read and upgraded
+  wherever they are read. A counter keeps one entry per UTC day and settles a hold on its admitting
+  day's entry, so an answer that lands after midnight counts and alerts on that day; a past day
+  stays while it holds a message, until the end of the following day plus an hour. The deployment
+  counter decides each volume-alert threshold inside its transaction and queues it in its own outbox
+  under a day-qualified id, `YYYY-MM-DD:<count>`, which the counter's alarm drains, settling exactly
+  that entry, through `grader-chat-alerts.ts`: a delivered or refused alert leaves, one that may
+  succeed later is retried each minute for up to a day, so a lost response never loses an alert. The
+  authority's log sites hand each Seq delivery to its state's `waitUntil`, so a log-only alert is
+  attached to the alarm event before its outbox entry settles. Every chat refusal is built by
+  `graderChatRefusal`, so its `MessageDetail` vocabulary has one owner.
+- `grader-chat-output.ts` is the Grader chat's link guard, the one deterministic check on a reply,
+  read after NFKC folding, invisible-character removal and mapping WHATWG dot equivalents to `.`.
+  Three paths decide every link-like target: any URI-shaped token — a letter-first scheme, a colon
+  and then any non-whitespace character — is withheld by structure, never by a scheme list, unless it is an
+  `http`/`https` URL the WHATWG `URL` parser reads with no credentials, no backslash in its authority
+  and a limespot.com host (bare hostnames, Markdown targets and bracketed IPv6 literals go through
+  the same `URL` rule), or a `mailto:` link to exactly one recipient at limespot.com with no query
+  and no `%` (plain email addresses follow that exact-recipient rule). Any four dot-separated octets
+  withhold the reply, and so does an unfinished or empty one. It judges no claim: what the chat may
+  claim is the boundaries prompt's to govern, grounded in the booklet, beside the "AI can make
+  mistakes" disclaimer lib shows in the chat UI.

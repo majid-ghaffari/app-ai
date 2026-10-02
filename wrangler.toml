@@ -71,6 +71,8 @@ local_protocol = "http"
 #     AUDIT_ACTIVATION_SIGNING_SECRET — shared only with the limespot.com activation issuer.
 #     AUDIT_SESSION_SIGNING_SECRET — app-ai-only key for exchanged audit sessions.
 #     AUDIT_STATUS_SIGNING_SECRET — shared only with the limespot.com audit-status receiver.
+#     GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL — optional Slack incoming webhook the daily Grader chat
+#       volume alert is posted to; without it the alert is only logged. Never logged itself.
 #
 #   Logging:
 #     LOG_SEQ_API_KEY — optional Seq ingestion key. Anonymous ingestion is supported
@@ -138,7 +140,9 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 # The website signs the exact callback path into the token; this list is the set
 # of hosts app-ai will deliver a status event to.
 AUDIT_STATUS_ORIGINS = "https://limespot.com"
-AUDIT_SESSION_TTL_SECONDS = "1800"
+# A session, and the Grader chat with it, lasts 24 hours. A new activation for the same audit
+# supersedes the active session, so a visitor who lost theirs reopens from a fresh link.
+AUDIT_SESSION_TTL_SECONDS = "86400"
 # A session runs the Grader at most AUDIT_MAX_RUNS times: its first run and the
 # retries Studio offers. One abuse ceiling is derived from the grader plan
 # (src/lib/audit-plan.ts) times AUDIT_RUN_HEADROOM: each run's inference
@@ -149,6 +153,24 @@ AUDIT_MAX_RUNS = "4"
 AUDIT_RUN_HEADROOM = "2"
 AUDIT_MAX_UPLOAD_BYTES = "8000000"
 AUDIT_MAX_MESSAGE_BYTES = "1000000"
+
+# ── Grader chat (an audit session's sales chat about its own report) ──
+# On by default; GRADER_CHAT_ENABLED = "false" switches it off. Only a client declaring plan version 2
+# is offered it, so a published extension that sends plan 1 or no plan gets no chat. An audit is answered at most
+# GRADER_CHAT_MESSAGES_PER_AUDIT messages across all of its runs and sessions (plan version 2 holds it
+# at 50 or fewer; neither a retry nor a reopened link restores one); one hashed visitor network address and the whole deployment are
+# held to daily counts, and the deployment count raises an alert at every GRADER_CHAT_ALERT_EVERY
+# messages. The model is the grader-sales group's balanced tier, or MODEL_OVERRIDES
+# "grader-chat=<model>"; the effort applies only on a model that reasons.
+GRADER_CHAT_ENABLED = "true"
+GRADER_CHAT_MESSAGES_PER_AUDIT = "25"
+GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY = "50"
+GRADER_CHAT_MESSAGES_PER_DAY = "10000"
+GRADER_CHAT_MAX_INPUT_CHARACTERS = "500"
+GRADER_CHAT_MAX_REPLY_TOKENS = "600"
+GRADER_CHAT_EFFORT = "low"
+GRADER_CHAT_BOOKLET_VERSION = "1"
+GRADER_CHAT_ALERT_EVERY = "500"
 
 # ── Logging ──
 # Logging is level-routed entirely by configuration. Production sends durable QC
@@ -162,7 +184,7 @@ LOG_TARGETS_FATAL = "seq"
 LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"
 
 # Bundle system-prompt .md files as raw text at build time.
-# Workers have no runtime filesystem, so `import x from './prompts/chat.md'`
+# Workers have no runtime filesystem, so `import x from './prompts/placement.md'`
 # (and nested multi-file prompts like `./prompts/image-selection/prompt.md`)
 # must resolve to the file's string contents during esbuild. The `**/*.md` glob
 # matches prompt files at any depth, so both single-file and multi-file prompts

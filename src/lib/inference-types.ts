@@ -41,6 +41,8 @@ export interface ModelCapabilities {
   readonly clientTools: boolean;
   readonly reasoning: boolean;
   readonly inlineCacheBreakpoints: boolean;
+  /** Continues a multi-turn conversation of plain-text user and assistant turns. */
+  readonly textConversation: boolean;
 }
 
 /** Capability keys used when validating prompt requirements against a profile. */

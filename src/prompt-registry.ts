@@ -19,7 +19,13 @@ import {
   type FilePolicyName,
   type ModelProfileName,
 } from './inference/model-catalog';
-import { modelOverrides, resolveModel, type Env } from './config';
+import {
+  graderChatBookletVersion,
+  graderChatMaxReplyTokens,
+  modelOverrides,
+  resolveModel,
+  type Env,
+} from './config';
 
 export { getFilePolicy, listFilePolicies } from './inference/model-catalog';
 export type { FilePolicyName, ModelProfileName } from './inference/model-catalog';
@@ -56,6 +62,7 @@ export type PromptName =
   | 'image-selection'
   | 'chat'
   | 'billing-assistant'
+  | 'grader-chat'
   | 'onboarding-chat'
   | 'onboarding'
   | 'placement'
@@ -96,7 +103,8 @@ export type PromptGroupName =
   | 'website-analysis-visual'
   | 'website-industry'
   | 'analytics-narrative'
-  | 'billing-narrative';
+  | 'billing-narrative'
+  | 'grader-sales';
 
 /** A prompt group's routing and file-compatibility contract. */
 export interface PromptGroupDefinition {
@@ -186,6 +194,10 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
     tier: 'balanced',
     requirements: ['streaming'],
   },
+  'grader-sales': {
+    tier: 'balanced',
+    requirements: ['textConversation'],
+  },
 };
 
 /**
@@ -209,6 +221,9 @@ export const ONBOARDING_RULESET_VERSION = 'limespot-onboarding-playbook-v2';
  * not count toward rate limits.
  */
 export const MODEL_MAXIMUM_OUTPUT = 'model-maximum' as const;
+
+/** A registry output budget that resolves to the deployment's `GRADER_CHAT_MAX_REPLY_TOKENS`. */
+export const GRADER_CHAT_REPLY_BUDGET = 'grader-chat-reply-budget' as const;
 
 /** A file prepended to the first message (uploaded via the Files API dedup). */
 export interface PromptAttachment {
@@ -322,7 +337,7 @@ type SystemPromptDefinition = Omit<
   | 'filePolicy'
   | 'capabilities'
   | 'maxTokens'
-> & { maxTokens: number | typeof MODEL_MAXIMUM_OUTPUT };
+> & { maxTokens: number | typeof MODEL_MAXIMUM_OUTPUT | typeof GRADER_CHAT_REPLY_BUDGET };
 
 const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
   'image-selection': {
@@ -375,6 +390,16 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     usesTools: false,
     description:
       'Subscription and billing assistant; answers only from the current plan and store-specific pricing grounding, with no tools or account mutations.',
+    attachments: [],
+  },
+
+  'grader-chat': {
+    group: 'grader-sales',
+    prompt: prompts.composeGraderChat(newestGraderChatBookletSource()),
+    maxTokens: GRADER_CHAT_REPLY_BUDGET,
+    usesTools: false,
+    description:
+      "Growth Grader sales chat over one store's Grader report, grounded only in the marketing booklet; text only, no tools, no Studio directives, steers to installing LimeSpot.",
     attachments: [],
   },
 
@@ -1334,6 +1359,48 @@ export function isProbeName(name: string): boolean {
   return name.startsWith(PROBE_PREFIX);
 }
 
+/** The booklet versions a deployment may select with `GRADER_CHAT_BOOKLET_VERSION`. */
+export function listGraderChatBookletVersions(): readonly number[] {
+  return [...prompts.graderChatBookletSources.keys()].sort((left, right) => left - right);
+}
+
+function newestGraderChatBookletSource(): string {
+  const newest = listGraderChatBookletVersions().at(-1);
+  const source = newest === undefined ? undefined : prompts.graderChatBookletSources.get(newest);
+  if (source === undefined) throw new Error('The grader-chat prompt has no booklet.');
+  return source;
+}
+
+/** The grader-chat system text and booklet a request is answered with under this configuration. */
+export interface GraderChatPrompt {
+  readonly prompt: string;
+  readonly bookletVersion: number;
+  /** The booklet's model-visible text, the part of the system text every claim is grounded in. */
+  readonly booklet: string;
+}
+
+/**
+ * Resolve the grader-chat system text for the configured booklet version, refusing an unknown
+ * version and a booklet whose headings are not exactly the fixed ones, in order.
+ */
+export function getGraderChatPrompt(env: Env): GraderChatPrompt {
+  const bookletVersion = graderChatBookletVersion(env);
+  const source = prompts.graderChatBookletSources.get(bookletVersion);
+  if (source === undefined) {
+    throw new Error(
+      `GRADER_CHAT_BOOKLET_VERSION ${bookletVersion} names no booklet. Known versions: ${listGraderChatBookletVersions().join(', ')}.`,
+    );
+  }
+  const booklet = prompts.graderChatBookletText(source);
+  const headings = [...prompts.graderChatBookletSections(booklet).keys()];
+  if (headings.join('\n') !== prompts.GRADER_CHAT_BOOKLET_HEADINGS.join('\n')) {
+    throw new Error(
+      `Grader chat booklet v${bookletVersion} must have exactly these headings, in order: ${prompts.GRADER_CHAT_BOOKLET_HEADINGS.join(', ')}.`,
+    );
+  }
+  return { prompt: prompts.composeGraderChat(source), bookletVersion, booklet };
+}
+
 /**
  * Get a system prompt entry by name with its complete group-owned route.
  * Throws on an unknown name and on a missing configured model binding.
@@ -1349,10 +1416,7 @@ export function getSystemPrompt(name: string, env: Env): SystemPromptEntry {
     ...definition,
     name: promptName,
     tier: PROMPT_GROUPS[definition.group].tier,
-    maxTokens:
-      definition.maxTokens === MODEL_MAXIMUM_OUTPUT
-        ? modelMaxOutputTokens(profile.model)
-        : definition.maxTokens,
+    maxTokens: resolveOutputBudget(definition.maxTokens, profile.model, env),
     model: profile.model,
     modelProfile,
     provider: profile.provider,
@@ -1360,4 +1424,14 @@ export function getSystemPrompt(name: string, env: Env): SystemPromptEntry {
     filePolicy,
     capabilities: profile.capabilities,
   };
+}
+
+function resolveOutputBudget(
+  budget: SystemPromptDefinition['maxTokens'],
+  model: string,
+  env: Env,
+): number {
+  if (budget === MODEL_MAXIMUM_OUTPUT) return modelMaxOutputTokens(model);
+  if (budget === GRADER_CHAT_REPLY_BUDGET) return graderChatMaxReplyTokens(env);
+  return budget;
 }

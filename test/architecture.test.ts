@@ -159,6 +159,7 @@ describe('fitness: secrets never enter logs or model context', () => {
     'AUDIT_ACTIVATION_SIGNING_SECRET',
     'AUDIT_SESSION_SIGNING_SECRET',
     'AUDIT_STATUS_SIGNING_SECRET',
+    'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL',
   ];
 
   it('no log/console call references a credential identifier', () => {

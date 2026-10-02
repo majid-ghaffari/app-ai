@@ -37,6 +37,7 @@ const PROFILE: ModelProfile = {
     clientTools: true,
     reasoning: true,
     inlineCacheBreakpoints: true,
+    textConversation: true,
   },
 };
 

@@ -14,13 +14,29 @@ The per-handler map — which file owns which route group — is [docs/ARCHITECT
 
 The router creates one request-scoped `LoggingRuntime`, retaining request/subscriber fields,
 and handlers derive scoped loggers from it. Both `/messages` and `/chat` emit correlated TRACE
-records for model-visible text/tool input, assistant output and usage, failures, client tool calls,
+records — except the Grader chat, which logs counts only — for model-visible text/tool input, assistant output and usage, failures, client tool calls,
 and server tool execution/results. Opaque file references, encoded media, continuation state, and
 actual secret fields are redacted before logging. `LOG_TARGETS_*` configuration alone selects console, Seq,
 multiple sinks, or ignore. Seq work is attached to Cloudflare `waitUntil`, fail-open, and never delays
 or changes the inference response.
 
 ## Conventions
+
+- `grader-chat.ts` answers the one `/messages` request that runs no inference trace and logs no
+  model-visible text: a Grader chat message is a visitor's words, so the handler logs counts only
+  (turns, reply length, withheld and its reason, stop reason, tokens, remaining messages, booklet
+  version, elapsed time). It builds its canonical request itself from the registry route, the
+  configured booklet, and `GRADER_CHAT_EFFORT` — sent only when the resolved model reasons — and
+  `graderChatRoute` refuses a model whose adapter needs provider state between turns, the same check
+  production readiness runs. Its response never echoes the provider's raw message: it carries
+  exactly the reply text its fingerprint was taken over, or none when withheld, and it is returned
+  only after the audit's ledger committed the message with that response as its stored outcome; the
+  daily counters settle after it, from this request or the audit's alarm. A request whose
+  `messageId` the audit already answered, with the same transcript, is answered from the stored
+  outcome before any quota is held or model called. It captures the UTC day once per admission for
+  the visitor's counter and both holds; when a counter refuses that day because midnight passed, it
+  releases the message and admits it once more on the new day. The handler never delivers a volume
+  alert: the deployment counter's alarm does.
 
 - `/messages` and `/chat` resolve model and effort only through prompt → group
   → tier → configured model, with the provider inferred from that model id by
@@ -66,7 +82,8 @@ or changes the inference response.
   model bindings that do not route every prompt answer 503 with a status-only
   envelope — no secret name, binding, or model id. Provider-specific bindings and configuration
   required by a resolved route are validated there too; the protected Workers AI route checks its
-  binding, authority, internal origin, enable switch, daily limit, and acceptance reserve. The
+  binding, authority, internal origin, enable switch, daily limit, and acceptance reserve; while the
+  Grader chat is enabled, its configuration and its route (`graderChatRoute`) are checked too. The
   reason goes to the log.
 - A merchant route hit by an absent required secret answers the generic
   `SECRET_CONFIGURATION_PUBLIC_MESSAGE` envelope (`../lib/responses.ts`); the

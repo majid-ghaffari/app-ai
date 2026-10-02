@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import worker from '../src/index';
-import {
-  AuditSessionAuthority,
-  RESERVATION_FINALIZE_GRACE_MILLISECONDS,
-} from '../src/lib/audit-session-authority';
+import { RESERVATION_FINALIZE_GRACE_MILLISECONDS } from '../src/lib/audit-session-authority';
 import { PLANNED_AUDIT_RUN } from '../src/lib/audit-plan';
 import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../src/inference/deadline';
 import { ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
@@ -19,290 +16,26 @@ import {
   fetchCall,
   sentBody,
 } from './helpers';
+import {
+  AUTHORITY_GATES,
+  DURABLE_OBJECT_ENTRY_LIMIT_BYTES,
+  STORE_ORIGIN,
+  USABLE_PROPOSAL,
+  activationToken,
+  auditHeaders,
+  authorityFor,
+  deliverStatusEvents,
+  durableEnv,
+  exchange,
+  messageRequest,
+  signWebsiteActivation,
+  storageFor,
+  uploadRequest,
+  uploadTiles,
+} from './audit-harness';
 
-const STORE_ORIGIN = 'https://lsdev.myshopline.com';
-const USABLE_PROPOSAL = JSON.stringify({ pages: { Home: { boxes: [] } } });
 const MAX_STATUS_CALLBACK_URL_LENGTH = 2048;
 const PAST_ACTIVATION_CEILING_MILLISECONDS = 1_000_000;
-const DURABLE_OBJECT_ENTRY_LIMIT_BYTES = 2_000_000;
-
-interface NamedDurableObjectId {
-  readonly name: string;
-}
-
-const AUTHORITIES_BY_ENV = new WeakMap<Env, Map<string, AuditSessionAuthority>>();
-const AUTHORITY_GATES = new WeakMap<Env, (path: string) => Promise<void>>();
-const STORAGES_BY_ENV = new WeakMap<Env, Map<string, MemoryDurableStorage>>();
-
-class MemoryDurableStorage {
-  private readonly values = new Map<string, unknown>();
-  private transactionTail: Promise<void> = Promise.resolve();
-
-  async get<T>(key: string): Promise<T | undefined> {
-    return this.values.get(key) as T | undefined;
-  }
-
-  async put(key: string, value: unknown): Promise<void> {
-    const entryBytes = serializedEntryBytes(key, value);
-    if (entryBytes > DURABLE_OBJECT_ENTRY_LIMIT_BYTES) {
-      throw new RangeError(
-        `Durable Object entry "${key}" is ${entryBytes} bytes, past the ${DURABLE_OBJECT_ENTRY_LIMIT_BYTES}-byte key and value limit.`,
-      );
-    }
-    this.largestEntryBytes = Math.max(this.largestEntryBytes, entryBytes);
-    this.values.set(key, value);
-  }
-
-  largestEntryBytes = 0;
-
-  async deleteAll(): Promise<void> {
-    this.values.clear();
-  }
-
-  private alarmAt: number | null = null;
-
-  async setAlarm(scheduledTime: number): Promise<void> {
-    this.alarmAt = scheduledTime;
-  }
-
-  takeDueAlarm(): boolean {
-    if (this.alarmAt === null || this.alarmAt > Date.now()) return false;
-    this.alarmAt = null;
-    return true;
-  }
-
-  async transaction<T>(callback: (storage: MemoryDurableStorage) => Promise<T>): Promise<T> {
-    const previous = this.transactionTail;
-    let release = (): void => {};
-    this.transactionTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await callback(this);
-    } finally {
-      release();
-    }
-  }
-}
-
-function serializedEntryBytes(key: string, value: unknown): number {
-  const encoder = new TextEncoder();
-  return encoder.encode(key).byteLength + encoder.encode(JSON.stringify(value ?? null)).byteLength;
-}
-
-function durableEnv(overrides: Partial<Env> = {}): Env {
-  const authorities = new Map<string, AuditSessionAuthority>();
-  const storages = new Map<string, MemoryDurableStorage>();
-  const resolveEnv = (): Env => env;
-  const namespace = {
-    idFromName(name: string): DurableObjectId {
-      return { name } as unknown as DurableObjectId;
-    },
-    get(id: DurableObjectId): DurableObjectStub {
-      const name = (id as unknown as NamedDurableObjectId).name;
-      let authority = authorities.get(name);
-      if (!authority) {
-        const storage = new MemoryDurableStorage();
-        const state = { storage } as unknown as DurableObjectState;
-        authority = new AuditSessionAuthority(state, resolveEnv());
-        authorities.set(name, authority);
-        storages.set(name, storage);
-      }
-      return {
-        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-          const request = input instanceof Request ? input : new Request(input, init);
-          await AUTHORITY_GATES.get(resolveEnv())?.(new URL(request.url).pathname);
-          return authority.fetch(request);
-        },
-      } as unknown as DurableObjectStub;
-    },
-  } as unknown as DurableObjectNamespace;
-  const env: Env = { ...ENV, ...overrides, AUDIT_SESSIONS: namespace };
-  AUTHORITIES_BY_ENV.set(env, authorities);
-  STORAGES_BY_ENV.set(env, storages);
-  return env;
-}
-
-function authorityFor(env: Env, auditIdentifier: string): AuditSessionAuthority {
-  const authority = AUTHORITIES_BY_ENV.get(env)?.get(auditIdentifier);
-  if (!authority) throw new Error(`Missing test authority for ${auditIdentifier}`);
-  return authority;
-}
-
-function storageFor(env: Env, auditIdentifier: string): MemoryDurableStorage {
-  const storage = STORAGES_BY_ENV.get(env)?.get(auditIdentifier);
-  if (!storage) throw new Error(`Missing test storage for ${auditIdentifier}`);
-  return storage;
-}
-
-async function deliverStatusEvents(env: Env): Promise<void> {
-  for (const [auditIdentifier, storage] of STORAGES_BY_ENV.get(env) ?? []) {
-    while (storage.takeDueAlarm()) await authorityFor(env, auditIdentifier).alarm();
-  }
-}
-
-async function activationToken(
-  env: Env,
-  tokenIdentifier = crypto.randomUUID(),
-  entitlement: object = { type: 'store-origin', storeOrigin: STORE_ORIGIN },
-  email = 'merchant@example.com',
-  auditIdentifier = `audit-${tokenIdentifier}`,
-  attemptLimit?: 2 | null,
-  statusCallbackUrl: string = AUDIT_STATUS_CALLBACK_URL,
-): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const staff = (entitlement as { type?: unknown }).type === 'limespot-staff-multi-store';
-  return signWebsiteActivation(
-    {
-      version: 1,
-      kind: 'activation',
-      issuer: 'limespot-website',
-      audience: 'app-ai',
-      tokenIdentifier,
-      auditIdentifier,
-      attemptLimit: attemptLimit === undefined ? (staff ? null : 2) : attemptLimit,
-      email,
-      emailVerified: true,
-      entitlement,
-      statusCallbackUrl,
-      issuedAt: now,
-      expiresAt: now + 600,
-    },
-    env,
-  );
-}
-
-async function signWebsiteActivation(claims: object, env: Env): Promise<string> {
-  const secret = env.AUDIT_ACTIVATION_SIGNING_SECRET;
-  if (!secret) throw new Error('test activation signing secret is missing');
-  const encode = (value: object): string => {
-    const bytes = new TextEncoder().encode(JSON.stringify(value));
-    let binary = '';
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
-  };
-  const header = encode({ alg: 'HS256', typ: 'JWT' });
-  const payload = encode(claims);
-  const unsigned = `${header}.${payload}`;
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const signature = new Uint8Array(
-    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(unsigned)),
-  );
-  let signatureBinary = '';
-  for (const byte of signature) signatureBinary += String.fromCharCode(byte);
-  const encodedSignature = btoa(signatureBinary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replace(/=+$/u, '');
-  return `${unsigned}.${encodedSignature}`;
-}
-
-async function exchange(
-  env: Env,
-  token?: string,
-): Promise<{ accessToken: string; sessionIdentifier: string }> {
-  const resolvedToken = token ?? (await activationToken(env));
-  const response = await worker.fetch(
-    new Request('https://app-ai.test/audit/session/exchange', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'https://www.limespot.com' },
-      body: JSON.stringify({
-        activationToken: resolvedToken,
-        storeUrl: `${STORE_ORIGIN}/products/example?campaign=grader`,
-      }),
-    }),
-    env,
-  );
-  expect(response.status).toBe(201);
-  return response.json() as Promise<{ accessToken: string; sessionIdentifier: string }>;
-}
-
-function auditHeaders(
-  accessToken: string,
-  prompt?: string,
-  jsonContent = true,
-): Record<string, string> {
-  return {
-    Authorization: `Bearer ${accessToken}`,
-    Origin: STORE_ORIGIN,
-    'X-LimeSpot-Audit-Store-Origin': STORE_ORIGIN,
-    ...(prompt
-      ? {
-          ...(jsonContent ? { 'Content-Type': 'application/json' } : {}),
-          'X-Personalizer-System-Prompt': prompt,
-          'X-Personalizer-Ruleset-Version': ONBOARDING_RULESET_VERSION,
-        }
-      : {}),
-  };
-}
-
-function uploadRequest(
-  accessToken: string,
-  name: string,
-  content = name,
-  prompts: readonly string[] = [
-    'onboarding-batch-all',
-    'onboarding-batch',
-    'onboarding-review-all',
-    'onboarding-review-gate-all',
-    'onboarding-currency-recovery',
-  ],
-): Request {
-  const formData = new FormData();
-  formData.set('file', new File([content], name, { type: 'image/webp' }));
-  for (const prompt of prompts) formData.append('prompt', prompt);
-  return new Request('https://app-ai.test/files', {
-    method: 'POST',
-    headers: auditHeaders(accessToken),
-    body: formData,
-  });
-}
-
-function messageRequest(
-  accessToken: string,
-  fileIdentifiers: readonly string[],
-  manifest = 'PAGE Home: DESKTOP TILES images 1-1, MOBILE TILES images 1-1, CANDIDATE ANCHORS 1..6',
-  prompt = 'onboarding-batch-all',
-): Request {
-  return new Request('https://app-ai.test/messages', {
-    method: 'POST',
-    headers: auditHeaders(accessToken, prompt),
-    body: JSON.stringify({
-      model: 'caller-chosen-expensive-model',
-      tools: [{ name: 'caller_tool' }],
-      output_config: { effort: 'xhigh' },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            ...fileIdentifiers.map((fileIdentifier) => ({
-              type: 'image',
-              source: { type: 'file', file_id: fileIdentifier },
-            })),
-            { type: 'text', text: manifest },
-          ],
-        },
-      ],
-    }),
-  });
-}
-
-async function uploadTiles(env: Env, accessToken: string, count: number): Promise<string[]> {
-  const identifiers: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const response = await worker.fetch(uploadRequest(accessToken, `tile-${index}.webp`), env);
-    expect(response.status).toBe(200);
-    identifiers.push(((await response.json()) as { id: string }).id);
-  }
-  return identifiers;
-}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -770,6 +503,158 @@ describe('audit session authorization', () => {
     expect(replay.status).toBe(409);
     vi.useRealTimers();
   });
+
+  it('lets a new activation supersede the active session, refusing the old token and carrying the audit', async () => {
+    const env = durableEnv();
+    stubFetch().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 503 });
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const auditIdentifier = 'audit-superseded-public';
+    const activation = (tokenIdentifier: string): Promise<string> =>
+      activationToken(
+        env,
+        tokenIdentifier,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      );
+    const firstToken = await activation('superseded-first');
+    const first = await exchange(env, firstToken);
+    const firstTiles = await uploadTiles(env, first.accessToken, 1);
+    expect((await worker.fetch(messageRequest(first.accessToken, firstTiles), env)).status).toBe(
+      200,
+    );
+    const before = await storageFor(env, auditIdentifier).get<Record<string, unknown>>('session');
+
+    const second = await exchange(env, await activation('superseded-second'));
+    expect(second.sessionIdentifier).not.toBe(first.sessionIdentifier);
+
+    for (const [label, request] of [
+      ['upload', uploadRequest(first.accessToken, 'late.webp')],
+      ['proposal', messageRequest(first.accessToken, firstTiles)],
+    ] as const) {
+      const refused = await worker.fetch(request, env);
+      expect(refused.status, label).toBe(401);
+      expect(await refused.json(), label).toEqual({
+        Message: 'The grader session has expired.',
+        ExceptionType: 'AuditAuthorizationException',
+        MessageDetail: 'audit_session_expired',
+      });
+    }
+
+    const carried = await storageFor(env, auditIdentifier).get<Record<string, unknown>>('session');
+    expect(carried).toMatchObject({
+      sessionIdentifier: second.sessionIdentifier,
+      completedAttempts: 1,
+      run: 1,
+      runUploads: 0,
+      runInferences: 0,
+      runCompleted: false,
+      fileIdentifiers: [],
+      pending: {},
+      statusOutbox: before?.statusOutbox,
+      abandonedReservations: before?.abandonedReservations,
+    });
+    expect(carried?.consumedActivationIdentifiers).toHaveLength(2);
+
+    const foreign = await worker.fetch(messageRequest(second.accessToken, firstTiles), env);
+    expect(foreign.status).toBe(403);
+    const secondTiles = await uploadTiles(env, second.accessToken, 1);
+    expect((await worker.fetch(messageRequest(second.accessToken, secondTiles), env)).status).toBe(
+      200,
+    );
+
+    const exhausted = await worker.fetch(
+      new Request('https://app-ai.test/audit/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activationToken: await activation('superseded-third'),
+          storeUrl: `${STORE_ORIGIN}/`,
+        }),
+      }),
+      env,
+    );
+    expect(exhausted.status).toBe(429);
+    const replay = await worker.fetch(
+      new Request('https://app-ai.test/audit/session/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationToken: firstToken, storeUrl: `${STORE_ORIGIN}/` }),
+      }),
+      env,
+    );
+    expect(replay.status).toBe(409);
+  }, 30_000);
+
+  it('carries a reservation the superseded session still has in flight and finalizes it there', async () => {
+    const env = durableEnv();
+    const gate = (() => {
+      let release = (): void => {};
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    })();
+    let arrived = (): void => {};
+    const inferenceArrived = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    stubFetch().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+      if (url.endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      arrived();
+      await gate.promise;
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const auditIdentifier = 'audit-superseded-in-flight';
+    const activation = (tokenIdentifier: string): Promise<string> =>
+      activationToken(
+        env,
+        tokenIdentifier,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      );
+    const first = await exchange(env, await activation('in-flight-first'));
+    const tiles = await uploadTiles(env, first.accessToken, 1);
+    const proposal = worker.fetch(messageRequest(first.accessToken, tiles), env);
+    await inferenceArrived;
+
+    await exchange(env, await activation('in-flight-second'));
+    const pending = (await storageFor(env, auditIdentifier).get<Record<string, unknown>>('session'))
+      ?.pending as Record<string, { sessionIdentifier?: string }>;
+    expect(Object.values(pending)).toEqual([
+      expect.objectContaining({ kind: 'message', sessionIdentifier: first.sessionIdentifier }),
+    ]);
+
+    gate.release();
+    expect((await proposal).status).toBe(200);
+    expect(await storageFor(env, auditIdentifier).get('session')).toMatchObject({
+      completedAttempts: 1,
+      pending: {},
+    });
+  }, 30_000);
 
   it('does not intercept unrelated bearer auth and rejects wrong origins, routes, and prompts', async () => {
     const env = durableEnv();
@@ -2711,6 +2596,7 @@ describe('audit plan versions', () => {
 
   for (const [label, planVersion] of [
     ['plan version 1', '1'],
+    ['plan version 2', '2'],
     ['no plan version', undefined],
   ] as const) {
     it(`admits a grader naming ${label} through exchange, upload and inference`, async () => {
@@ -2743,20 +2629,20 @@ describe('audit plan versions', () => {
     });
   }
 
-  it('holds a grader naming no plan version to the same 66-inference run ceiling as plan version 1', async () => {
+  it('holds a grader naming no plan version, plan version 1, or plan version 2 to the same 66-inference run ceiling', async () => {
     const env = durableEnv();
     countingUpstream();
     const session = await exchange(env);
     const tiles = await uploadTiles(env, session.accessToken, 1);
 
-    for (const planVersion of ['1', undefined]) {
+    for (const planVersion of ['1', '2', undefined]) {
       const response = await worker.fetch(
         declaring(messageRequest(session.accessToken, tiles), planVersion),
         env,
       );
       expect(response.status).toBe(200);
     }
-    for (let inference = 3; inference <= 66; inference += 1) {
+    for (let inference = 4; inference <= 66; inference += 1) {
       const response = await worker.fetch(messageRequest(session.accessToken, tiles), env);
       expect(response.status, `inference ${inference}`).toBe(200);
     }
@@ -2772,14 +2658,14 @@ describe('audit plan versions', () => {
     const activation = await auditActivation(env, auditIdentifier);
 
     await expectUnsupportedPlan(
-      await worker.fetch(exchangeRequest(activation, '2'), env),
+      await worker.fetch(exchangeRequest(activation, '3'), env),
       'exchange',
     );
     const exchanged = await worker.fetch(exchangeRequest(activation, '1'), env);
     expect(exchanged.status).toBe(201);
     const { accessToken } = (await exchanged.json()) as { accessToken: string };
 
-    for (const planVersion of ['2', '0', '01', '1.0', 'v1', '']) {
+    for (const planVersion of ['3', '0', '01', '2.0', 'v2', '']) {
       await expectUnsupportedPlan(
         await worker.fetch(declaring(uploadRequest(accessToken, 'tile.webp'), planVersion), env),
         `upload naming "${planVersion}"`,
@@ -2789,7 +2675,7 @@ describe('audit plan versions', () => {
     expect(upload.status).toBe(200);
     const { id } = (await upload.json()) as { id: string };
     await expectUnsupportedPlan(
-      await worker.fetch(declaring(messageRequest(accessToken, [id]), '2'), env),
+      await worker.fetch(declaring(messageRequest(accessToken, [id]), '3'), env),
       'inference',
     );
 
@@ -2821,7 +2707,7 @@ describe('audit plan versions', () => {
 
 describe('audit session record bounds', () => {
   const LONGEST_AUDIT_IDENTIFIER = `audit-${'x'.repeat(122)}`;
-  const SESSION_SECONDS = 1800;
+  const SESSION_SECONDS = Number(ENV.AUDIT_SESSION_TTL_SECONDS);
 
   interface OutageUpstream {
     readonly inferences: () => number;

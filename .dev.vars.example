@@ -187,11 +187,32 @@ AUDIT_STATUS_SIGNING_SECRET=
 AUDIT_STATUS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 
 # REQUIRED. Scoped audit limits. Production values are declared in wrangler.toml.
-AUDIT_SESSION_TTL_SECONDS=1800
+AUDIT_SESSION_TTL_SECONDS=86400
 AUDIT_MAX_RUNS=4
 AUDIT_RUN_HEADROOM=2
 AUDIT_MAX_UPLOAD_BYTES=8000000
 AUDIT_MAX_MESSAGE_BYTES=1000000
+
+# ── Grader chat ──────────────────────────────────────────────────────────────
+
+# REQUIRED. The audit session's sales chat about its own Grader report
+# (docs/AUDIT-AUTH.md → Grader chat). Production ships it on; locally it answers
+# through the free shim above. GRADER_CHAT_MESSAGES_PER_AUDIT covers every run and
+# session of an audit and stays at or under plan version 2's ceiling of 50. GRADER_CHAT_EFFORT
+# is low, medium, high or xhigh and applies only on a model that reasons.
+GRADER_CHAT_ENABLED=true
+GRADER_CHAT_MESSAGES_PER_AUDIT=25
+GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY=50
+GRADER_CHAT_MESSAGES_PER_DAY=10000
+GRADER_CHAT_MAX_INPUT_CHARACTERS=500
+GRADER_CHAT_MAX_REPLY_TOKENS=600
+GRADER_CHAT_EFFORT=low
+GRADER_CHAT_BOOKLET_VERSION=1
+GRADER_CHAT_ALERT_EVERY=500
+
+# OPTIONAL SECRET. Slack incoming-webhook URL the daily chat-volume alert is
+# posted to (an HTTPS URL). Blank means an alert is only logged.
+GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL=
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 

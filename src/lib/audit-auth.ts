@@ -3,8 +3,9 @@
  *
  * A website-issued, email-verified activation JWT is exchanged once for a
  * short-lived app-ai-signed session. The session is origin-bound and can call
- * only the onboarding proposal upload/inference surface. Strongly consistent
- * reservations and owned file identifiers live in AuditSessionAuthority.
+ * only the onboarding proposal upload/inference surface and, under plan version 2,
+ * the Grader chat. Strongly consistent reservations and owned file identifiers live
+ * in AuditSessionAuthority.
  */
 
 import {
@@ -15,6 +16,8 @@ import {
   auditMaxUploadBytes,
   auditSessionSigningSecret,
   auditSessionTtlSeconds,
+  graderChatEnabled,
+  graderChatMaxInputCharacters,
   type Env,
 } from '../config';
 import {
@@ -23,7 +26,17 @@ import {
   reserveAuditAuthorityRequest,
   type AuditAuthorityReservation,
 } from './audit-session-authority';
-import { AUDIT_PLAN_VERSION_HEADER, isSupportedAuditPlanVersion } from './audit-plan';
+import {
+  AUDIT_PLAN_VERSION_HEADER,
+  GRADER_CHAT_MESSAGE_CEILING,
+  PROPOSAL_PAGE_VOCABULARY,
+  declaredAuditPlanVersion,
+  graderChatMessageAllowance,
+  isSupportedAuditPlanVersion,
+  planIncludesGraderChat,
+} from './audit-plan';
+import { graderChatRefusal } from './grader-chat-quota';
+import type { PromptName } from '../prompt-registry';
 import { WorkerError } from './responses';
 import { isSameStoreOrigin } from './store-origin';
 import {
@@ -53,6 +66,27 @@ const ALLOWED_AUDIT_UPLOAD_PROMPTS = new Set([
   'onboarding-currency-recovery',
 ]);
 const ALLOWED_AUDIT_INFERENCE_PROMPTS = new Set(['onboarding-batch-all', 'onboarding-batch']);
+
+/** The registered prompt a scoped audit session's sales chat selects on `POST /messages`. */
+export const GRADER_CHAT_PROMPT = 'grader-chat' satisfies PromptName;
+
+const GRADER_REPORT_PLATFORMS = ['shopify', 'shopline', 'bigcommerce'] as const;
+const GRADER_REPORT_PAGE_STATES = [
+  'read',
+  'nothing-to-add',
+  'needs-another-pass',
+  'evidence-lost',
+  'not-read',
+  'not-sampled',
+] as const;
+const GRADER_REPORT_FINDINGS_PER_PAGE = 12;
+const GRADER_REPORT_SUGGESTIONS = 10;
+const GRADER_REPORT_LABEL_CHARACTERS = 80;
+const GRADER_REPORT_FIX_CHARACTERS = 240;
+const GRADER_REPORT_REASON_CHARACTERS = 400;
+const GRADER_CHAT_TURNS = 2 * GRADER_CHAT_MESSAGE_CEILING + 1;
+const GRADER_CHAT_MESSAGE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 interface ActivationClaims {
   readonly version: typeof TOKEN_VERSION;
@@ -85,8 +119,9 @@ interface AuditSessionClaims {
   readonly expiresAt: number;
 }
 
-/** Verified audit authorization threaded through the router. */
+/** Verified, reserved audit upload or proposal inference threaded through the router. */
 export interface AuditAuthorization {
+  readonly kind: 'proposal-transport';
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
   readonly reservation: AuditAuthorityReservation;
@@ -98,17 +133,94 @@ export interface AuditAuthorization {
   readonly proposalManifest?: readonly ProposalManifestPage[];
 }
 
+/** What a session's Grader chat offers, so the extension and lib can show the text box and count. */
+export interface GraderChatSessionTerms {
+  readonly enabled: boolean;
+  /** Messages the audit is answered across all of its runs and sessions; zero when not offered. */
+  readonly perAudit: number;
+  /** Messages still left, after those earlier sessions of the audit were answered; zero when not offered. */
+  readonly remainingInAudit: number;
+  /** Characters one message may carry; zero when chat is not offered. */
+  readonly maxInputCharacters: number;
+  /** Epoch milliseconds the session, and with it the chat, ends. */
+  readonly sessionExpiresAt: number;
+}
+
 /** Successful activation exchange returned to the extension background worker. */
 export interface AuditSessionExchange {
   readonly sessionIdentifier: string;
   readonly accessToken: string;
   readonly expiresAt: number;
+  readonly graderChat: GraderChatSessionTerms;
+}
+
+/** One text turn of a Grader chat conversation, in the shape a transcript store would receive. */
+export interface GraderChatTurn {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
+/** One gap the Grader found on a page: lib-written label and fix, and the model's own reason. */
+export interface GraderReportFinding {
+  readonly label: string;
+  readonly fix: string;
+  readonly reason?: string;
+}
+
+/** One page row of a Grader report. */
+export interface GraderReportPage {
+  readonly page: (typeof PROPOSAL_PAGE_VOCABULARY)[number];
+  readonly state: (typeof GRADER_REPORT_PAGE_STATES)[number];
+  readonly desktopCovered: boolean;
+  readonly mobileCovered: boolean;
+  readonly findings: readonly GraderReportFinding[];
+}
+
+/** One store-wide audience or offer the Grader suggested: a model-written title and reason. */
+export interface GraderReportSuggestion {
+  readonly title: string;
+  readonly reason?: string;
+}
+
+/** The strictly validated Grader report a chat request carries. */
+export interface GraderReport {
+  readonly platform: (typeof GRADER_REPORT_PLATFORMS)[number];
+  readonly partial: boolean;
+  readonly pages: readonly GraderReportPage[];
+  readonly audiences: readonly GraderReportSuggestion[];
+  readonly offers: readonly GraderReportSuggestion[];
+}
+
+/** A validated Grader chat request body. */
+export interface GraderChatConversation {
+  /** The caller's identifier for this turn, lowercased: a UUID v4, the same on every retry of it. */
+  readonly messageId: string;
+  readonly turns: readonly GraderChatTurn[];
+  readonly report: GraderReport;
+}
+
+/** A verified audit session's Grader chat request, admitted for validation but not yet reserved. */
+export interface GraderChatAuthorization {
+  readonly kind: 'grader-chat';
+  readonly auditIdentifier: string;
+  readonly sessionIdentifier: string;
+  readonly storeOrigin: string;
+  /** Epoch seconds the session ends. */
+  readonly expiresAt: number;
+  /** Epoch milliseconds the request was admitted at; its inference deadline counts from here. */
+  readonly admittedAt: number;
+  readonly conversation: GraderChatConversation;
+  /** The transcript fingerprint of every assistant turn, each to be matched to a stored reply. */
+  readonly historyFingerprints: readonly string[];
+  /** The fingerprint of the whole transcript, which the message identifier is bound to. */
+  readonly transcriptFingerprint: string;
 }
 
 /** Exchange one verified activation token for a scoped audit session. */
 export async function exchangeAuditActivation(
   activationToken: string,
   storeUrl: string,
+  planVersion: number,
   env: Env,
 ): Promise<AuditSessionExchange> {
   const activation = await verifyToken(activationToken, auditActivationSigningSecret(env));
@@ -143,7 +255,7 @@ export async function exchangeAuditActivation(
     issuedAt: now,
     expiresAt,
   };
-  await createAuditAuthoritySession(
+  const chatMessages = await createAuditAuthoritySession(
     {
       sessionIdentifier,
       auditIdentifier: activation.auditIdentifier,
@@ -159,14 +271,43 @@ export async function exchangeAuditActivation(
     sessionIdentifier,
     accessToken: `${AUDIT_TOKEN_PREFIX}${await signToken(claims, sessionSigningSecret)}`,
     expiresAt: expiresAt * 1000,
+    graderChat: graderChatSessionTerms(planVersion, chatMessages, expiresAt * 1000, env),
   };
 }
 
-/** Authenticate and atomically reserve one audit upload or inference request. */
+function graderChatSessionTerms(
+  planVersion: number,
+  chatMessages: number,
+  sessionExpiresAt: number,
+  env: Env,
+): GraderChatSessionTerms {
+  if (!planIncludesGraderChat(planVersion) || !graderChatEnabled(env)) {
+    return {
+      enabled: false,
+      perAudit: 0,
+      remainingInAudit: 0,
+      maxInputCharacters: 0,
+      sessionExpiresAt,
+    };
+  }
+  const perAudit = graderChatMessageAllowance(env);
+  return {
+    enabled: true,
+    perAudit,
+    remainingInAudit: Math.max(0, perAudit - chatMessages),
+    maxInputCharacters: graderChatMaxInputCharacters(env),
+    sessionExpiresAt,
+  };
+}
+
+/**
+ * Authenticate one audit request. An upload or proposal inference is atomically reserved here; a
+ * Grader chat message is validated and returned for its handler to reserve and finalize.
+ */
 export async function authorizeAuditRequest(
   request: Request,
   env: Env,
-): Promise<AuditAuthorization | null> {
+): Promise<AuditAuthorization | GraderChatAuthorization | null> {
   const authorizationHeader = request.headers.get('Authorization');
   if (!authorizationHeader) return null;
   const match = authorizationHeader.match(/^Bearer (\S+)$/);
@@ -177,6 +318,7 @@ export async function authorizeAuditRequest(
     auditSessionSigningSecret(env),
   );
   if (!isAuditSessionClaims(claims)) throw unauthorized('The grader session token is invalid.');
+  if (claims.expiresAt <= epochSeconds()) throw graderChatRefusal('audit_session_expired');
   assertTemporalClaims(claims.issuedAt, claims.expiresAt);
   assertRequestStoreOrigin(request, claims.storeOrigin);
   assertSupportedAuditPlan(request);
@@ -184,6 +326,12 @@ export async function authorizeAuditRequest(
   const url = new URL(request.url);
   if (request.method !== 'POST' || (url.pathname !== '/files' && url.pathname !== '/messages')) {
     throw forbidden('Audit sessions can access only proposal uploads and inference.');
+  }
+  if (
+    url.pathname === '/messages' &&
+    request.headers.get('X-Personalizer-System-Prompt') === GRADER_CHAT_PROMPT
+  ) {
+    return authorizeGraderChat(request, claims, env);
   }
 
   let kind: 'upload' | 'message';
@@ -254,6 +402,7 @@ export async function authorizeAuditRequest(
     env,
   );
   return {
+    kind: 'proposal-transport',
     sessionIdentifier: claims.sessionIdentifier,
     storeOrigin: claims.storeOrigin,
     reservation,
@@ -261,6 +410,247 @@ export async function authorizeAuditRequest(
     ...(proposalPrompt === undefined ? {} : { prompt: proposalPrompt }),
     ...(proposalManifest === undefined ? {} : { proposalManifest }),
   };
+}
+
+async function authorizeGraderChat(
+  request: Request,
+  claims: AuditSessionClaims,
+  env: Env,
+): Promise<GraderChatAuthorization> {
+  if (!graderChatEnabled(env)) throw graderChatRefusal('grader_chat_disabled');
+  const planVersion = declaredAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER));
+  if (!planIncludesGraderChat(planVersion)) throw graderChatRefusal('grader_chat_not_in_plan');
+  const bytes = new Uint8Array(await request.clone().arrayBuffer());
+  if (bytes.byteLength > auditMaxMessageBytes(env)) {
+    throw graderChatRefusal('grader_chat_input_too_long');
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw invalidArgument('The grader chat request body must be valid JSON.');
+  }
+  const conversation = validateGraderChatBody(body, graderChatMaxInputCharacters(env));
+  return {
+    kind: 'grader-chat',
+    auditIdentifier: claims.auditIdentifier,
+    sessionIdentifier: claims.sessionIdentifier,
+    storeOrigin: claims.storeOrigin,
+    expiresAt: claims.expiresAt,
+    admittedAt: Date.now(),
+    conversation,
+    historyFingerprints: await graderChatHistoryFingerprints(conversation.turns),
+    transcriptFingerprint: await transcriptFingerprint(conversation.turns),
+  };
+}
+
+/**
+ * Validate a Grader chat request body: exactly `messageId`, `messages` and `graderReport`. The
+ * message identifier is a UUID v4 the caller mints per visitor turn and keeps across retries of it.
+ * The messages are text-only turns that alternate from the visitor's first message to their newest
+ * one, each of the visitor's within `maxInputCharacters`; the report is the strict, capped Grader
+ * report shape.
+ */
+export function validateGraderChatBody(
+  value: unknown,
+  maxInputCharacters: number,
+): GraderChatConversation {
+  const body = asRecord(value);
+  if (!body || !hasExactKeys(body, ['messageId', 'messages', 'graderReport'])) {
+    throw invalidArgument(
+      'A grader chat request carries exactly messageId, messages and graderReport.',
+    );
+  }
+  if (typeof body.messageId !== 'string' || !GRADER_CHAT_MESSAGE_ID.test(body.messageId)) {
+    throw invalidArgument('A grader chat messageId is a UUID v4.');
+  }
+  if (
+    !Array.isArray(body.messages) ||
+    body.messages.length === 0 ||
+    body.messages.length > GRADER_CHAT_TURNS ||
+    body.messages.length % 2 === 0
+  ) {
+    throw invalidArgument(
+      'Grader chat messages alternate from the visitor and end with the visitor.',
+    );
+  }
+  const turns = body.messages.map((raw: unknown, index): GraderChatTurn => {
+    const turn = asRecord(raw);
+    const role = index % 2 === 0 ? 'user' : 'assistant';
+    if (
+      !turn ||
+      !hasExactKeys(turn, ['role', 'content']) ||
+      turn.role !== role ||
+      typeof turn.content !== 'string' ||
+      turn.content.trim().length === 0
+    ) {
+      throw invalidArgument(
+        'Grader chat messages alternate from the visitor and end with the visitor, each one non-empty text.',
+      );
+    }
+    if (role === 'user' && characterCount(turn.content) > maxInputCharacters) {
+      throw graderChatRefusal('grader_chat_input_too_long');
+    }
+    return { role, content: turn.content };
+  });
+  return {
+    messageId: body.messageId.toLowerCase(),
+    turns,
+    report: validateGraderReport(body.graderReport),
+  };
+}
+
+function validateGraderReport(value: unknown): GraderReport {
+  const report = asRecord(value);
+  if (
+    !report ||
+    !hasExactKeys(report, ['platform', 'partial', 'pages', 'audiences', 'offers']) ||
+    !isOneOf(report.platform, GRADER_REPORT_PLATFORMS) ||
+    typeof report.partial !== 'boolean' ||
+    !Array.isArray(report.pages) ||
+    report.pages.length > PROPOSAL_PAGE_VOCABULARY.length
+  ) {
+    throw invalidReport();
+  }
+  const pages = report.pages.map(validateReportPage);
+  if (new Set(pages.map((page) => page.page)).size !== pages.length) throw invalidReport();
+  return {
+    platform: report.platform,
+    partial: report.partial,
+    pages,
+    audiences: validateSuggestions(report.audiences),
+    offers: validateSuggestions(report.offers),
+  };
+}
+
+function validateReportPage(value: unknown): GraderReportPage {
+  const page = asRecord(value);
+  if (
+    !page ||
+    !hasExactKeys(page, ['page', 'state', 'desktopCovered', 'mobileCovered', 'findings']) ||
+    !isOneOf(page.page, PROPOSAL_PAGE_VOCABULARY) ||
+    !isOneOf(page.state, GRADER_REPORT_PAGE_STATES) ||
+    typeof page.desktopCovered !== 'boolean' ||
+    typeof page.mobileCovered !== 'boolean' ||
+    !Array.isArray(page.findings) ||
+    page.findings.length > GRADER_REPORT_FINDINGS_PER_PAGE
+  ) {
+    throw invalidReport();
+  }
+  return {
+    page: page.page,
+    state: page.state,
+    desktopCovered: page.desktopCovered,
+    mobileCovered: page.mobileCovered,
+    findings: page.findings.map((raw: unknown): GraderReportFinding => {
+      const finding = asRecord(raw);
+      if (
+        !finding ||
+        !hasAllowedKeys(finding, ['label', 'fix'], ['reason']) ||
+        !isReportText(finding.label, GRADER_REPORT_LABEL_CHARACTERS) ||
+        !isReportText(finding.fix, GRADER_REPORT_FIX_CHARACTERS) ||
+        (finding.reason !== undefined &&
+          !isReportText(finding.reason, GRADER_REPORT_REASON_CHARACTERS))
+      ) {
+        throw invalidReport();
+      }
+      return {
+        label: finding.label,
+        fix: finding.fix,
+        ...(finding.reason === undefined ? {} : { reason: finding.reason }),
+      };
+    }),
+  };
+}
+
+function validateSuggestions(value: unknown): readonly GraderReportSuggestion[] {
+  if (!Array.isArray(value) || value.length > GRADER_REPORT_SUGGESTIONS) throw invalidReport();
+  return value.map((raw: unknown): GraderReportSuggestion => {
+    const suggestion = asRecord(raw);
+    if (
+      !suggestion ||
+      !hasAllowedKeys(suggestion, ['title'], ['reason']) ||
+      !isReportText(suggestion.title, GRADER_REPORT_LABEL_CHARACTERS) ||
+      (suggestion.reason !== undefined &&
+        !isReportText(suggestion.reason, GRADER_REPORT_REASON_CHARACTERS))
+    ) {
+      throw invalidReport();
+    }
+    return {
+      title: suggestion.title,
+      ...(suggestion.reason === undefined ? {} : { reason: suggestion.reason }),
+    };
+  });
+}
+
+/** The transcript fingerprint of each assistant turn: a digest of the conversation through it. */
+export async function graderChatHistoryFingerprints(
+  turns: readonly GraderChatTurn[],
+): Promise<string[]> {
+  const fingerprints: string[] = [];
+  for (let index = 1; index < turns.length; index += 2) {
+    fingerprints.push(await transcriptFingerprint(turns.slice(0, index + 1)));
+  }
+  return fingerprints;
+}
+
+/** The transcript fingerprint a reply app-ai produced is stored under. */
+export async function graderChatReplyFingerprint(
+  turns: readonly GraderChatTurn[],
+  reply: string,
+): Promise<string> {
+  return transcriptFingerprint([...turns, { role: 'assistant', content: reply }]);
+}
+
+async function transcriptFingerprint(turns: readonly GraderChatTurn[]): Promise<string> {
+  const transcript = JSON.stringify(turns.map((turn) => [turn.role, turn.content]));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(transcript));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function isReportText(value: unknown, maxCharacters: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    characterCount(value) <= maxCharacters &&
+    !hasControlCharacter(value)
+  );
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code === undefined) continue;
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function characterCount(value: string): number {
+  return [...value].length;
+}
+
+function isOneOf<const Values extends readonly string[]>(
+  value: unknown,
+  values: Values,
+): value is Values[number] {
+  return typeof value === 'string' && values.includes(value);
+}
+
+function hasAllowedKeys(
+  record: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const keys = Object.keys(record);
+  return (
+    required.every((key) => key in record) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+
+function invalidReport(): WorkerError {
+  return invalidArgument('The grader chat report does not match the grader report contract.');
 }
 
 /** Commit successful audit usage or release its atomic reservation after failure. */

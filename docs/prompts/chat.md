@@ -1,6 +1,6 @@
 # Studio Chat — Maintenance Doc
 
-The design/maintenance record for the `chat` prompt — the general conversational assistant for LimeSpot Studio merchants. The runtime system text lives at [`src/prompts/chat.md`](../../src/prompts/chat.md) (a SINGLE-file prompt — no `prompt.md` folder, no composed `onboarding-shared/` blocks), registered as `chat` in [`src/prompt-registry.ts`](../../src/prompt-registry.ts). It is selected via the header `X-Personalizer-System-Prompt: chat` on `POST /chat` (the tool-use agent-loop path). The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
+The design/maintenance record for the `chat` prompt — the general conversational assistant for LimeSpot Studio merchants. The runtime system text is COMPOSED in [`src/prompts/chat/index.ts`](../../src/prompts/chat/index.ts) from the shared chat-bubble formatting block in `src/prompts/assistant-shared/` (which [`grader-chat`](grader-chat.md) composes too) and three Studio-only fragments in its own folder: `_studio-identity.md` (the LimeSpot Assistant identity, naming the platforms Studio serves), `_studio-context.md` and `_studio-directives.md`, registered as `chat` in [`src/prompt-registry.ts`](../../src/prompt-registry.ts). It is selected via the header `X-Personalizer-System-Prompt: chat` on `POST /chat` (the tool-use agent-loop path). The authoring/iteration process is defined in [docs/PROMPT-AUTHORING.md](../PROMPT-AUTHORING.md).
 
 ## Summary
 
@@ -86,15 +86,16 @@ The prompt notes other actions in prose (navigate a step, apply a placement, tog
 `chat` is the BASE general Studio chat assistant. Its siblings on the same `/chat` tool-use path:
 
 - **[`onboarding-chat`](onboarding-chat.md)** — the CLIENT-tool twin. It shares the frontier profile class but belongs to the separate `studio-visual-agent` group: it drops the server data toolset (`usesTools: false`) and instead carries the browser `look_at_page` client tool (the store iframe is the AI's hands) so it can see what rendered before it answers or refines a box. `chat` reads data from the server; `onboarding-chat` reads pixels from the browser.
+- **[`grader-chat`](grader-chat.md)** — the Growth Grader's no-tool sales chat on `/messages`. It shares only the formatting block: its identity is its own and names no platform, and none of the Studio identity, context, tools, or directives reaches it.
 - **[`proposals`](proposals.md)** and **`onboarding`** — the other tool-use agent-loop prompts. `proposals` belongs to the balanced `setup-strategy` group and returns a structured JSON proposal over page evidence plus store data. `onboarding` shares `chat`'s `studio-data-agent` group and applies the opinionated new-merchant playbook.
 
 ## Caching notes
 
-Single-file prompt, so it does NOT participate in the composed-prompt byte-equivalence baseline gate (`test/onboarding-prompt-blocks.test.ts` / `test/__snapshots__/*.baseline.md`) — those cover only the four composed onboarding prompts. Editing `src/prompts/chat.md` affects ONLY this prompt; it pulls no `onboarding-shared/` blocks and no block edit can reach it. The system text is nonetheless a stable prefix per the standard `messages.ts` `cache_control` breakpoint: keep per-shop VARIABLE data (`currentExperience`, referenced entities, grounding context) in the conversation AFTER the cached system prefix, never in this file. The `context.refs` Referenced-Entities block is rendered UNCACHED as the final system block, and a refs-free build is byte-identical to a request with no refs (cache safety).
+The composed text, final newline included, is pinned byte for byte to `test/__snapshots__/chat.baseline.md` by `test/assistant-prompt-blocks.test.ts`, in the order identity → Studio context → formatting → Studio directives. Editing a Studio fragment changes only this prompt; editing a block in `assistant-shared/` changes this prompt AND `grader-chat`, so such an edit updates both maintenance docs and regenerates the baseline on purpose. It pulls no `onboarding-shared/` blocks. The system text is nonetheless a stable prefix per the standard `messages.ts` `cache_control` breakpoint: keep per-shop VARIABLE data (`currentExperience`, referenced entities, grounding context) in the conversation AFTER the cached system prefix, never in this file. The `context.refs` Referenced-Entities block is rendered UNCACHED as the final system block, and a refs-free build is byte-identical to a request with no refs (cache safety).
 
 ## Pinning tests
 
-The prompt's contract is pinned by [`test/chat.test.ts`](../../test/chat.test.ts):
+The composed text is byte-pinned by [`test/assistant-prompt-blocks.test.ts`](../../test/assistant-prompt-blocks.test.ts), and the prompt's contract by [`test/chat.test.ts`](../../test/chat.test.ts):
 
 - _"chat prompt reasons over currentExperience grounding"_ — the system text names `currentExperience` and `itemsPerPage`.
 - _"chat prompt documents the setAppearance directive + its whitelist"_ — asserts `setAppearance`, the `page` / `patch` arg shape, the "2-up" mapping, and the whitelisted patch keys (`Style`, `ItemsPerPage`, `ItemsLimit`, `ImageBorderRadius`) — which must agree with the lib-side contract.

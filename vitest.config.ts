@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vitest/config';
 
 /**
  * Inline Vite plugin: load `.md` files as raw text strings, so
- * `import chatPrompt from './prompts/chat.md'` returns the file's contents in
+ * `import placementPrompt from './prompts/placement.md'` returns the file's contents in
  * tests — mirroring the wrangler `[[rules]] type = "Text"` rule that does the
  * same in the Worker bundle. The import specifier is identical in both (no
  * `?raw` suffix), so prompt-registry.ts works unchanged under vitest and wrangler.

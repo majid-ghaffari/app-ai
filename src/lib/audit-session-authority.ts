@@ -2,37 +2,67 @@
  * Strongly consistent authority for extension-driven Studio audits.
  *
  * One Durable Object is addressed by the website-signed audit identifier. It
- * consumes activation identifiers once, permits one active browser session,
+ * consumes activation identifiers once, keeps one active browser session that a newer activation
+ * supersedes,
  * preserves the public completion count across reissued links, divides the
  * session into grader runs held to one plan-derived inference ceiling each,
  * lets the uploads of every attempt draw on one session allowance of that many
  * runs' planned uploads, owns each run's provider file identifiers, and durably retries ordered website status
- * callbacks to the destination the activation signed.
+ * callbacks to the destination the activation signed. It admits the audit's Grader chat messages
+ * apart from all of that, and separately addressed instances host the chat's daily counters.
  */
 
-import { auditMaxRuns, auditSessionAuthority, type Env } from '../config';
-import { auditRunCeiling } from './audit-plan';
-import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../inference/deadline';
+import { auditMaxRuns, auditSessionAuthority, auditSessionTtlSeconds, type Env } from '../config';
+import {
+  GRADER_CHAT_MESSAGE_CEILING,
+  auditRunCeiling,
+  graderChatAttemptAllowance,
+  graderChatMessageAllowance,
+} from './audit-plan';
+import {
+  INFERENCE_TIMEOUT_CODE,
+  UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS,
+} from '../inference/deadline';
 import { base64UrlEncode } from '../inference/token-sealing';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
-import { createLoggingRuntime } from './logger';
+import { createLoggingRuntime, type Logger } from './logger';
 import { WorkerError } from './responses';
 import { isSameStoreOrigin } from './store-origin';
 import {
   reserveFreeVisualVerificationSlot,
   type FreeVisualVerificationQuotaClass,
 } from './inference-quota-authority';
+import {
+  GRADER_CHAT_QUOTA_FINALIZE_PATH,
+  GRADER_CHAT_QUOTA_RESERVE_PATH,
+  dailyChatCounterAlarmAt,
+  drainDailyChatAlerts,
+  expireDailyChatCounter,
+  finalizeDailyChatSlot,
+  finalizeGraderChatQuota,
+  graderChatRefusal,
+  type GraderChatSettlementOutcome,
+  isDailyChatFinalizeInput,
+  isDailyChatReserveInput,
+  reserveDailyChatSlot,
+} from './grader-chat-quota';
 
 const SESSION_STORAGE_KEY = 'session';
 const CALLBACK_RETRY_MILLISECONDS = 60_000;
 const SESSION_RECORD_BUDGET_BYTES = 1_000_000;
 const RETAINED_ACTIVATION_IDENTIFIERS = 1_024;
+const CHAT_COMMIT_ATTEMPTS = 3;
+const CHAT_SETTLEMENT_HORIZON_MILLISECONDS = 86_400_000;
+const CHAT_OUTCOME_KEY_PREFIX = 'chat-outcome:';
 
 /**
  * How long past its inference deadline a reservation stays open, so a result the model returned
  * just before the deadline is finalized and counted before the alarm releases the reservation.
  */
 export const RESERVATION_FINALIZE_GRACE_MILLISECONDS = 60_000;
+
+const RESERVATION_LEASE_MILLISECONDS =
+  UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + RESERVATION_FINALIZE_GRACE_MILLISECONDS;
 
 type ReservationKind = 'upload' | 'message';
 
@@ -60,6 +90,41 @@ interface PendingReservation {
    * worker admitted without it takes the origin of the session it is carried out of.
    */
   readonly storeOrigin?: string;
+}
+
+/** The one Grader chat message an audit has in flight. */
+interface ChatReservation {
+  readonly reservationIdentifier: string;
+  readonly messageId: string;
+  readonly transcriptFingerprint: string;
+  /** The visitor's daily counter the message is held on, beside the deployment's. */
+  readonly visitorAuthority: string;
+  /** The UTC day both daily holds were taken on. */
+  readonly day: string;
+  readonly admittedAt: number;
+}
+
+/** One answered chat message, keyed by the caller's message identifier. */
+interface ChatAnsweredMessage {
+  readonly messageId: string;
+  readonly transcriptFingerprint: string;
+  readonly reservationIdentifier: string;
+  readonly answeredAt: number;
+  /** When its stored outcome is deleted; absent once it has been. */
+  readonly outcomeExpiresAt?: number;
+}
+
+/** A chat message whose visitor and deployment daily counters are still to be committed or released. */
+interface ChatSettlement {
+  readonly reservationIdentifier: string;
+  readonly visitorAuthority: string;
+  /** The UTC day its daily holds were taken on, whose entries it settles. */
+  readonly day: string;
+  /** Whether the message was answered, failed after the model was called, or released before it. */
+  readonly outcome: GraderChatSettlementOutcome;
+  readonly recordedAt: number;
+  /** When the alarm next settles it; the request that recorded it settles it first. */
+  readonly retryAt: number;
 }
 
 interface SessionRecord {
@@ -96,6 +161,25 @@ interface SessionRecord {
    * while the head has not failed, so a new event is delivered on the next alarm immediately.
    */
   readonly statusRetryAt?: number;
+  /**
+   * Grader chat messages this audit has been answered, across all of its runs and sessions: neither
+   * a retry, an expiry, nor a reissued link restores one. Absent on a record written before the chat
+   * existed, which has answered none.
+   */
+  readonly chatMessages?: number;
+  /** The transcript fingerprint of every reply this audit's chat was given, in order. */
+  readonly chatReplies?: readonly string[];
+  /**
+   * Chat messages this audit admitted, answered or not, less those released before any model call;
+   * held to `graderChatAttemptAllowance`. Absent on a record written before it was kept.
+   */
+  readonly chatAttempts?: number;
+  /** The chat message being answered now; chat traffic never enters `pending`. */
+  readonly chatInFlight?: ChatReservation;
+  /** Every answered chat message, so a replay is answered from its outcome and counted once. */
+  readonly chatAnswered?: readonly ChatAnsweredMessage[];
+  /** Chat messages whose daily counters the alarm settles until each succeeds. */
+  readonly chatSettlements?: readonly ChatSettlement[];
 }
 
 const FRESH_RUN = {
@@ -140,6 +224,34 @@ interface FinalizeInput {
   readonly completed?: boolean;
 }
 
+interface ChatReserveInput {
+  readonly auditIdentifier: string;
+  readonly sessionIdentifier: string;
+  readonly storeOrigin: string;
+  readonly expiresAt: number;
+  readonly reservationIdentifier: string;
+  readonly messageId: string;
+  readonly transcriptFingerprint: string;
+  readonly visitorAuthority: string;
+  readonly day: string;
+  /** The transcript fingerprint of every assistant turn the request carries. */
+  readonly historyFingerprints: readonly string[];
+}
+
+interface ChatCommitInput {
+  readonly reservationIdentifier: string;
+  readonly replyFingerprint?: string;
+  readonly outcome: GraderChatOutcome;
+}
+
+interface ChatReservationInput {
+  readonly reservationIdentifier: string;
+}
+
+interface ChatReleaseInput extends ChatReservationInput {
+  readonly outcome: Exclude<GraderChatSettlementOutcome, 'answered'>;
+}
+
 interface FreeVisualVerificationReserveInput {
   readonly limit: number;
   readonly dailyLimit?: number;
@@ -167,11 +279,14 @@ export interface AuditAuthorityReservation {
   readonly kind: ReservationKind;
 }
 
-/** Atomically consume an activation and create the audit's one active session. */
+/**
+ * Atomically consume an activation and make its session the audit's one active session, superseding
+ * any earlier one. Returns the Grader chat messages the audit has already been answered.
+ */
 export async function createAuditAuthoritySession(
   input: AuditAuthorityExchange,
   env: Env,
-): Promise<void> {
+): Promise<number> {
   const response = await authorityStub(input.auditIdentifier, env).fetch(
     internalRequest(input.storeOrigin, '/exchange', input),
   );
@@ -179,12 +294,6 @@ export async function createAuditAuthoritySession(
     throw new WorkerError('The activation token has already been used.', {
       status: 409,
       exceptionType: 'AuditActivationConsumedException',
-    });
-  }
-  if (response.status === 423) {
-    throw new WorkerError('This grader already has an active browser session.', {
-      status: 409,
-      exceptionType: 'AuditSessionActiveException',
     });
   }
   if (response.status === 429) throw quotaError('This public grader has no attempts remaining.');
@@ -195,6 +304,8 @@ export async function createAuditAuthoritySession(
     });
   }
   assertAuthoritySuccess(response);
+  const body = (await response.json()) as { chatMessages?: unknown };
+  return typeof body.chatMessages === 'number' ? body.chatMessages : 0;
 }
 
 /** Atomically reserve quota and validate file ownership before paid upstream work. */
@@ -206,9 +317,7 @@ export async function reserveAuditAuthorityRequest(
   const response = await authorityStub(input.auditIdentifier, env).fetch(
     internalRequest(input.storeOrigin, '/reserve', { ...input, reservationIdentifier }),
   );
-  if (response.status === 401) {
-    throw auditAuthorizationError('The grader session is missing, expired, or no longer valid.');
-  }
+  if (response.status === 401) throw graderChatRefusal('audit_session_expired');
   if (response.status === 403) {
     throw new WorkerError('The inference request references a file outside this grader session.', {
       status: 403,
@@ -257,6 +366,194 @@ export async function finalizeAuditAuthorityRequest(
   assertAuthoritySuccess(response);
 }
 
+/** A chat message the session authority admitted, held until it is finalized. */
+export interface GraderChatReservation {
+  readonly auditIdentifier: string;
+  readonly storeOrigin: string;
+  readonly reservationIdentifier: string;
+}
+
+/** The completed outcome of one chat message, stored so a replay of it returns the same reply. */
+export interface GraderChatOutcome {
+  /** The `/messages` envelope the visitor receives; its content is empty when the reply was withheld. */
+  readonly envelope: Readonly<Record<string, unknown>>;
+  readonly bookletVersion: number;
+  readonly withheld: boolean;
+}
+
+/** The message to admit: its session, its caller-stable identity, and where it is held. */
+export interface GraderChatMessageInput {
+  readonly auditIdentifier: string;
+  readonly sessionIdentifier: string;
+  readonly storeOrigin: string;
+  readonly expiresAt: number;
+  /** The caller's identifier for this turn, the same on every retry of it. */
+  readonly messageId: string;
+  /** A digest of the request's whole transcript, which the message identifier is bound to. */
+  readonly transcriptFingerprint: string;
+  readonly visitorAuthority: string;
+  /** The UTC day the request captured, which named the visitor's counter and dates both holds. */
+  readonly day: string;
+  /** The transcript fingerprint of every assistant turn the request carries. */
+  readonly historyFingerprints: readonly string[];
+}
+
+/**
+ * How the session authority took a chat message: admitted and held for a new answer, or a replay of
+ * a message the audit already answered, with its stored outcome and the audit's count now.
+ */
+export type GraderChatAdmission =
+  | { readonly kind: 'admitted'; readonly reservation: GraderChatReservation }
+  | {
+      readonly kind: 'replayed';
+      readonly outcome: GraderChatOutcome;
+      readonly chatMessages: number;
+    };
+
+/**
+ * Admit one Grader chat message. A message identifier the audit already answered, with the same
+ * transcript, is a replay: its stored outcome comes back, with no reservation and no charge. Any
+ * other message is admitted when the session is live, its current run completed, no other message
+ * of the audit is in flight, the audit's allowance is not spent, and every assistant turn it
+ * carries is a reply this audit was given. Chat holds no audit reservation, attempt, run
+ * inference, or status event.
+ */
+export async function reserveGraderChatMessage(
+  input: GraderChatMessageInput,
+  env: Env,
+): Promise<GraderChatAdmission> {
+  const reservationIdentifier = crypto.randomUUID();
+  const body: ChatReserveInput = { ...input, reservationIdentifier };
+  const response = await authorityStub(input.auditIdentifier, env).fetch(
+    internalRequest(input.storeOrigin, '/reserve-chat', body),
+  );
+  if (response.status === 400) throw graderChatRefusal('grader_chat_message_reused');
+  if (response.status === 401) throw graderChatRefusal('audit_session_expired');
+  if (response.status === 403) throw graderChatRefusal('grader_chat_history_unverified');
+  if (response.status === 402) throw graderChatRefusal('grader_chat_attempt_limit');
+  if (response.status === 409) throw graderChatRefusal('grader_chat_busy');
+  if (response.status === 423) throw graderChatRefusal('grader_chat_not_open');
+  if (response.status === 424) throw graderChatRefusal('grader_chat_run_failed');
+  if (response.status === 429) throw graderChatRefusal('grader_chat_audit_limit');
+  if (response.status === 503) {
+    throw new WorkerError(
+      'The grader is still delivering earlier status updates. Try again in a few minutes.',
+      { status: 503, exceptionType: 'AuditSessionBacklogException' },
+    );
+  }
+  assertAuthoritySuccess(response);
+  if (response.status === 200) {
+    const replay = (await response.json()) as {
+      outcome: GraderChatOutcome;
+      chatMessages: number;
+    };
+    return { kind: 'replayed', outcome: replay.outcome, chatMessages: replay.chatMessages };
+  }
+  return {
+    kind: 'admitted',
+    reservation: {
+      auditIdentifier: input.auditIdentifier,
+      storeOrigin: input.storeOrigin,
+      reservationIdentifier,
+    },
+  };
+}
+
+/** What app-ai records when a chat message was answered. */
+export interface GraderChatAnswer {
+  /** The transcript fingerprint of the reply the visitor receives; absent when it was withheld. */
+  readonly replyFingerprint?: string;
+  readonly outcome: GraderChatOutcome;
+}
+
+/**
+ * Count an answered chat message, remember its reply, store its outcome under its message
+ * identifier, and record its daily counters for settlement, in one transaction of the audit's
+ * authority, whichever session of the audit is current now. It is keyed by the message's
+ * reservation, so a retry after a lost answer counts it once, and it is retried before giving up.
+ * A reservation whose lease lapsed has been released and is refused, without retrying, as a 504
+ * `InferenceTimeoutException`. Returns the messages the audit has been answered, or `null` when
+ * the audit holds no session record.
+ */
+export async function commitGraderChatMessage(
+  reservation: GraderChatReservation,
+  answer: GraderChatAnswer,
+  env: Env,
+): Promise<number | null> {
+  const input: ChatCommitInput = {
+    reservationIdentifier: reservation.reservationIdentifier,
+    outcome: answer.outcome,
+    ...(answer.replyFingerprint === undefined ? {} : { replyFingerprint: answer.replyFingerprint }),
+  };
+  let failure: unknown;
+  for (let attempt = 0; attempt < CHAT_COMMIT_ATTEMPTS; attempt += 1) {
+    let response: Response;
+    try {
+      response = await authorityStub(reservation.auditIdentifier, env).fetch(
+        internalRequest(reservation.storeOrigin, '/commit-chat', input),
+      );
+    } catch (error) {
+      failure = error;
+      continue;
+    }
+    if (response.status === 410) {
+      throw new WorkerError('The grader chat reply arrived after its time limit.', {
+        status: 504,
+        exceptionType: 'InferenceTimeoutException',
+        messageDetail: INFERENCE_TIMEOUT_CODE,
+      });
+    }
+    if (!response.ok) {
+      failure = authorityFailure(response.status);
+      continue;
+    }
+    if (response.status === 204) return null;
+    const body = (await response.json()) as { chatMessages?: unknown };
+    return typeof body.chatMessages === 'number' ? body.chatMessages : null;
+  }
+  throw failure;
+}
+
+/**
+ * Release a chat message no reply was produced for, so the audit can send another, and record its
+ * daily holds for settlement. `failed` means the model was called, so the message keeps its attempt;
+ * `released` means it never was, so its attempt is refunded.
+ */
+export async function releaseGraderChatMessage(
+  reservation: GraderChatReservation,
+  outcome: ChatReleaseInput['outcome'],
+  env: Env,
+): Promise<void> {
+  const input: ChatReleaseInput = {
+    reservationIdentifier: reservation.reservationIdentifier,
+    outcome,
+  };
+  const response = await authorityStub(reservation.auditIdentifier, env).fetch(
+    internalRequest(reservation.storeOrigin, '/release-chat', input),
+  );
+  assertAuthoritySuccess(response);
+}
+
+/** Tell the audit's authority a chat message's daily counters are settled. */
+export async function acknowledgeGraderChatSettlement(
+  reservation: GraderChatReservation,
+  env: Env,
+): Promise<void> {
+  await chatReservationRequest(reservation, '/settle-chat', env);
+}
+
+async function chatReservationRequest(
+  reservation: GraderChatReservation,
+  path: '/settle-chat',
+  env: Env,
+): Promise<void> {
+  const input: ChatReservationInput = { reservationIdentifier: reservation.reservationIdentifier };
+  const response = await authorityStub(reservation.auditIdentifier, env).fetch(
+    internalRequest(reservation.storeOrigin, path, input),
+  );
+  assertAuthoritySuccess(response);
+}
+
 /** Durable Object implementation exported by the Worker entry module. */
 export class AuditSessionAuthority implements DurableObject {
   constructor(
@@ -270,6 +567,22 @@ export class AuditSessionAuthority implements DurableObject {
     if (path === '/exchange') return this.exchange(await readInput<ExchangeInput>(request));
     if (path === '/reserve') return this.reserve(await readInput<ReserveInput>(request));
     if (path === '/finalize') return this.finalize(await readInput<FinalizeInput>(request));
+    if (path === '/reserve-chat') {
+      return this.reserveChat(await readInput<ChatReserveInput>(request));
+    }
+    if (path === '/commit-chat') return this.commitChat(await readInput<ChatCommitInput>(request));
+    if (path === '/release-chat') {
+      return this.releaseChat(await readInput<ChatReleaseInput>(request));
+    }
+    if (path === '/settle-chat') {
+      return this.settleChat(await readInput<ChatReservationInput>(request));
+    }
+    if (path === GRADER_CHAT_QUOTA_RESERVE_PATH) {
+      return this.reserveGraderChatQuota(await readInput<unknown>(request));
+    }
+    if (path === GRADER_CHAT_QUOTA_FINALIZE_PATH) {
+      return this.finalizeGraderChatQuota(await readInput<unknown>(request));
+    }
     if (path === '/reserve-free-visual-verification') {
       return this.reserveFreeVisualVerification(
         await readInput<FreeVisualVerificationReserveInput>(request),
@@ -280,7 +593,11 @@ export class AuditSessionAuthority implements DurableObject {
 
   async alarm(): Promise<void> {
     try {
+      await drainDailyChatAlerts(this.state.storage, this.env, this.logger());
+      await expireDailyChatCounter(this.state.storage);
       await this.expirePendingSession();
+      await this.drainChatSettlements();
+      await this.deleteExpiredChatOutcomes();
       await this.flushStatusOutbox();
     } finally {
       await this.scheduleAlarm();
@@ -288,47 +605,57 @@ export class AuditSessionAuthority implements DurableObject {
   }
 
   private async exchange(input: ExchangeInput): Promise<Response> {
-    const status = await this.state.storage.transaction(async (storage) => {
+    const outcome = await this.state.storage.transaction(async (storage) => {
       const existing = await readSession(storage);
-      if (existing?.consumedActivationIdentifiers.includes(input.activationIdentifier)) return 409;
+      if (existing?.consumedActivationIdentifiers.includes(input.activationIdentifier)) {
+        return { status: 409 } as const;
+      }
       if (
         existing &&
         (existing.auditIdentifier !== input.auditIdentifier ||
           !isSameStoreOrigin(existing.storeOrigin, input.storeOrigin) ||
           existing.attemptLimit !== input.attemptLimit)
       ) {
-        return 403;
+        return { status: 403 } as const;
       }
-      if (existing && publicAttemptsExhausted(existing)) return 429;
-      const now = epochSeconds();
-      if (existing && existing.expiresAt > now) return 423;
+      if (existing && publicAttemptsExhausted(existing)) return { status: 429 } as const;
 
-      const expired = existing ? releaseExpiredSession(existing, now) : undefined;
+      const superseded = existing ? releaseSession(existing) : undefined;
       const session: SessionRecord = {
         auditIdentifier: input.auditIdentifier,
         attemptLimit: input.attemptLimit,
         storeOrigin: input.storeOrigin,
         statusCallbackUrl: input.statusCallbackUrl,
-        completedAttempts: expired?.completedAttempts ?? 0,
+        completedAttempts: superseded?.completedAttempts ?? 0,
         consumedActivationIdentifiers: [
-          ...(expired?.consumedActivationIdentifiers ?? []),
+          ...(superseded?.consumedActivationIdentifiers ?? []),
           input.activationIdentifier,
         ],
         sessionIdentifier: input.sessionIdentifier,
         expiresAt: input.expiresAt,
         ...NO_SESSION_TOTALS,
+        chatMessages: superseded?.chatMessages ?? 0,
+        chatAttempts: superseded?.chatAttempts ?? 0,
+        chatReplies: superseded?.chatReplies ?? [],
+        ...(superseded?.chatInFlight ? { chatInFlight: superseded.chatInFlight } : {}),
+        ...(superseded?.chatAnswered ? { chatAnswered: superseded.chatAnswered } : {}),
+        ...(superseded?.chatSettlements ? { chatSettlements: superseded.chatSettlements } : {}),
         run: 1,
         ...FRESH_RUN,
-        pending: expired ? withAdmittingOrigin(expired.pending, expired.storeOrigin) : {},
+        pending: superseded ? withAdmittingOrigin(superseded.pending, superseded.storeOrigin) : {},
         completedReservations: [],
-        abandonedReservations: expired?.abandonedReservations ?? [],
-        statusOutbox: expired?.statusOutbox ?? [],
+        abandonedReservations: superseded?.abandonedReservations ?? [],
+        statusOutbox: superseded?.statusOutbox ?? [],
       };
       await this.writeSession(storage, session);
-      return 201;
+      return { status: 201, chatMessages: session.chatMessages ?? 0 } as const;
     });
-    if (status === 201) await this.scheduleAlarm();
-    return internalResponse(status);
+    if (outcome.status !== 201) return internalResponse(outcome.status);
+    await this.scheduleAlarm();
+    return new Response(JSON.stringify({ chatMessages: outcome.chatMessages }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   private async reserve(input: ReserveInput): Promise<Response> {
@@ -408,6 +735,239 @@ export class AuditSessionAuthority implements DurableObject {
     });
     if (status === 200) await this.scheduleAlarm();
     return internalResponse(status);
+  }
+
+  private async reserveChat(input: ChatReserveInput): Promise<Response> {
+    const outcome = await this.state.storage.transaction(async (storage) => {
+      const stored = await readSession(storage);
+      if (!stored || !matchesSession(stored, input)) return { status: 401 } as const;
+      const answered = stored.chatAnswered?.find(
+        (message) => message.messageId === input.messageId,
+      );
+      if (answered) {
+        if (answered.transcriptFingerprint !== input.transcriptFingerprint) {
+          return { status: 400 } as const;
+        }
+        const replay = await storage.get<GraderChatOutcome>(chatOutcomeKey(input.messageId));
+        if (!replay) return { status: 400 } as const;
+        return { status: 200, replay, chatMessages: stored.chatMessages ?? 0 } as const;
+      }
+      const now = Date.now();
+      const inFlight = stored.chatInFlight;
+      if (inFlight?.reservationIdentifier === input.reservationIdentifier) {
+        return { status: 201 } as const;
+      }
+      if (inFlight && leaseEnd(inFlight.admittedAt) > now) {
+        return inFlight.messageId === input.messageId &&
+          inFlight.transcriptFingerprint !== input.transcriptFingerprint
+          ? ({ status: 400 } as const)
+          : ({ status: 409 } as const);
+      }
+      if (serializedBytes(stored) > SESSION_RECORD_BUDGET_BYTES) return { status: 503 } as const;
+      if (!stored.runCompleted) {
+        return { status: runAnalysisPending(stored) ? 423 : 424 } as const;
+      }
+      if ((stored.chatMessages ?? 0) >= graderChatMessageAllowance(this.env)) {
+        return { status: 429 } as const;
+      }
+      if ((stored.chatAttempts ?? 0) >= graderChatAttemptAllowance(this.env)) {
+        return { status: 402 } as const;
+      }
+      const replies = new Set(stored.chatReplies ?? []);
+      if (input.historyFingerprints.some((fingerprint) => !replies.has(fingerprint))) {
+        return { status: 403 } as const;
+      }
+      const released = releaseLapsedChat(stored, now);
+      await this.writeSession(storage, {
+        ...released,
+        chatAttempts: (released.chatAttempts ?? 0) + 1,
+        chatInFlight: {
+          reservationIdentifier: input.reservationIdentifier,
+          messageId: input.messageId,
+          transcriptFingerprint: input.transcriptFingerprint,
+          visitorAuthority: input.visitorAuthority,
+          day: input.day,
+          admittedAt: now,
+        },
+      } satisfies SessionRecord);
+      return { status: 201 } as const;
+    });
+    if (outcome.status === 200) {
+      return new Response(
+        JSON.stringify({ outcome: outcome.replay, chatMessages: outcome.chatMessages }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (outcome.status === 201) await this.scheduleAlarm();
+    return internalResponse(outcome.status);
+  }
+
+  private async commitChat(input: ChatCommitInput): Promise<Response> {
+    const committed = await this.state.storage.transaction(async (storage) => {
+      const session = await readSession(storage);
+      if (!session) return { status: 204 } as const;
+      const answered = session.chatAnswered ?? [];
+      if (
+        answered.some((message) => message.reservationIdentifier === input.reservationIdentifier)
+      ) {
+        return { status: 200, chatMessages: session.chatMessages ?? 0 } as const;
+      }
+      const inFlight = session.chatInFlight;
+      if (inFlight?.reservationIdentifier !== input.reservationIdentifier) {
+        return { status: 410 } as const;
+      }
+      const now = Date.now();
+      const count = (session.chatMessages ?? 0) + 1;
+      await storage.put(chatOutcomeKey(inFlight.messageId), input.outcome);
+      await this.writeSession(storage, {
+        ...withoutChatInFlight(session),
+        chatMessages: count,
+        chatReplies:
+          input.replyFingerprint === undefined
+            ? (session.chatReplies ?? [])
+            : [...(session.chatReplies ?? []), input.replyFingerprint],
+        chatAnswered: [
+          ...answered,
+          {
+            messageId: inFlight.messageId,
+            transcriptFingerprint: inFlight.transcriptFingerprint,
+            reservationIdentifier: inFlight.reservationIdentifier,
+            answeredAt: now,
+            outcomeExpiresAt: now + auditSessionTtlSeconds(this.env) * 1000,
+          },
+        ].slice(-GRADER_CHAT_MESSAGE_CEILING),
+        chatSettlements: [
+          ...(session.chatSettlements ?? []),
+          chatSettlement(inFlight, 'answered', now, now + CALLBACK_RETRY_MILLISECONDS),
+        ],
+      } satisfies SessionRecord);
+      return { status: 200, chatMessages: count } as const;
+    });
+    if (committed.status !== 200) return internalResponse(committed.status);
+    await this.scheduleAlarm();
+    return new Response(JSON.stringify({ chatMessages: committed.chatMessages }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  private async releaseChat(input: ChatReleaseInput): Promise<Response> {
+    if (input.outcome !== 'failed' && input.outcome !== 'released') return internalResponse(400);
+    await this.state.storage.transaction(async (storage) => {
+      const session = await readSession(storage);
+      const inFlight = session?.chatInFlight;
+      if (!session || inFlight?.reservationIdentifier !== input.reservationIdentifier) return;
+      const now = Date.now();
+      await this.writeSession(
+        storage,
+        releaseChatInFlight(
+          session,
+          inFlight,
+          input.outcome,
+          now,
+          now + CALLBACK_RETRY_MILLISECONDS,
+        ),
+      );
+    });
+    await this.scheduleAlarm();
+    return internalResponse(204);
+  }
+
+  private async settleChat(input: ChatReservationInput): Promise<Response> {
+    await this.state.storage.transaction(async (storage) => {
+      const session = await readSession(storage);
+      const settlements = session?.chatSettlements ?? [];
+      if (!session || !settlements.some(isSettlementOf(input.reservationIdentifier))) return;
+      await this.writeSession(storage, {
+        ...session,
+        chatSettlements: withoutSettlement(settlements, input.reservationIdentifier),
+      } satisfies SessionRecord);
+    });
+    return internalResponse(204);
+  }
+
+  private async drainChatSettlements(): Promise<void> {
+    const session = await readSession(this.state.storage);
+    const now = Date.now();
+    const due = (session?.chatSettlements ?? []).filter((settlement) => settlement.retryAt <= now);
+    const log = this.logger();
+    for (const settlement of due) {
+      let settled = true;
+      if (now - settlement.recordedAt > CHAT_SETTLEMENT_HORIZON_MILLISECONDS) {
+        log.warn('A grader chat settlement outlived its daily counters; it was dropped', {
+          auditIdentifier: session?.auditIdentifier,
+        });
+      } else {
+        try {
+          await finalizeGraderChatQuota(
+            {
+              reservationIdentifier: settlement.reservationIdentifier,
+              visitorAuthority: settlement.visitorAuthority,
+              day: settlement.day,
+            },
+            settlement.outcome,
+            this.env,
+          );
+        } catch (error) {
+          settled = false;
+          log.warn('A grader chat settlement could not reach its daily counters; it is retried', {
+            auditIdentifier: session?.auditIdentifier,
+            failure: error instanceof Error ? error.name : 'unknown',
+          });
+        }
+      }
+      await this.state.storage.transaction(async (storage) => {
+        const current = await readSession(storage);
+        const settlements = current?.chatSettlements ?? [];
+        if (!current || !settlements.some(isSettlementOf(settlement.reservationIdentifier))) return;
+        await this.writeSession(storage, {
+          ...current,
+          chatSettlements: settled
+            ? withoutSettlement(settlements, settlement.reservationIdentifier)
+            : settlements.map((entry) =>
+                isSettlementOf(settlement.reservationIdentifier)(entry)
+                  ? { ...entry, retryAt: Date.now() + CALLBACK_RETRY_MILLISECONDS }
+                  : entry,
+              ),
+        } satisfies SessionRecord);
+      });
+    }
+  }
+
+  private async deleteExpiredChatOutcomes(): Promise<void> {
+    await this.state.storage.transaction(async (storage) => {
+      const session = await readSession(storage);
+      const now = Date.now();
+      const expired = (session?.chatAnswered ?? []).filter(
+        (message) => message.outcomeExpiresAt !== undefined && message.outcomeExpiresAt <= now,
+      );
+      if (!session || expired.length === 0) return;
+      for (const message of expired) await storage.delete(chatOutcomeKey(message.messageId));
+      await this.writeSession(storage, {
+        ...session,
+        chatAnswered: (session.chatAnswered ?? []).map((message) => {
+          if (!expired.includes(message)) return message;
+          const { outcomeExpiresAt: _deleted, ...kept } = message;
+          return kept;
+        }),
+      } satisfies SessionRecord);
+    });
+  }
+
+  private async reserveGraderChatQuota(input: unknown): Promise<Response> {
+    if (!isDailyChatReserveInput(input)) return internalResponse(400);
+    const reservation = await reserveDailyChatSlot(this.state.storage, input);
+    if (reservation === 'misdirected') return internalResponse(421);
+    if (reservation === 'attempts-exhausted') return internalResponse(402);
+    if (reservation === 'refused') return internalResponse(429);
+    await this.scheduleAlarm();
+    return internalResponse(201);
+  }
+
+  private async finalizeGraderChatQuota(input: unknown): Promise<Response> {
+    if (!isDailyChatFinalizeInput(input)) return internalResponse(400);
+    if (await finalizeDailyChatSlot(this.state.storage, input)) await this.scheduleAlarm();
+    return internalResponse(204);
   }
 
   private async reserveFreeVisualVerification(
@@ -523,30 +1083,34 @@ export class AuditSessionAuthority implements DurableObject {
     await this.state.storage.transaction(async (storage) => {
       const session = await readSession(storage);
       if (!session) return;
-      const released = releaseLapsedReservations(releaseExpiredSession(session, now), Date.now());
+      const released = releaseLapsedChat(
+        releaseLapsedReservations(releaseExpiredSession(session, now), Date.now()),
+        Date.now(),
+      );
       if (released !== session) await this.writeSession(storage, released);
     });
   }
 
   private async flushStatusOutbox(): Promise<void> {
     while (true) {
-      const session = await this.state.storage.get<SessionRecord>(SESSION_STORAGE_KEY);
+      const session = await readSession(this.state.storage);
       const event = session?.statusOutbox[0];
       if (!session || !event) return;
       if (session.statusRetryAt !== undefined && session.statusRetryAt > Date.now()) return;
       const delivery = await deliverAuditStatusEvent(event, session.statusCallbackUrl, this.env);
       if (delivery === 'rejected') {
-        createLoggingRuntime(this.env)
-          .logger('AuditSessionAuthority')
-          .warn('The website permanently rejected an audit status event; it was dropped', {
+        this.logger().warn(
+          'The website permanently rejected an audit status event; it was dropped',
+          {
             auditIdentifier: event.auditIdentifier,
             eventIdentifier: event.eventIdentifier,
             attemptNumber: event.attemptNumber,
             status: event.status,
-          });
+          },
+        );
       }
       await this.state.storage.transaction(async (storage) => {
-        const current = await storage.get<SessionRecord>(SESSION_STORAGE_KEY);
+        const current = await readSession(storage);
         if (!current || current.statusOutbox[0]?.eventIdentifier !== event.eventIdentifier) return;
         const { statusRetryAt: _previous, ...settled } = current;
         await storage.put(
@@ -579,26 +1143,53 @@ export class AuditSessionAuthority implements DurableObject {
     } satisfies SessionRecord);
   }
 
-  private async scheduleAlarm(): Promise<void> {
-    const session = await this.state.storage.get<SessionRecord>(SESSION_STORAGE_KEY);
-    if (!session) return;
-    const now = Date.now();
-    const candidates: number[] = [];
-    if (session.statusOutbox.length > 0) {
-      candidates.push(Math.max(now, session.statusRetryAt ?? now));
-    }
-    const sessionExpiry = session.expiresAt * 1000;
-    if (sessionExpiry > now) candidates.push(sessionExpiry);
-    const leaseEnds = Object.values(session.pending).flatMap((reservation) =>
-      reservation.admittedAt === undefined ? [] : [leaseEnd(reservation.admittedAt)],
+  private logger(): Logger {
+    return createLoggingRuntime(this.env, (task) => this.state.waitUntil(task)).logger(
+      'AuditSessionAuthority',
     );
-    if (leaseEnds.length > 0) candidates.push(Math.max(now, Math.min(...leaseEnds)));
+  }
+
+  private async scheduleAlarm(): Promise<void> {
+    const candidates: number[] = [];
+    const counterAlarmAt = await dailyChatCounterAlarmAt(this.state.storage);
+    if (counterAlarmAt !== null) candidates.push(counterAlarmAt);
+    const session = await readSession(this.state.storage);
+    if (session) candidates.push(...sessionAlarmCandidates(session));
     if (candidates.length > 0) await this.state.storage.setAlarm(Math.min(...candidates));
   }
 }
 
+function sessionAlarmCandidates(session: SessionRecord): number[] {
+  const now = Date.now();
+  const candidates: number[] = [];
+  if (session.statusOutbox.length > 0) {
+    candidates.push(Math.max(now, session.statusRetryAt ?? now));
+  }
+  const sessionExpiry = session.expiresAt * 1000;
+  if (sessionExpiry > now) candidates.push(sessionExpiry);
+  const leaseEnds = Object.values(session.pending).flatMap((reservation) =>
+    reservation.admittedAt === undefined ? [] : [leaseEnd(reservation.admittedAt)],
+  );
+  if (leaseEnds.length > 0) candidates.push(Math.max(now, Math.min(...leaseEnds)));
+  const settlementRetries = (session.chatSettlements ?? []).map((settlement) => settlement.retryAt);
+  if (settlementRetries.length > 0) {
+    candidates.push(Math.max(now, Math.min(...settlementRetries)));
+  }
+  if (session.chatInFlight) {
+    candidates.push(Math.max(now, leaseEnd(session.chatInFlight.admittedAt)));
+  }
+  const outcomeExpiries = (session.chatAnswered ?? []).flatMap((message) =>
+    message.outcomeExpiresAt === undefined ? [] : [message.outcomeExpiresAt],
+  );
+  if (outcomeExpiries.length > 0) candidates.push(Math.max(now, Math.min(...outcomeExpiries)));
+  return candidates;
+}
+
 function releaseExpiredSession(session: SessionRecord, now: number): SessionRecord {
-  if (session.expiresAt > now) return session;
+  return session.expiresAt > now ? session : releaseSession(session);
+}
+
+function releaseSession(session: SessionRecord): SessionRecord {
   const statusOutbox = [...session.statusOutbox];
   const leased: Record<string, PendingReservation> = {};
   const released: string[] = [];
@@ -651,9 +1242,68 @@ function releaseLapsedReservations(session: SessionRecord, nowMilliseconds: numb
 }
 
 function leaseEnd(admittedAt: number): number {
-  return (
-    admittedAt + UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + RESERVATION_FINALIZE_GRACE_MILLISECONDS
+  return admittedAt + RESERVATION_LEASE_MILLISECONDS;
+}
+
+function isSettlementOf(reservationIdentifier: string): (settlement: ChatSettlement) => boolean {
+  return (settlement) => settlement.reservationIdentifier === reservationIdentifier;
+}
+
+function withoutSettlement(
+  settlements: readonly ChatSettlement[],
+  reservationIdentifier: string,
+): readonly ChatSettlement[] {
+  return settlements.filter(
+    (settlement) => settlement.reservationIdentifier !== reservationIdentifier,
   );
+}
+
+function withoutChatInFlight(session: SessionRecord): SessionRecord {
+  const { chatInFlight: _released, ...released } = session;
+  return released;
+}
+
+function releaseChatInFlight(
+  session: SessionRecord,
+  inFlight: ChatReservation,
+  outcome: ChatReleaseInput['outcome'],
+  now: number,
+  retryAt: number,
+): SessionRecord {
+  return {
+    ...withoutChatInFlight(session),
+    chatAttempts: Math.max(0, (session.chatAttempts ?? 0) - (outcome === 'released' ? 1 : 0)),
+    chatSettlements: [
+      ...(session.chatSettlements ?? []),
+      chatSettlement(inFlight, outcome, now, retryAt),
+    ],
+  };
+}
+
+function releaseLapsedChat(session: SessionRecord, now: number): SessionRecord {
+  const inFlight = session.chatInFlight;
+  if (!inFlight || leaseEnd(inFlight.admittedAt) > now) return session;
+  return releaseChatInFlight(session, inFlight, 'failed', now, now);
+}
+
+function chatSettlement(
+  inFlight: ChatReservation,
+  outcome: GraderChatSettlementOutcome,
+  now: number,
+  retryAt: number,
+): ChatSettlement {
+  return {
+    reservationIdentifier: inFlight.reservationIdentifier,
+    visitorAuthority: inFlight.visitorAuthority,
+    day: inFlight.day,
+    outcome,
+    recordedAt: now,
+    retryAt,
+  };
+}
+
+function chatOutcomeKey(messageId: string): string {
+  return `${CHAT_OUTCOME_KEY_PREFIX}${messageId}`;
 }
 
 function admittedBySession(reservation: PendingReservation, session: SessionRecord): boolean {
@@ -667,6 +1317,15 @@ function inCurrentRun(reservation: PendingReservation, session: SessionRecord): 
   return (
     admittedBySession(reservation, session) &&
     (reservation.run === undefined || reservation.run === session.run)
+  );
+}
+
+function runAnalysisPending(session: SessionRecord): boolean {
+  return (
+    !session.runInferenceStarted ||
+    Object.values(session.pending).some(
+      (reservation) => reservation.kind === 'message' && inCurrentRun(reservation, session),
+    )
   );
 }
 
@@ -717,12 +1376,47 @@ interface SessionRecordWithoutRuns extends Omit<
   readonly fileIdentifiers: readonly string[];
 }
 
+/** A session's chat state as a worker that did not date its daily holds stored it. */
+type StoredSessionRecord = Omit<SessionRecord, 'chatInFlight' | 'chatSettlements'> & {
+  readonly chatInFlight?: Omit<ChatReservation, 'day'> & { readonly day?: string };
+  readonly chatSettlements?: readonly (Omit<ChatSettlement, 'day'> & { readonly day?: string })[];
+};
+
 async function readSession(
   storage: DurableObjectStorage | DurableObjectTransaction,
 ): Promise<SessionRecord | undefined> {
-  const stored = await storage.get<SessionRecord | SessionRecordWithoutRuns>(SESSION_STORAGE_KEY);
+  const stored = await storage.get<StoredSessionRecord | SessionRecordWithoutRuns>(
+    SESSION_STORAGE_KEY,
+  );
   if (!stored) return undefined;
-  return 'run' in stored ? stored : asFirstRun(stored);
+  return withDatedChatHolds('run' in stored ? stored : asFirstRun(stored));
+}
+
+function withDatedChatHolds(session: StoredSessionRecord): SessionRecord {
+  const { chatInFlight, chatSettlements, ...rest } = session;
+  return {
+    ...rest,
+    ...(chatInFlight
+      ? {
+          chatInFlight: {
+            ...chatInFlight,
+            day: chatInFlight.day ?? utcDayOf(chatInFlight.admittedAt),
+          },
+        }
+      : {}),
+    ...(chatSettlements
+      ? {
+          chatSettlements: chatSettlements.map((settlement) => ({
+            ...settlement,
+            day: settlement.day ?? utcDayOf(settlement.recordedAt),
+          })),
+        }
+      : {}),
+  };
+}
+
+function utcDayOf(epochMilliseconds: number): string {
+  return new Date(epochMilliseconds).toISOString().slice(0, 10);
 }
 
 function asFirstRun(stored: SessionRecordWithoutRuns): SessionRecord {
@@ -820,7 +1514,10 @@ function internalResponse(status: number): Response {
   return new Response(null, { status });
 }
 
-function matchesSession(session: SessionRecord, input: ReserveInput): boolean {
+function matchesSession(
+  session: SessionRecord,
+  input: Pick<ReserveInput, 'auditIdentifier' | 'sessionIdentifier' | 'storeOrigin' | 'expiresAt'>,
+): boolean {
   return (
     session.auditIdentifier === input.auditIdentifier &&
     session.sessionIdentifier === input.sessionIdentifier &&
@@ -832,15 +1529,15 @@ function matchesSession(session: SessionRecord, input: ReserveInput): boolean {
 
 function assertAuthoritySuccess(response: Response): void {
   if (response.ok) return;
-  throw new WorkerError('The grader-session authority rejected the request.', {
-    status: 500,
-    exceptionType: 'AuditSessionAuthorityException',
-    messageDetail: `Internal authority status ${response.status}`,
-  });
+  throw authorityFailure(response.status);
 }
 
-function auditAuthorizationError(message: string): WorkerError {
-  return new WorkerError(message, { status: 401, exceptionType: 'AuditAuthorizationException' });
+function authorityFailure(status: number): WorkerError {
+  return new WorkerError('The grader-session authority rejected the request.', {
+    status: 500,
+    exceptionType: 'AuditSessionAuthorityException',
+    messageDetail: `Internal authority status ${status}`,
+  });
 }
 
 function quotaError(message: string): WorkerError {

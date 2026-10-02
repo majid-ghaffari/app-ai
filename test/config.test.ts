@@ -10,7 +10,7 @@
  * the contract proof reads the deploy manifest itself.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import {
   personalizerApiUrl,
@@ -40,6 +40,16 @@ import {
   auditSessionSigningSecret,
   auditSessionTtlSeconds,
   freeVisualVerifyDailyLimit,
+  graderChatAlertEvery,
+  graderChatAlertSlackWebhookUrl,
+  graderChatBookletVersion,
+  graderChatEffort,
+  graderChatEnabled,
+  graderChatMaxInputCharacters,
+  graderChatMaxReplyTokens,
+  graderChatMessagesPerDay,
+  graderChatMessagesPerAudit,
+  graderChatMessagesPerVisitorPerDay,
   freeVisualVerifyAcceptanceReserve,
   freeVisualVerifyEnabled,
   inferenceQuotaInternalOrigin,
@@ -48,6 +58,7 @@ import {
   type Env,
 } from '../src/config';
 import { describePromptRoutes, validateModelRouting } from '../src/prompt-registry';
+import { graderChatRoute } from '../src/handlers/grader-chat';
 import { ENV } from './helpers';
 
 const EMPTY_ENV: Env = {};
@@ -72,7 +83,7 @@ describe('config accessors — present values', () => {
     expect(auditSessionSigningSecret(ENV)).toBe(ENV.AUDIT_SESSION_SIGNING_SECRET);
     expect(auditStatusSigningSecret(ENV)).toBe(ENV.AUDIT_STATUS_SIGNING_SECRET);
     expect(auditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
-    expect(auditSessionTtlSeconds(ENV)).toBe(1800);
+    expect(auditSessionTtlSeconds(ENV)).toBe(86400);
     expect(auditMaxRuns(ENV)).toBe(4);
     expect(auditRunHeadroom(ENV)).toBe(2);
     expect(auditMaxUploadBytes(ENV)).toBe(8000000);
@@ -288,6 +299,65 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(() => auditSessionAuthority(EMPTY_ENV)).toThrow(/binding AUDIT_SESSIONS/);
     expect(() => freeVisualVerifyEnabled({ ...ENV, FREE_VISUAL_VERIFY_ENABLED: 'maybe' })).toThrow(
       /must be true or false/,
+    );
+  });
+
+  it('Grader chat configuration parses, validates, and fails fast', () => {
+    expect(graderChatEnabled(ENV)).toBe(true);
+    expect(graderChatEnabled({ ...ENV, GRADER_CHAT_ENABLED: 'False' })).toBe(false);
+    expect(() => graderChatEnabled({ ...ENV, GRADER_CHAT_ENABLED: 'yes' })).toThrow(
+      /GRADER_CHAT_ENABLED must be true or false/,
+    );
+    expect(graderChatMessagesPerAudit(ENV)).toBe(25);
+    expect(graderChatMessagesPerVisitorPerDay(ENV)).toBe(50);
+    expect(graderChatMessagesPerDay(ENV)).toBe(10000);
+    expect(graderChatMaxInputCharacters(ENV)).toBe(500);
+    expect(graderChatMaxReplyTokens(ENV)).toBe(600);
+    expect(graderChatEffort(ENV)).toBe('low');
+    expect(graderChatEffort({ ...ENV, GRADER_CHAT_EFFORT: 'Medium' })).toBe('medium');
+    expect(() => graderChatEffort({ ...ENV, GRADER_CHAT_EFFORT: 'max' })).toThrow(
+      /GRADER_CHAT_EFFORT must be one of low, medium, high, xhigh/,
+    );
+    expect(graderChatBookletVersion(ENV)).toBe(1);
+    expect(graderChatAlertEvery(ENV)).toBe(500);
+    for (const [name, accessor] of [
+      ['GRADER_CHAT_MESSAGES_PER_AUDIT', graderChatMessagesPerAudit],
+      ['GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY', graderChatMessagesPerVisitorPerDay],
+      ['GRADER_CHAT_MESSAGES_PER_DAY', graderChatMessagesPerDay],
+      ['GRADER_CHAT_MAX_INPUT_CHARACTERS', graderChatMaxInputCharacters],
+      ['GRADER_CHAT_MAX_REPLY_TOKENS', graderChatMaxReplyTokens],
+      ['GRADER_CHAT_BOOKLET_VERSION', graderChatBookletVersion],
+      ['GRADER_CHAT_ALERT_EVERY', graderChatAlertEvery],
+    ] as const) {
+      expect(() => accessor({ ...ENV, [name]: '0' }), name).toThrow(
+        new RegExp(`${name} must be a positive integer`),
+      );
+      expect(() => accessor(EMPTY_ENV), name).toThrow(
+        new RegExp(`Missing required configuration variable ${name}.*wrangler\\.toml`),
+      );
+    }
+    expect(() => graderChatEnabled(EMPTY_ENV)).toThrow(/GRADER_CHAT_ENABLED.*wrangler\.toml/);
+    expect(() => graderChatEffort(EMPTY_ENV)).toThrow(/GRADER_CHAT_EFFORT.*wrangler\.toml/);
+  });
+
+  it('treats the chat-volume alert webhook as an optional HTTPS secret', () => {
+    expect(graderChatAlertSlackWebhookUrl(ENV)).toBeNull();
+    expect(
+      graderChatAlertSlackWebhookUrl({ ...ENV, GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL: '' }),
+    ).toBeNull();
+    expect(
+      graderChatAlertSlackWebhookUrl({
+        ...ENV,
+        GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL: 'https://hooks.slack.test/services/T/B/X',
+      }),
+    ).toBe('https://hooks.slack.test/services/T/B/X');
+    for (const value of ['http://hooks.slack.test/services/T/B/X', 'not a url']) {
+      expect(() =>
+        graderChatAlertSlackWebhookUrl({ ...ENV, GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL: value }),
+      ).toThrow(/must be an absolute HTTPS URL/);
+    }
+    expect(missingRequiredSecretNames(ENV, ['anthropic'])).not.toContain(
+      'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL',
     );
   });
 
@@ -550,6 +620,26 @@ describe('production [vars] — the deployed configuration values', () => {
     }
   });
 
+  it('passes production readiness with every deployed binding, the Grader chat on', async () => {
+    const deployed: Env = { ...ENV, ...Object.fromEntries(parsedProductionVars()) };
+    expect(graderChatEnabled(deployed)).toBe(true);
+    expect(graderChatRoute(deployed).profile).toMatchObject({
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+    });
+    vi.stubGlobal('__APP_AI_REV__', 'fc00704');
+    vi.resetModules();
+    try {
+      const { default: servedWorker } = await import('../src/index');
+      const ready = await servedWorker.fetch(new Request('https://app-ai.test/health'), deployed);
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toMatchObject({ status: 'ok', buildRev: 'fc00704' });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it('gates the operator diagnostics on a configured master subscriber', () => {
     expect(productionVars()).toContain('MASTER_SUBSCRIBER_ID = "1"');
   });
@@ -590,6 +680,23 @@ describe('production [vars] — the deployed configuration values', () => {
     ]) {
       expect(vars.has(retired), `${retired} no longer limits a grader session`).toBe(false);
     }
+  });
+
+  it('keeps a grader session, and its chat, for 24 hours', () => {
+    expect(parsedProductionVars().get('AUDIT_SESSION_TTL_SECONDS')).toBe('86400');
+  });
+
+  it('ships the Grader chat on with its operator defaults', () => {
+    const vars = parsedProductionVars();
+    expect(vars.get('GRADER_CHAT_ENABLED')).toBe('true');
+    expect(vars.get('GRADER_CHAT_MESSAGES_PER_AUDIT')).toBe('25');
+    expect(vars.get('GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY')).toBe('50');
+    expect(vars.get('GRADER_CHAT_MESSAGES_PER_DAY')).toBe('10000');
+    expect(vars.get('GRADER_CHAT_MAX_INPUT_CHARACTERS')).toBe('500');
+    expect(vars.get('GRADER_CHAT_MAX_REPLY_TOKENS')).toBe('600');
+    expect(vars.get('GRADER_CHAT_EFFORT')).toBe('low');
+    expect(vars.get('GRADER_CHAT_BOOKLET_VERSION')).toBe('1');
+    expect(vars.get('GRADER_CHAT_ALERT_EVERY')).toBe('500');
   });
 
   it('binds the strongly consistent audit-session authority with its migration', () => {
@@ -650,9 +757,19 @@ describe('production [vars] — the deployed configuration values', () => {
       'AUDIT_RUN_HEADROOM',
       'AUDIT_MAX_UPLOAD_BYTES',
       'AUDIT_MAX_MESSAGE_BYTES',
+      'GRADER_CHAT_ENABLED',
+      'GRADER_CHAT_MESSAGES_PER_AUDIT',
+      'GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY',
+      'GRADER_CHAT_MESSAGES_PER_DAY',
+      'GRADER_CHAT_MAX_INPUT_CHARACTERS',
+      'GRADER_CHAT_MAX_REPLY_TOKENS',
+      'GRADER_CHAT_EFFORT',
+      'GRADER_CHAT_BOOKLET_VERSION',
+      'GRADER_CHAT_ALERT_EVERY',
     ]) {
       expect(vars).toContain(`${name} = `);
     }
+    expect(vars).not.toContain('GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL');
     expect(vars).not.toContain('CLAUDE_API_KEY');
     expect(vars).not.toContain('OPENAI_API_KEY');
     expect(vars).not.toContain('MOONSHOT_API_KEY');

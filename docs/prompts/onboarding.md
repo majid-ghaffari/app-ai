@@ -14,7 +14,7 @@ The best-practice playbook embedded in the prompt covers: per-page recommendatio
 
 ## Model
 
-The `studio-data-agent` group runs on the `frontier` tier, shared with [`chat`](../../src/prompts/chat.md); its model resolves from `MODEL_FRONTIER` through [`src/config.ts`](../../src/config.ts). `maxTokens: 4096`. The registry entry omits effort, so the provider default applies.
+The `studio-data-agent` group runs on the `frontier` tier, shared with [`chat`](chat.md); its model resolves from `MODEL_FRONTIER` through [`src/config.ts`](../../src/config.ts). `maxTokens: 4096`. The registry entry omits effort, so the provider default applies.
 
 ## Tools
 

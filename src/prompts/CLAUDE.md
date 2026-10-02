@@ -38,11 +38,13 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
 3. **Rename a prompt →** rename the text file(s), the registry key, and `docs/prompts/<name>.md` together.
 4. **Retire a prompt →** delete the text, the registry entry, and the doc together (No Dead Code). A doc
    with no registered prompt, or a registered prompt with no doc, is a broken tree.
-5. **Edit a SHARED block (`onboarding-shared/_shared-*.md` / `_block-*.md`) →** it changes EVERY prompt
-   that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
+5. **Edit a SHARED block (`onboarding-shared/_shared-*.md` / `_block-*.md`, or
+   `assistant-shared/_shared-*.md`) →** it changes EVERY prompt that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
    composed text changes on purpose, regenerate that prompt's byte baseline in `test/__snapshots__/` — the
    byte-equivalence gate [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts)
-   fails otherwise.
+   fails otherwise. An `assistant-shared/` block reaches `chat` and `grader-chat`; their byte gate is
+   [`test/assistant-prompt-blocks.test.ts`](../../test/assistant-prompt-blocks.test.ts) against
+   `test/__snapshots__/chat.baseline.md` and `test/__snapshots__/grader-chat.baseline.md`.
 
 The authoring/iteration workflow (artifact rules, length enforcement, what belongs in a maintenance doc) is
 [`../../docs/PROMPT-AUTHORING.md`](../../docs/PROMPT-AUTHORING.md).
@@ -55,7 +57,7 @@ Every prompt's FINAL text is re-exported by the barrel [`./index.ts`](./index.ts
 `../prompt-registry.ts` is just the registry (`import * as prompts from './prompts'` resolves to that barrel;
 each entry's `prompt:` references `prompts.<name>`).
 
-- **Single-file** — one `<name>.md` (e.g. `chat.md`, `placement.md`, `analytics-insights.md`). The barrel
+- **Single-file** — one `<name>.md` (e.g. `placement.md`, `analytics-insights.md`). The barrel
   re-exports its raw `.md` text; the registry uses it directly as `prompt`.
 - **Multi-file** — a `<name>/` folder with `prompt.md` (system text) + a non-prompt attachment file
   (`sample.md`); the barrel re-exports both, and `sample.md` is wired through the registry's `attachments`.
@@ -63,8 +65,13 @@ each entry's `prompt:` references `prompts.<name>`).
 - **Composed** — a `<name>/` folder of `_`-prefixed BLOCK files (no `prompt.md`) PLUS its own
   [`index.ts`](./onboarding-batch/index.ts) that assembles the final text via `composePrompt(...)`
   (from [`./_compose.ts`](./_compose.ts)) out of that prompt's own fragments PLUS shared blocks from
-  `onboarding-shared/`, in a STABLE order (the cacheable prefix). The barrel re-exports that folder's
-  default. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
+  `onboarding-shared/` or `assistant-shared/`, in a STABLE order (the cacheable prefix). The barrel
+  re-exports that folder's default. `chat` composes the shared chat formatting around its
+  Studio-only fragments, its identity among them, which names the platforms Studio serves;
+  `grader-chat` composes the same formatting block around its own platform-neutral identity, its
+  one boundaries block and a booklet — the only part of its text that names a platform — and
+  exports its composition function and booklet map instead of a default, because the booklet is
+  chosen by configuration. Both are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
   name you can select via the header.
 - **Shared-text alias** — an explicit named export in the barrel points to another registered
   prompt's final text when the semantic input/output contract is identical but routing or access is
@@ -81,9 +88,29 @@ they are used in multiple places: a block used by one prompt only stays a fragme
 folder; a block shared across prompts is hoisted to `onboarding-shared/` so a single edit updates every
 composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
+**`assistant-shared/` is the second shared block library**, for the conversational assistant
+prompts: `_shared-chat-formatting.md` (the chat-bubble formatting rules), composed by `chat` and
+`grader-chat`. Each of the two keeps its identity in its own folder, because Studio names the
+platforms it serves and the Grader leaves platforms to the booklet. Like `onboarding-shared/`, it is
+never a registered prompt.
+
+## Grader chat booklets
+
+`grader-chat/booklets/v<version>.md` are marketing's booklets; `GRADER_CHAT_BOOKLET_VERSION` selects
+one and the barrel's `graderChatBookletSources` maps each version to its file. A booklet keeps
+exactly the six level-2 headings `GRADER_CHAT_BOOKLET_HEADINGS` names (`grader-chat/index.ts`), in
+order, and stays under the size cap `test/assistant-prompt-blocks.test.ts` pins. HTML comments are
+editor notes, stripped before the model sees the text. The boundaries block names its sections: a
+price is stated only by quoting Prices we may state word for word, so a price carries its currency
+and, when recurring, its period, and a trial or fee fact only as Claims we may make states it. No
+check in code holds the model to the booklet; the prompt does. New wording is a new version file,
+never an edit to a published one, so the `bookletVersion` a reply reports names the text it was
+grounded in; the change updates `docs/prompts/grader-chat.md`. The repository has no CODEOWNERS
+file, so marketing's ownership is a review convention, not an enforced rule.
+
 ## Registered-prompt inventory
 
-`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` is exactly one registered prompt; every loose prompt `.md` at this level EXCEPT the adapter-internal `kimi-html-retrieval.md` is a single-file registered prompt; and every shared-text alias is declared explicitly in the barrel.
+`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` and `assistant-shared/` is exactly one registered prompt; every loose prompt `.md` at this level EXCEPT the adapter-internal `kimi-html-retrieval.md` is a single-file registered prompt; and every shared-text alias is declared explicitly in the barrel.
 
 ### The `-all` twins are NOT duplicates
 

@@ -12,12 +12,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import { handleHealth } from '../src/handlers/health';
 import { PROMPTS_CONTEXT_ID_PARAMETER } from '../src/handlers/prompts';
-import { listPromptNames } from '../src/prompt-registry';
+import {
+  getPromptRequiredCapabilities,
+  listPromptNames,
+  type PromptName,
+} from '../src/prompt-registry';
 import type { Env } from '../src/config';
 import { CORS, ENV, fetchCall, headerOf, stubFetch, type FetchMock } from './helpers';
 
 interface PromptRouteView {
-  name: string;
+  name: PromptName;
   group: string;
   tier: string;
   model: string | null;
@@ -94,7 +98,7 @@ describe('GET /prompts — master gate', () => {
       expect(prompt.apiFamily).toBe(free ? 'cloudflare-workers-ai' : 'anthropic-messages');
       expect(prompt.filePolicy).toBe(free ? 'cloudflare-inline' : 'anthropic-provider-files');
       expect(['fast', 'balanced', 'frontier']).toContain(prompt.tier);
-      expect(prompt.requirements.length).toBeGreaterThan(0);
+      expect(prompt.requirements).toEqual(getPromptRequiredCapabilities(prompt.name));
       expect(prompt.inlineCacheBreakpoints).toBe(!free);
       expect(prompt.error).toBeUndefined();
     }

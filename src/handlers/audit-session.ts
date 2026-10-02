@@ -2,6 +2,7 @@
 
 import type { Env } from '../config';
 import { assertSupportedAuditPlan, exchangeAuditActivation } from '../lib/audit-auth';
+import { AUDIT_PLAN_VERSION_HEADER, declaredAuditPlanVersion } from '../lib/audit-plan';
 import { jsonResponse, WorkerError, type CorsHeaders } from '../lib/responses';
 
 /** Handle an audit-session exchange without exposing signing material to the extension. */
@@ -26,6 +27,11 @@ export async function handleAuditSessionExchange(
       exceptionType: 'ArgumentException',
     });
   }
-  const session = await exchangeAuditActivation(body.activationToken, body.storeUrl, env);
+  const session = await exchangeAuditActivation(
+    body.activationToken,
+    body.storeUrl,
+    declaredAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER)),
+    env,
+  );
   return jsonResponse(session, corsHeaders, 201);
 }

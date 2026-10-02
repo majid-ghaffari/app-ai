@@ -15,7 +15,9 @@
  *                                    reference names
  *   POST   /messages               — single-shot inference for the header-selected
  *                                    registered prompt (absent/unknown selector →
- *                                    the bounded raw Anthropic proxy)
+ *                                    the bounded raw Anthropic proxy); an audit
+ *                                    session's `grader-chat` selector reaches the
+ *                                    Grader sales chat
  *   POST   /chat                   — Studio AI agent loop (SSE + tool-use)
  *   GET    /prompts                — master-only prompt/model routing diagnostics
  *                                    (context-ID by header or query parameter)
@@ -51,8 +53,14 @@ import { handleFileUpload, handleDeleteFile } from './handlers/files';
 import { handleMessages } from './handlers/messages';
 import { handleChat } from './handlers/chat';
 import { handleAuditSessionExchange } from './handlers/audit-session';
+import { handleGraderChat } from './handlers/grader-chat';
 import { handlePrompts, promptsDiagnosticsContextId } from './handlers/prompts';
-import { authorizeAuditRequest, finalizeAuditUsage, releaseAuditUsage } from './lib/audit-auth';
+import {
+  GRADER_CHAT_PROMPT,
+  authorizeAuditRequest,
+  finalizeAuditUsage,
+  releaseAuditUsage,
+} from './lib/audit-auth';
 import { auditFileTenantScope } from './inference/file-references';
 import { assertFreeVisualVerifyRoute, FREE_VISUAL_VERIFY_PROMPT } from './prompt-registry';
 export { AuditSessionAuthority } from './lib/audit-session-authority';
@@ -105,6 +113,9 @@ async function handleRequest(
     }
 
     const auditAuthorization = await authorizeAuditRequest(request, env);
+    if (auditAuthorization?.kind === 'grader-chat') {
+      return await handleGraderChat(request, env, corsHeaders, logging, auditAuthorization);
+    }
     if (auditAuthorization) {
       let response: Response;
       try {
@@ -162,6 +173,10 @@ async function handleRequest(
         ? {}
         : { subscriberTitle: validation.SubscriberTitle }),
     });
+
+    if (request.headers.get('X-Personalizer-System-Prompt') === GRADER_CHAT_PROMPT) {
+      return errorResponse('Resource not found.', corsHeaders, 404, 'RecordNotFoundException');
+    }
 
     const freeVisualVerify =
       pathname === '/messages' &&

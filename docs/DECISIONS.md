@@ -946,7 +946,7 @@ silent copy. The client names its plan in `X-LimeSpot-Audit-Plan-Version`, and a
 holds no allowance for with 409 at the exchange, before any run starts, instead of letting the run
 meet a 429 partway through or admitting it against a stale allowance. A version cannot give a worker
 capacity it lacks, so the worker still deploys before the client that sends a new version. A
-request naming no version uses the current plan, so a client that sends no header keeps working.
+request naming no version follows plan 1, so a client that sends no header keeps working.
 
 ### One upstream inference deadline, owned by app-ai
 
@@ -1099,3 +1099,70 @@ paid and each requires two explicit acknowledgements plus an explicit base, key,
 and model. Kimi Code documents the subscription endpoint and model IDs; the
 probes verify the remaining wire behavior. Both sit outside CI and release
 gates and activate no production route.
+
+### 35. The Grader chat is its own traffic, admitted on the server's own evidence
+
+The Grader's sales chat runs on the scoped audit session, but it is not part of the audit's plan
+of work, so it never touches the audit's accounting: no run inference, attempt, upload, or status
+event, and no part in the rule that a new proposal supersedes a pending one. Mixing the two would let
+a chat message cancel a proposal the visitor is waiting on, or spend the run ceiling that exists to
+stop a lifted key. The session record keeps the chat's count, its reply fingerprints, and its one
+message in flight apart from `pending`.
+
+The client resends the whole conversation on every message, so app-ai cannot trust an assistant
+turn it did not write: a planted "LimeSpot is free forever" would steer the next reply. Each reply
+app-ai returns is stored as a fingerprint of the transcript through it, and every assistant turn a
+request carries must match one. Binding the transcript rather than the reply alone also refuses a
+genuine reply re-paired with a different question.
+
+The report is lib's structure plus model-written reasons and titles, so it is validated strictly,
+capped, and handed to the model as a fenced data block in the first user message — never the system
+prompt — with every backtick escaped so it cannot close its own fence. What the model may claim is
+marketing's booklet, and the prompt carries that rule rather than a filter in code. A deterministic
+claim filter cannot be made complete: each synonym, tense or word order it misses is a claim
+delivered, and closing those gaps one by one either never ends or ends by withholding ordinary
+replies, because telling a claim from harmless wording takes language understanding. So the
+boundaries block forbids promised or predicted results, guarantees, timelines, and any price or plan
+detail the booklet does not word, lib shows an "AI can make mistakes" disclaimer beside the chat,
+and the one deterministic check on a reply is the link guard: any link off limespot.com is withheld,
+because an off-site link is the clearest injection risk and recognizing one needs no understanding
+of the sentence around it. The report is no authority for any claim: it arrives from the client,
+the audited page's scripts can reach the bridge it travels through, and its figures describe the
+store's own suggestions rather than LimeSpot's commitments. A withheld reply still counts: the model
+was paid for, and not counting it would let a visitor spin unbounded calls.
+
+The three chat ledgers live in independent Durable Objects, so no transaction spans them. The
+audit's ledger is the authority — it holds the count and the fingerprints the next request's history
+is matched against — so it commits first, idempotently by the message's reservation, together with a
+settlement record for the two daily counters, and only then does the reply leave. The daily counters
+commit or release by the same reservation, so the request and the audit's alarm may both try without
+counting twice. A daily hold stays charged until a settlement commits or releases it, so a late
+settlement can never carry a counter past its limit; the audit releases a lapsed message explicitly
+and refuses that reservation's commit, so each reservation settles one way. A threshold alert is
+queued in the deployment counter's own outbox in the transaction that crosses it, and the counter's
+alarm delivers it, so a response lost after the commit cannot lose the alert; its id names the day,
+so a carried-over alert and today's equal threshold settle apart. A request captures its UTC day
+once for the visitor's counter name and both holds, and a counter refuses a hold dated another day,
+so midnight cannot hand one visitor two allowances.
+
+An HTTP retry must not buy a second answer. The server-made reservation identifies an attempt, not a
+message, so the caller sends a `messageId` per visitor turn and keeps it across retries. The audit
+binds it to a fingerprint of the transcript and stores the message's outcome in the transaction that
+counts it, so a retry after a lost response is answered from that outcome with no inference and no
+charge, a retry while the original runs is refused as busy, and the identifier cannot be reused for
+another conversation.
+
+An answered-message allowance alone bounds nothing a caller can abandon: a call aborted after the
+provider began answers nothing and would be released. So every admitted message is also an attempt,
+counted by the audit and by the visitor's day and held to twice their answered allowances; a
+message keeps its attempt once its model call began, and only one released before any call gets it
+back. The visitor still sees answered messages only.
+
+Limits follow where abuse lands. The allowance belongs to the audit, like the completion ledger, and
+neither a retry nor a reopened link restores it, because both are free to start. Reopening is
+cheap on purpose: a new activation supersedes the active session rather than waiting out a 24-hour
+lifetime, and the old bearer is refused from then on. A visitor's day is keyed by a day-scoped HMAC pseudonym of
+`CF-Connecting-IP`, so the raw address is never stored, and the deployment's day has a ceiling and an
+alert every `GRADER_CHAT_ALERT_EVERY` messages, decided inside the counter's transaction so each
+threshold alerts once. The chat is plan version 2 because lib must send it and show its terms;
+plan 1 clients are refused rather than offered something they cannot render.

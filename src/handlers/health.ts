@@ -17,6 +17,13 @@ import {
   freeVisualVerifyDailyLimit,
   freeVisualVerifyEnabled,
   auditSessionAuthority,
+  graderChatAlertEvery,
+  graderChatAlertSlackWebhookUrl,
+  graderChatEffort,
+  graderChatEnabled,
+  graderChatMaxInputCharacters,
+  graderChatMessagesPerDay,
+  graderChatMessagesPerVisitorPerDay,
   inferenceQuotaInternalOrigin,
   inlineEvidenceBucket,
   missingRequiredSecretNames,
@@ -24,6 +31,8 @@ import {
   type Env,
 } from '../config';
 import { providersInUse, validateModelRouting } from '../prompt-registry';
+import { graderChatMessageAllowance } from '../lib/audit-plan';
+import { graderChatRoute } from './grader-chat';
 
 export function handleHealth(
   corsHeaders: CorsHeaders,
@@ -86,6 +95,18 @@ function productionReadinessFailure(env: Env): Error | null {
       if (!freeVisualVerifyEnabled(env)) {
         throw new Error('Protected visual verification is disabled.');
       }
+    }
+    if (graderChatEnabled(env)) {
+      auditSessionAuthority(env);
+      inferenceQuotaInternalOrigin(env);
+      graderChatMessageAllowance(env);
+      graderChatMessagesPerVisitorPerDay(env);
+      graderChatMessagesPerDay(env);
+      graderChatMaxInputCharacters(env);
+      graderChatEffort(env);
+      graderChatAlertEvery(env);
+      graderChatAlertSlackWebhookUrl(env);
+      graderChatRoute(env);
     }
     return null;
   } catch (error) {

@@ -29,7 +29,7 @@
 
 // `ModelTier` is a compile-time-only type: the capability tier a prompt group
 // declares. Importing it as `import type` is erased by the bundler, so this
-import type { ProviderName } from './lib/inference-types';
+import type { ProviderName, SemanticEffort } from './lib/inference-types';
 // does not create a runtime import cycle with `prompt-registry.ts` (which
 // imports `resolveModel` and `modelOverrides` from here).
 import type { ModelTier } from './prompt-registry';
@@ -217,6 +217,32 @@ export interface Env {
   readonly AUDIT_MAX_UPLOAD_BYTES?: string;
   /** Maximum JSON request bytes accepted by one audit inference. */
   readonly AUDIT_MAX_MESSAGE_BYTES?: string;
+  /** Whether the Grader's sales chat answers at all (`true` / `false`). */
+  readonly GRADER_CHAT_ENABLED?: string;
+  /**
+   * Chat messages one audit is answered across all of its runs and sessions, at most the plan's
+   * ceiling; neither a retry nor a reissued link restores a spent message.
+   */
+  readonly GRADER_CHAT_MESSAGES_PER_AUDIT?: string;
+  /** Chat messages one visitor network address is answered per UTC day, across sessions. */
+  readonly GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY?: string;
+  /** Chat messages the whole deployment answers per UTC day. */
+  readonly GRADER_CHAT_MESSAGES_PER_DAY?: string;
+  /** Characters one chat message from the visitor may carry. */
+  readonly GRADER_CHAT_MAX_INPUT_CHARACTERS?: string;
+  /** Output token budget of one chat reply. */
+  readonly GRADER_CHAT_MAX_REPLY_TOKENS?: string;
+  /** Semantic effort a chat reply asks for, applied only on a model that reasons. */
+  readonly GRADER_CHAT_EFFORT?: string;
+  /** The marketing booklet version chat replies are grounded in. */
+  readonly GRADER_CHAT_BOOKLET_VERSION?: string;
+  /** The deployment's daily chat count raises an alert at every multiple of this many messages. */
+  readonly GRADER_CHAT_ALERT_EVERY?: string;
+  /**
+   * OPTIONAL Slack incoming-webhook URL the daily chat-volume alert is posted to. SECRET when
+   * configured; without it an alert is only logged.
+   */
+  readonly GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL?: string;
 }
 
 export function inlineEvidenceBucket(env: Env): R2Bucket {
@@ -263,6 +289,15 @@ type RequiredVarName =
   | 'AUDIT_RUN_HEADROOM'
   | 'AUDIT_MAX_UPLOAD_BYTES'
   | 'AUDIT_MAX_MESSAGE_BYTES'
+  | 'GRADER_CHAT_ENABLED'
+  | 'GRADER_CHAT_MESSAGES_PER_AUDIT'
+  | 'GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY'
+  | 'GRADER_CHAT_MESSAGES_PER_DAY'
+  | 'GRADER_CHAT_MAX_INPUT_CHARACTERS'
+  | 'GRADER_CHAT_MAX_REPLY_TOKENS'
+  | 'GRADER_CHAT_EFFORT'
+  | 'GRADER_CHAT_BOOKLET_VERSION'
+  | 'GRADER_CHAT_ALERT_EVERY'
   | 'OPENAI_API_KEY'
   | 'MOONSHOT_API_KEY'
   | 'KIMI_API_KEY'
@@ -726,6 +761,87 @@ export function auditMaxMessageBytes(env: Env): number {
   return positiveIntegerVar(env, 'AUDIT_MAX_MESSAGE_BYTES');
 }
 
+const SEMANTIC_EFFORTS: readonly SemanticEffort[] = ['low', 'medium', 'high', 'xhigh'];
+
+/** Whether the Grader's sales chat answers; `false` refuses every chat request with 503. */
+export function graderChatEnabled(env: Env): boolean {
+  const value = requireVar(env, 'GRADER_CHAT_ENABLED').trim().toLowerCase();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`GRADER_CHAT_ENABLED must be true or false. ${SET_IN_VARS}`);
+}
+
+/** Chat messages one audit is answered; `lib/audit-plan.ts` holds it under the plan's ceiling. */
+export function graderChatMessagesPerAudit(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_MESSAGES_PER_AUDIT');
+}
+
+/** Chat messages one hashed visitor network address is answered per UTC day. */
+export function graderChatMessagesPerVisitorPerDay(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY');
+}
+
+/** Chat messages the deployment answers per UTC day. */
+export function graderChatMessagesPerDay(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_MESSAGES_PER_DAY');
+}
+
+/** Characters one visitor chat message may carry. */
+export function graderChatMaxInputCharacters(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_MAX_INPUT_CHARACTERS');
+}
+
+/** Output token budget of one chat reply. */
+export function graderChatMaxReplyTokens(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_MAX_REPLY_TOKENS');
+}
+
+/** Semantic effort of a chat reply. */
+export function graderChatEffort(env: Env): SemanticEffort {
+  const value = requireVar(env, 'GRADER_CHAT_EFFORT').trim().toLowerCase();
+  const effort = SEMANTIC_EFFORTS.find((candidate) => candidate === value);
+  if (effort) return effort;
+  throw new Error(
+    `GRADER_CHAT_EFFORT must be one of ${SEMANTIC_EFFORTS.join(', ')}. ${SET_IN_VARS}`,
+  );
+}
+
+/** The marketing booklet version chat replies are grounded in. */
+export function graderChatBookletVersion(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_BOOKLET_VERSION');
+}
+
+/** The daily chat count raises a volume alert at every multiple of this many messages. */
+export function graderChatAlertEvery(env: Env): number {
+  return positiveIntegerVar(env, 'GRADER_CHAT_ALERT_EVERY');
+}
+
+/**
+ * The Slack incoming-webhook URL a chat-volume alert is posted to, or `null` when none is
+ * configured. OPTIONAL by design, like `LOG_SEQ_API_KEY`: absence makes an alert log-only. A value
+ * that is present must be an HTTPS URL.
+ */
+export function graderChatAlertSlackWebhookUrl(env: Env): string | null {
+  const value = env.GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL;
+  if (typeof value !== 'string' || value.length === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new SecretConfigurationError(
+      'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL',
+      'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL must be an absolute HTTPS URL.',
+    );
+  }
+  if (url.protocol !== 'https:') {
+    throw new SecretConfigurationError(
+      'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL',
+      'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL must be an absolute HTTPS URL.',
+    );
+  }
+  return value;
+}
+
 function strongSigningSecret(
   env: Env,
   name:
@@ -753,7 +869,14 @@ function positiveIntegerVar(
     | 'AUDIT_MAX_UPLOAD_BYTES'
     | 'AUDIT_MAX_MESSAGE_BYTES'
     | 'FREE_VISUAL_VERIFY_DAILY_LIMIT'
-    | 'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE',
+    | 'FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE'
+    | 'GRADER_CHAT_MESSAGES_PER_AUDIT'
+    | 'GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY'
+    | 'GRADER_CHAT_MESSAGES_PER_DAY'
+    | 'GRADER_CHAT_MAX_INPUT_CHARACTERS'
+    | 'GRADER_CHAT_MAX_REPLY_TOKENS'
+    | 'GRADER_CHAT_BOOKLET_VERSION'
+    | 'GRADER_CHAT_ALERT_EVERY',
 ): number {
   const raw = requireVar(env, name);
   const value = Number(raw);

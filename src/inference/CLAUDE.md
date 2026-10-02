@@ -36,6 +36,17 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   for a model; `providerFiles` means the provider itself owns a complete Files
   lifecycle. Kimi has reusable files through encrypted R2 but its provider
   Files metadata and delete endpoints do not work.
+- `textConversation` means the family's adapter accepts a multi-turn
+  conversation of plain-text user and assistant turns: any number of turns, no
+  image required. Every chat family — Anthropic, OpenAI, Moonshot, Kimi Code,
+  Gemini — has it. The Cloudflare Workers AI visual family does not, because its
+  adapter accepts exactly one user turn made of one inline image followed by one
+  text block. A group that requires `textConversation` (the Grader chat's
+  `grader-sales`) therefore cannot be routed there: routing validation refuses
+  the route, so production `/health` answers 503 and `GET /prompts` reports it
+  invalid. Whether a family can continue from plain-text history without
+  provider continuation state is a separate fact, `requiresOrdinaryTurnContinuation`
+  in `factory.ts`, which the Grader chat's route check also enforces.
 - Adapters accept only fully resolved `ModelProfile`/`FilePolicy` authority from
   the registry path. They do not infer providers from model names.
 - The runtime never switches on a provider. Adapter selection belongs only in

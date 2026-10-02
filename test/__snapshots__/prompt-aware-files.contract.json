@@ -22,7 +22,8 @@
     "cartdrawer-batch-all",
     "cartdrawer-review-all",
     "optimize-demand",
-    "visual-verify"
+    "visual-verify",
+    "grader-chat"
   ],
   "request": {
     "contentType": "multipart/form-data",

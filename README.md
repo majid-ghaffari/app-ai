@@ -112,8 +112,9 @@ A master context-ID reaches `GET /prompts` through the `X-Personalizer-Context-I
 header or a `personalizerContextId` query parameter; every other route reads the
 header only.
 
-Scoped `ls_audit_…` sessions may use only `POST /files` and proposal-only `POST
-/messages`. They are bound to the activated store, atomically quota-controlled
+Scoped `ls_audit_…` sessions may use only `POST /files`, proposal-only `POST
+/messages`, and — under plan version 2 — the `grader-chat` sales chat on `POST /messages`. They are
+bound to the activated store, atomically quota-controlled
 by an audit-keyed `AuditSessionAuthority`, never call Brain, and cannot delete files or use
 `/chat`. The exact public/staff entitlement claims, headers, limits, and signed website-status
 callback contract are in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
@@ -335,25 +336,27 @@ maps each name to its text and metadata (`SystemPromptEntry` in that file is the
 the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-The registry holds 22 prompts — `/chat` agent-loop + one-shot prompts (chat, onboarding,
-onboarding-chat, placement, proposals, analytics-insights) and `/messages` one-shot JSON prompts
-(image-selection, visual-verify, visual-verify-free, the four Website-Analysis probes, and the onboarding /
-cart-drawer / optimize propose + review passes). The authoritative inventory — every prompt with
+The registry holds 26 prompts — `/chat` agent-loop + one-shot prompts (chat, billing-assistant,
+onboarding, onboarding-chat, placement, proposals, analytics-insights) and `/messages` prompts
+(image-selection, visual-verify, visual-verify-free, the five Website-Analysis probes, the onboarding /
+cart-drawer / optimize propose + review passes with the currency-recovery and CSS-review
+specialists, and the audit session's grader-chat). The authoritative inventory — every prompt with
 its shape, endpoint, tools, and role — is [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), which
 also owns the per-prompt doc-sync rule.
 
 **Prompt-text shapes** — a prompt is one of four shapes, all resolving to the same registry
 entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md)):
 
-- **Simple** → one file `src/prompts/<name>.md` (e.g. `chat.md`).
+- **Simple** → one file `src/prompts/<name>.md` (e.g. `placement.md`).
 - **Multi-file** → a folder `src/prompts/<name>/` with a `prompt.md` system prompt + a
   `sample.md`-style file wired as an `attachments` entry (uploaded and prepended to the first
-  message). `image-selection/` is the one attachment-carrying prompt; the four `probe-<id>/`
+  message). `image-selection/` is the one attachment-carrying prompt; the five `probe-<id>/`
   folders hold just a `prompt.md`.
 - **Composed** → a folder of `_`-prefixed BLOCK files assembled by `composePrompt(...)` in the
   folder's own `index.ts`, mixing that prompt's fragments with SHARED blocks from
   `src/prompts/onboarding-shared/` (the onboarding / cart-drawer / optimize propose + review
-  prompts). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
+  prompts), or the chat-formatting block in `src/prompts/assistant-shared/` (`chat` and
+  `grader-chat`). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
   text; elsewhere a `_*.md` is the co-located exclusion convention (never imported).
 - **Shared-text alias** → an explicit barrel export reuses another registered prompt's final text
   when the semantic contract is identical but routing or access is intentionally different.

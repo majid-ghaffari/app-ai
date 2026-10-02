@@ -91,6 +91,46 @@ recovery path: when a cached reference is rejected for any other reason (a rotat
 boundary), Studio ends the review instead of dropping the tile, re-capturing and
 re-uploading. That recovery is a Studio-side change.
 
+### A re-served activation is refused as already used
+
+A reopened Grader supersedes the active session only with a new activation. The limespot.com issuer
+answers a magic link reopened within its first 15 minutes with the activation it already handed out,
+which app-ai has consumed, so that exchange answers 409 `AuditActivationConsumedException` until the
+visitor asks for a fresh link. One-use activations are what keep a copied link from taking over a
+live session.
+
+### The Grader chat runs over a draft booklet
+
+`GRADER_CHAT_ENABLED` is `true` in production, and `false` switches the chat off. Only a client that
+declares plan version 2 is offered it, so a published extension that sends plan 1 or no plan never
+sees it. The only booklet, `src/prompts/grader-chat/booklets/v1.md`, is engineering's draft from
+limespot.com copy and has not been approved by marketing; it states no price, no performance figure,
+and no count of customers, reviews or integrations.
+
+### The Grader chat's claims rest on its prompt
+
+No check in code decides what the chat may claim: telling a claim from harmless wording takes
+language understanding a deterministic filter does not have. The boundaries block forbids promised
+or predicted results, guarantees, timelines, and any price or plan detail the booklet does not word,
+and lib shows an "AI can make mistakes" disclaimer beside the chat; the model can still say
+something the booklet does not support. The link guard is the only deterministic check on a reply,
+and it withholds any link off limespot.com.
+
+### An unsettled daily hold is charged until the end of the following day plus an hour
+
+A Grader chat hold on the visitor's or the deployment's daily counter counts until the audit's
+settlement commits or releases it. The audit's alarm settles every hold it knows of, a lapsed one
+included, but a worker stopped between taking a hold and recording the message in flight leaves a
+hold no settlement names. That hold stays charged to its day until the counter drops the day, at the
+end of the following day plus an hour, so the counter can refuse a message early by one, and never
+admits one past its limit.
+
+### A chat request without `CF-Connecting-IP` shares one visitor allowance
+
+The visitor's daily chat allowance is keyed by a pseudonym of `CF-Connecting-IP`, which Cloudflare
+sets on every production request. A request that reaches the worker without it — a local tool
+calling the worker directly — counts against one shared bucket.
+
 ### Grey-clouded `preview.personalizer.io` origin → "Too many redirects" (500)
 
 Production is not subject to this. `wrangler.toml [vars] PERSONALIZER_API_URL` points at

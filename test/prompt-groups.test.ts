@@ -63,6 +63,7 @@ const EXPECTED_GROUPS: Readonly<Record<PromptGroupName, readonly PromptName[]>> 
   'website-industry': ['probe-industry'],
   'analytics-narrative': ['analytics-insights'],
   'billing-narrative': ['billing-assistant'],
+  'grader-sales': ['grader-chat'],
 };
 
 const EXPECTED_FALLBACK_EDGES = [
@@ -247,6 +248,7 @@ describe('prompt registry groups and routes', () => {
         clientTools: false,
         reasoning: true,
         inlineCacheBreakpoints: true,
+        textConversation: true,
       },
     };
     const openAIFilePolicy = {
@@ -293,6 +295,7 @@ describe('prompt registry groups and routes', () => {
         clientTools: true,
         reasoning: true,
         inlineCacheBreakpoints: false,
+        textConversation: true,
       },
     };
     const moonshotFilePolicy = {
@@ -361,6 +364,7 @@ describe('prompt-aware /files contract fixture', () => {
         'cartdrawer-review-all',
         'optimize-demand',
         'visual-verify',
+        'grader-chat',
       ],
       request: {
         contentType: 'multipart/form-data',

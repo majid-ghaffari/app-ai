@@ -129,6 +129,7 @@ const EVERY_CAPABILITY: ModelCapabilities = {
   clientTools: true,
   reasoning: true,
   inlineCacheBreakpoints: true,
+  textConversation: true,
 };
 
 /**
@@ -297,6 +298,7 @@ const MODEL_FAMILIES = [
       clientTools: false,
       reasoning: false,
       inlineCacheBreakpoints: false,
+      textConversation: false,
     },
     filePolicy: 'cloudflare-inline',
   },

@@ -1,8 +1,9 @@
 # Studio audit authorization
 
 The browser extension can run the existing onboarding proposal transport on a
-store that has no LimeSpot Context-ID. This is a separate, tightly scoped auth
-path; ordinary Studio traffic continues to authenticate against Brain.
+store that has no LimeSpot Context-ID, and the store owner can then chat with LimeSpot about the
+report (see Grader chat below). This is a separate, tightly scoped auth path; ordinary Studio
+traffic continues to authenticate against Brain.
 
 ## Trust boundary
 
@@ -112,9 +113,23 @@ It returns HTTP 201:
 {
   "sessionIdentifier": "<opaque SHA-256-derived identifier>",
   "accessToken": "ls_audit_<session JWT>",
-  "expiresAt": 1787272200000
+  "expiresAt": 1787356800000,
+  "graderChat": {
+    "enabled": true,
+    "perAudit": 25,
+    "remainingInAudit": 25,
+    "maxInputCharacters": 500,
+    "sessionExpiresAt": 1787356800000
+  }
 }
 ```
+
+`graderChat` tells the extension and lib whether to show the chat box and its count. It is enabled
+only when `GRADER_CHAT_ENABLED` is on and the exchange declared plan version 2; otherwise it
+reads `enabled: false` with `perAudit`, `remainingInAudit` and `maxInputCharacters` of `0`. `perAudit` is
+the number of messages the audit is answered across all of its runs and sessions, and
+`remainingInAudit` what is left of it after earlier sessions of the same audit, so a reopened link shows
+the true count.
 
 The session JWT uses the same exact HS256 header and this payload:
 
@@ -129,7 +144,7 @@ The session JWT uses the same exact HS256 header and this payload:
   "attemptLimit": 2,
   "storeOrigin": "https://merchant.example",
   "issuedAt": 1787270400,
-  "expiresAt": 1787272200
+  "expiresAt": 1787356800
 }
 ```
 
@@ -146,9 +161,18 @@ who steals the bearer could copy it. Unprefixed bearer values do not enter audit
 auth and continue through normal Context-ID auth.
 
 Only HTTPS storefront origins are accepted. Loopback HTTP is allowed solely for local development.
-One audit identifier may have only one unexpired browser session; a second activation receives a
-conflict until that session expires. The one-use token is not consumed by this active-session
-conflict and can be retried after expiry.
+
+One audit identifier has one active browser session. A valid new activation for the same audit —
+the visitor reopening the Grader from a fresh email link — supersedes it: the exchange issues the new
+session, and the authority's record names only that session, so every later upload, inference or
+chat message on the old bearer answers 401 `AuditAuthorizationException` with `MessageDetail`
+`audit_session_expired`. The audit's progress carries across exactly as it does into a session
+reissued after expiry: completed attempts, every reservation still inside its lease (finalized and
+mirrored under the session that admitted it), the status outbox, the consumed activations, and the
+Grader chat's count, replies, answered message identifiers with their stored outcomes, settlements
+and message in flight. The new session starts a fresh first run that
+owns no files. A replayed activation is still refused 409 `AuditActivationConsumedException`, and
+superseding never opens an audit whose public attempts are spent.
 
 ## Scope
 
@@ -164,12 +188,16 @@ An audit session can call only:
 - `POST /messages` with `onboarding-batch-all` or `onboarding-batch`, a matching
   `X-Personalizer-Ruleset-Version`, one structured user message, and only text or
   session-owned Files API references.
+- `POST /messages` with `grader-chat` under plan version 2: the Grader chat, a text-only
+  conversation about the audit's own report, described below.
 
-Inference remains proposal-only: review is an accepted upload destination but
+Proposal inference remains proposal-only: review is an accepted upload destination but
 not an allowed `/messages` selector. The audit path cannot delete files, call `/chat`, select another prompt,
 send inline base64 files, provide tools, choose a model, raise output effort, or
 fetch Brain defaults. `messages.ts` keeps the validated evidence message and
-forces the registry's prompt, model, output budget, and effort.
+forces the registry's prompt, model, output budget, and effort. A merchant context-ID that names
+`grader-chat` on `/messages` or `/chat` is answered as an unknown route: the chat exists only for a
+grader session.
 
 ## Limits: the conductor is never capped, a person's choices are
 
@@ -284,9 +312,9 @@ while the stored record serializes past 1 MB (`SESSION_RECORD_BUDGET_BYTES`). Be
 the record grows only by finalizing work already reserved — one status event for the one pending
 inference a session can hold, and for an upload a digest in place of its larger pending entry — and
 by an exchange's activation identifier. It keeps the latest 1,024 consumed activation identifiers:
-an activation exchanges at most 900 seconds after it is issued and each exchange waits for the
-previous session to expire, at least a second, so every activation still able to exchange is among
-them. It keeps the latest two sessions' worth of abandoned reservation identifiers (5,904 at the
+an activation exchanges at most 900 seconds after it is issued, and the issuer's resend interval and
+per-email and per-network windows hold one audit far below 1,024 activations in that time, so every
+activation still able to exchange is among them. It keeps the latest two sessions' worth of abandoned reservation identifiers (5,904 at the
 production limits), more than can still finalize inside any reservation's lease. Once callbacks are
 delivered the outbox drains and reservations resume. `test/audit-auth.test.ts` runs a callback
 outage across reissued sessions at the full 66-request churn against the 2 MB-refusing fake: the
@@ -295,14 +323,16 @@ session's write fails past 2 MB.
 
 ### The plan is versioned
 
-The plan above is version 1 of a contract lib and app-ai share. A Grader client names the version it
+The plan above is the capture and proposal plan of versions 1 and 2 of a contract lib and app-ai
+share. A Grader client names the version it
 follows in `X-LimeSpot-Audit-Plan-Version` on `POST /audit/session/exchange`, `POST /files` and
 `POST /messages`. `SUPPORTED_AUDIT_PLAN_VERSIONS` in `src/lib/audit-plan.ts` lists the versions this
 worker holds an allowance for, beside the plan values themselves.
 
-| Version | Capture                                                                                                | Proposal                                                                                                    | Allowance                                                                          |
-| ------: | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-|       1 | 7 page kinds × 2 widths × at most 24 tiles: 1,500 px tiles overlapping by 100 px of a 32,767 px canvas | the whole-store request sent at most 4 times, then one per-page request a page, each repaired at most twice | 672 uploads and 66 inference requests a run, 2,688 uploads a session (table above) |
+| Version | Capture                                                                                                | Proposal                                                                                                    | Allowance                                                                          | Chat                                                                                       |
+| ------: | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+|       1 | 7 page kinds × 2 widths × at most 24 tiles: 1,500 px tiles overlapping by 100 px of a 32,767 px canvas | the whole-store request sent at most 4 times, then one per-page request a page, each repaired at most twice | 672 uploads and 66 inference requests a run, 2,688 uploads a session (table above) | none: `grader-chat` answers 403 `grader_chat_not_in_plan`                                  |
+|       2 | as version 1                                                                                           | as version 1                                                                                                | as version 1                                                                       | at most 50 messages an audit, across its runs and sessions (`GRADER_CHAT_MESSAGE_CEILING`) |
 
 A request naming any other value — a version this worker does not list, or anything other than a
 bare positive integer — answers 409 `AuditPlanVersionException` with `MessageDetail`
@@ -310,7 +340,8 @@ bare positive integer — answers 409 `AuditPlanVersionException` with `MessageD
 and `/files` and `/messages` check it after the bearer and store origin and before any reservation,
 so a refused request spends nothing.
 
-A missing declaration uses the current plan, so a client that sends no header keeps working.
+A missing declaration follows plan 1, so a client that sends no header keeps working and is offered
+no chat.
 
 A lib change to any input the plan mirrors — the page kinds, the widths, the tile height or overlap,
 the whole-store sends, the per-page requests or the repairs — is a new plan version. Lib names it,
@@ -342,9 +373,13 @@ worker that has not learned the version refuses the run at its exchange rather t
 - **Audits per email, network and day.** These belong to the limespot.com issuer, which already
   enforces them before it signs an activation: per-IP and per-email hourly windows, the resend
   interval, the UTC-day email budget, Turnstile, and the launch kill switch. App-ai does not
-  duplicate them.
-- **Session lifetime.** 30 minutes (`AUDIT_SESSION_TTL_SECONDS`). The lifetime is a security
-  boundary for new work only: no upload or inference is admitted after it. A reservation holds a
+  duplicate them. The Grader chat's own daily limits are app-ai's (see Grader chat).
+- **Session lifetime.** 24 hours (`AUDIT_SESSION_TTL_SECONDS`), and the Grader chat ends with it. A
+  visitor who lost the session — a closed tab or browser — reopens the Grader from a fresh link,
+  whose activation supersedes the old session at once (see "Exchange and session contract"). The
+  lifetime is a security boundary for new work only: no upload, inference or chat message is
+  admitted after it, and an expired or superseded bearer answers 401
+  `AuditAuthorizationException` with `MessageDetail` `audit_session_expired`. A reservation holds a
   lease from its admission: the upstream inference deadline (`src/inference/deadline.ts`), which
   an audit inference counts from that same admission, plus a one-minute finalization grace. The
   proposal it guards is therefore finalized, counted and delivered even when the model answers
@@ -357,12 +392,180 @@ worker that has not learned the version refuses the run at its exchange rather t
   reservation an earlier worker admitted without its origin takes the origin of the session it is
   carried out of.
 
-There is no cross-session app-ai spend counter. The limespot.com issuer therefore
-owns the global controls: email-verification attempt limits, per-identity/IP
+Apart from the Grader chat's daily counters, there is no cross-session app-ai spend counter. The
+limespot.com issuer therefore owns the global controls: email-verification attempt limits, per-identity/IP
 activation limits, a daily activation ceiling, and the launch-wide budget kill
 switch. Cloudflare/Anthropic account alerts and hard spending controls are the
 outer operational cap. The public issuer must not launch without those controls;
 per-session app-ai limits alone are not a global budget.
+
+## Grader chat
+
+Once a run's analysis has completed, the store owner can chat with LimeSpot about the report. The
+extension relays `POST /messages` with `X-Personalizer-System-Prompt: grader-chat`, the session's
+bearer and store-origin headers, and `X-LimeSpot-Audit-Plan-Version: 2`. The body is exactly
+`{ messageId, messages, graderReport }`; its contract, the prompt, and the link guard are in
+[docs/prompts/grader-chat.md](prompts/grader-chat.md).
+
+The chat is enabled by default in production, and `GRADER_CHAT_ENABLED = "false"` is its off switch.
+Rollout needs no toggle: the chat is offered only to a client that declares plan version 2, so a
+published extension that sends plan 1 or no plan gets no chat, and the new extension build that
+declares plan 2 and sends `messageId` is the first to offer it. Switching the variable off refuses
+every message 503 `grader_chat_disabled` and offers no chat at exchange; switching it back on needs
+no other change. What a reply claims is governed by the hardened boundaries prompt, grounded in the
+booklet, beside an "AI can make mistakes" disclaimer lib shows in the chat UI; the one check in code
+is the link guard, and a reply that links off limespot.com returns `withheld: true` with no text.
+
+### The message identifier
+
+`messageId` is a UUID v4 that lib mints for each visitor turn and sends unchanged on every retry of
+that turn; it is matched without regard to case. It is bound to the audit and to the request's whole
+transcript, the `messages` array. The first request that is answered records the identifier with a
+fingerprint of that transcript and stores its outcome: the `/messages` envelope, the booklet version
+and whether the reply was withheld. A later request with the same identifier and the same transcript
+is a replay: it is answered from that stored outcome before any quota is held, with no inference and
+no charge, and its `remainingInAudit` is the audit's allowance as it stands now. A replay is valid
+from any live session of the audit, a reopened link included. The outcome is kept for
+`AUDIT_SESSION_TTL_SECONDS` after the message was answered and then deleted by the audit's alarm.
+
+- The same identifier with a different transcript, or an identifier whose outcome has been
+  deleted, answers 400 `ArgumentException` / `grader_chat_message_reused`.
+- A replay while the original is still being answered answers 409 `GraderChatBusyException` /
+  `grader_chat_busy`; the caller retries it once the original has finished.
+- A message the model failed, or that was refused, answered nothing, so a retry with the same
+  identifier is admitted as a new message.
+
+A caller that loses a response therefore retries the identical body, and a new visitor turn always
+carries a new identifier.
+
+### Admission, in order
+
+1. `GRADER_CHAT_ENABLED` off → 503 `ServiceUnavailableException` / `grader_chat_disabled`.
+2. A plan without chat (version 1, or no header) → 403 `AuditScopeException` /
+   `grader_chat_not_in_plan`. An unsupported version is refused 409 first, as for every audit
+   request.
+3. A body past `AUDIT_MAX_MESSAGE_BYTES`, or a visitor turn longer than
+   `GRADER_CHAT_MAX_INPUT_CHARACTERS` code points → 400 `ArgumentException` /
+   `grader_chat_input_too_long`; any other departure from the strict body, a missing or malformed
+   `messageId` included → 400 `ArgumentException`.
+4. The session authority takes the message atomically:
+   - the session is missing, expired or replaced → 401 `AuditAuthorizationException` /
+     `audit_session_expired`;
+   - the identifier was answered: the same transcript is replayed from its stored outcome, and
+     anything else answers 400 `ArgumentException` / `grader_chat_message_reused`;
+   - another message of the audit is in flight → 409 `GraderChatBusyException` /
+     `grader_chat_busy`, or 400 `grader_chat_message_reused` when it carries the same identifier
+     with a different transcript;
+   - the current run has not completed: still before or inside its analysis → 409
+     `GraderChatUnavailableException` / `grader_chat_not_open`; its analysis failed or errored,
+     with none pending → 409 `GraderChatUnavailableException` / `grader_chat_run_failed`. A run
+     that completed with zero findings opens the chat;
+   - the audit has been answered `GRADER_CHAT_MESSAGES_PER_AUDIT` messages → 429
+     `GraderChatQuotaException` / `grader_chat_audit_limit`;
+   - the audit has started twice that many messages, answered or not → 429
+     `GraderChatQuotaException` / `grader_chat_attempt_limit`;
+   - an assistant turn is not a reply this audit was given → 403 `AuditScopeException` /
+     `grader_chat_history_unverified`.
+5. The visitor's daily allowance, `GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY` → 429
+   `GraderChatQuotaException` / `grader_chat_visitor_limit`; then the deployment's,
+   `GRADER_CHAT_MESSAGES_PER_DAY` → 429 `GraderChatQuotaException` / `grader_chat_daily_limit`. The
+   visitor's counter also refuses once the visitor has started twice their daily allowance of
+   messages that day, answered or not → 429 `GraderChatQuotaException` /
+   `grader_chat_attempt_limit`. Each refusal releases the message and every hold it took, and
+   refunds its attempt.
+
+A refused message reaches no model. The 200 body is the `/messages` envelope plus
+`graderChat: { remainingInAudit, sessionExpiresAt, bookletVersion, withheld }`.
+
+### Accounting is the chat's own
+
+Chat traffic never enters the audit's reservations. The audit's record keeps `chatMessages`, the
+transcript fingerprints of the replies it was given (`chatReplies`), the one message in flight
+(`chatInFlight`), every answered message identifier (`chatAnswered`) and the settlements still owed
+to the daily counters (`chatSettlements`), apart from `pending`. A chat message therefore never
+counts as a run inference, an attempt, an upload or a completed run, never produces a website status
+event, never supersedes a pending proposal, and is never superseded by one. A message holds its slot
+for the inference deadline plus the finalization grace, like a proposal reservation, and counts
+against the visitor-visible allowance only once the model answered it, a withheld reply included; a
+failed or cancelled call releases it.
+
+Every model call is also an attempt. The audit's `chatAttempts` and the visitor's daily counter
+record each admitted message, answered or not, and are held to `GRADER_CHAT_ATTEMPTS_PER_ANSWER` (2)
+times the audit's allowance and the visitor's daily allowance. A message that fails, is aborted, or
+lapses after its model call began keeps its attempt; only a message released before any model call —
+refused at a daily limit, or restarted on a new UTC day — refunds it. So a caller who abandons calls
+after provider I/O begins reaches 429 `grader_chat_attempt_limit` instead of starting unbounded paid
+calls, while `remainingInAudit` still counts answered messages only.
+
+### Settlement
+
+One message is one reservation identifier, held in all three ledgers — the audit's slot, the
+visitor's day and the deployment's day — before the model is called. The message in flight names
+its reservation, its identifier, its transcript fingerprint and its visitor counter. Once the model
+answered, the audit's ledger commits first, in one transaction: the count, the reply's transcript
+fingerprint, the message in `chatAnswered`, its stored outcome, and a settlement record that
+commits both daily counters. That commit is idempotent by the reservation and retried, so an answer
+lost on the way back counts the message once; the reply reaches the visitor only after it lands, so
+a delivered reply's fingerprint, count and outcome are never lost. A message that produced no reply
+is released the same way: the release takes it out of flight and records a settlement for both
+counters, `failed` when its model call began, so the attempt stays charged, or `released` when it
+never did, so the attempt is refunded.
+
+The request then settles the visitor's and the deployment's counters, each keyed by the same
+reservation so a repeat changes nothing, and acknowledges the settlement. Whatever it leaves undone —
+a counter unreachable, the worker stopped — the audit's alarm finishes a minute later and retries
+each minute until it succeeds; a settlement older than a day is dropped, because the counters it
+names have reset. A message whose lease lapses without an answer is released by the alarm, or by
+the audit's next admission, with a settlement due at once. A commit for a reservation no longer in
+flight is refused, and the visitor receives 504 `InferenceTimeoutException` / `inference_timeout`,
+so every reservation is either committed or released, never both, and a commit that never lands
+delivers nothing.
+
+The allowance belongs to the audit — the store and lead the website signed — like the public
+completion ledger: a retry opens a new run, an expiry or a reopened link opens a new session, and none
+restores a spent message. A reopened session continues the same count and history, and its chat opens
+once its own run completes. A message the superseded session still had in flight holds the audit's
+one slot until it is answered, and counts.
+
+### Daily limits and the visitor
+
+The visitor and the deployment each have a named UTC-day counter in a separately addressed
+`AuditSessionAuthority` instance, never the audit's: `grader-chat-daily`, and
+`grader-chat-visitor:<pseudonym>`, where the pseudonym is an HMAC of the UTC day and
+`CF-Connecting-IP` under a key derived from `TOKEN_ENCRYPTION_SECRET`. The raw address is never
+stored, and the pseudonym changes every day. A request without the header shares one bucket. A
+request captures its UTC day once: that one value names the visitor's counter and dates the holds on
+both counters. A counter whose own UTC day is another — midnight passed between the capture and the
+hold — refuses the hold with 421, and the handler releases the message and every hold it took and
+admits it again on the new day's counters, so one visitor's day never lands on another day's
+counter. Every hold counts against its counter's limit until the audit's settlement explicitly
+commits or releases it, however long that takes, so a counter never admits more messages than its
+limit. A counter keeps one entry per UTC day, and a hold settles on the entry of the day that took
+it, named by the request's captured day: a new day starts an entry of its own, and a past day keeps
+its entry while it still holds a message, so an answer that lands after midnight counts — and queues
+its threshold alert — on the day that admitted it. The counter's alarm drops a past day once it
+holds nothing, or at the end of the following day plus an hour when a hold no settlement reached is
+all that is left.
+
+### Volume alert
+
+The deployment counter decides, inside the transaction that commits a message, whether its count
+reached a multiple of `GRADER_CHAT_ALERT_EVERY` that has not alerted today, so each threshold alerts
+exactly once however many messages commit at the same moment, and queues that alert in its own
+outbox in the same transaction, under an id naming the counter's day and the threshold
+(`YYYY-MM-DD:500`). Alerts still owed stay in the outbox across days, and each delivery settles
+exactly the entry it delivered, so equal thresholds on consecutive days never collide. The counter's
+alarm then posts `{ "text": "Grader chat: 500 messages today, limit 10,000" }` to the Slack incoming
+webhook in the optional `GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL` secret. A delivered alert leaves the
+outbox. A network failure, a timeout, or a 408, 429 or 5xx answer is retried each minute for up to a
+day; any other refusal, or an unusable destination, is logged as an error and dropped. Without a
+webhook the alert is a logged warning, whose Seq delivery the counter hands to its Durable Object
+event's `waitUntil` before the entry settles. Because the outbox belongs to the counter, a response
+lost after the commit never loses an alert, and delivery never changes the chat's response.
+
+### Logging
+
+Message text is never logged: the handler records counts only and runs no inference trace.
 
 ## Website status mirror
 
@@ -427,12 +630,36 @@ rename: editing or removing either one detaches every object's storage, includin
 attempt ledger that enforces the public two-run cap, with no way to reattach it. One object is addressed deterministically per `auditIdentifier`, which makes
 cross-link completion counting, activation consumption, run reservations, and concurrent file-ID
 ownership strongly consistent. At expiry, an alarm removes provider file identifiers, per-run
-counters and session totals. Work still inside its lease stays pending, carried into a reissued
+counters and session totals; the chat's count, replies, answered messages, settlements and message in flight stay with the audit, and each stored chat outcome under its `chat-outcome:<messageId>` key until its own expiry. Work still inside its lease stays pending, carried into a reissued
 session if one opens; the alarm is always set for the earliest lease end, so a lease lapses on time
 even while a reissued session is active, and the lapsed reservation is released and mirrored
 `failed`. It retains only the stable
 completion ledger, activation replay identifiers and pending callback outbox needed to enforce the
 cross-link contract.
+
+The Grader chat's members — `chatMessages`, `chatReplies`, `chatInFlight`, `chatAnswered` and
+`chatSettlements` — are optional: a session written before the chat existed reads as having answered
+none, and a rolled-back worker carries them through untouched because chat traffic never enters
+`pending`. Stored chat outcomes are separate keys of the same object and never count toward the
+session record's 1 MB budget. The chat's daily counters live in their own named instances and add no
+class, binding or migration.
+
+An earlier worker stored a daily counter as one flat day — `{ day, count, attempts, pending,
+alertedThrough, alertOutbox }` — and a session's chat message in flight and its settlements without
+the day their holds were taken on. This worker reads both where it reads the record: a flat counter
+becomes that day's entry with its count, attempts (the count plus the held messages when an older
+record has none), held messages, alert threshold and queued alerts, an alert without an id taking
+`YYYY-MM-DD:<count>` of that day; an undated message in flight takes the UTC day it was admitted,
+and an undated settlement the day it was recorded. Each record is written back in the current shape
+on its next change. Rolling back below this release is not supported for the chat's counters: an
+earlier worker does not read the per-day record and starts the day's counters afresh, which loses
+that day's counts and held messages. That is acceptable because the counters are daily and no other
+data rides on them; the audit's own chat state, whose new members an earlier worker ignores, is
+unaffected.
+
+A rolled-back worker refuses a new activation while a session is active instead of superseding it,
+so rolling back past this release under 24-hour sessions locks a visitor who lost theirs out until
+it expires; roll `AUDIT_SESSION_TTL_SECONDS` back with it.
 
 The authority writes one session shape, divided into runs, and also reads a session stored without
 runs, whose counters cover the whole session. It reads such a session as its first run: the stored
