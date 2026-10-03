@@ -22,6 +22,8 @@ import {
   anthropicFileRecord,
   anthropicMessage,
   AUDIT_STATUS_CALLBACK_URL,
+  countedRequest,
+  parsesOf,
   sentBody,
   stubFetch,
   type SentBody,
@@ -2526,4 +2528,244 @@ describe('records an earlier worker stored are upgraded where they are read', ()
     expect(settled.chatSettlements).toEqual([]);
     expect(settled).not.toHaveProperty('chatInFlight');
   }, 30_000);
+});
+
+describe('a Grader session over keep-alive answers', () => {
+  async function keptAlive(request: Request): Promise<Request> {
+    const body = (await request.clone().json()) as Record<string, unknown>;
+    return new Request(request, {
+      body: JSON.stringify({ ...body, responseMode: 'keep-alive' }),
+    });
+  }
+
+  async function envelopeOf(response: Response): Promise<Record<string, unknown>> {
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toMatch(/^\s+\{/);
+    return JSON.parse(text) as Record<string, unknown>;
+  }
+
+  function keepAliveChat(messageId: string, question: string): Record<string, unknown> {
+    return { messageId, messages: ask(question), graderReport: REPORT, responseMode: 'keep-alive' };
+  }
+
+  it('completes the run, answers the strict chat body in the envelope and replays the stored outcome', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await openSession(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+
+    const proposal = await envelopeOf(
+      await worker.fetch(await keptAlive(messageRequest(session.accessToken, tiles)), env),
+    );
+    expect(proposal).toMatchObject({ responseMode: 'keep-alive', status: 200 });
+    expect(proposal.result).toMatchObject({ content: [{ type: 'text', text: USABLE_PROPOSAL }] });
+
+    const messageId = crypto.randomUUID();
+    const first = await envelopeOf(
+      await chat(env, session.accessToken, [], { body: keepAliveChat(messageId, 'What first?') }),
+    );
+    expect(first).toMatchObject({ responseMode: 'keep-alive', status: 200 });
+    const answered = first.result as ChatBody;
+    expect(answered.content).toEqual([{ type: 'text', text: REPLY }]);
+    expect(answered.graderChat.remainingInAudit).toBe(24);
+    model.reply = 'A different reply the replay must not produce.';
+
+    const replay = await envelopeOf(
+      await chat(env, session.accessToken, [], { body: keepAliveChat(messageId, 'What first?') }),
+    );
+    const plainReplay = await chat(env, session.accessToken, ask('What first?'), { messageId });
+
+    expect(replay).toEqual(first);
+    expect(plainReplay.status).toBe(200);
+    expect(await plainReplay.json()).toEqual(answered);
+    expect(model.chatBodies).toHaveLength(1);
+    expect((await sessionRecord(env, session.auditIdentifier)).chatMessages).toBe(1);
+  });
+
+  it('answers plainly what it refuses before reading the opt-in: a closed switch and an oversized body', async () => {
+    const closed = durableEnv({ GRADER_CHAT_ENABLED: 'false' });
+    const closedModel = upstream();
+    const closedSession = await completedRun(closed);
+    const disabled = await chat(closed, closedSession.accessToken, [], {
+      body: keepAliveChat(crypto.randomUUID(), 'Hello?'),
+    });
+    expect(disabled.headers.get('Cache-Control')).toBeNull();
+    await expectRefusal(disabled, 503, 'grader_chat_disabled');
+    expect(closedModel.chatBodies).toHaveLength(0);
+
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    const oversized = 'x'.repeat(Number(ENV.AUDIT_MAX_MESSAGE_BYTES));
+    await expectRefusal(
+      await chat(env, session.accessToken, [], {
+        body: keepAliveChat(crypto.randomUUID(), oversized),
+      }),
+      400,
+      'grader_chat_input_too_long',
+    );
+    const proposal = await worker.fetch(
+      await keptAlive(messageRequest(session.accessToken, session.tiles, oversized)),
+      env,
+    );
+    expect(proposal.status).toBe(429);
+    expect(await proposal.json()).toMatchObject({ ExceptionType: 'AuditQuotaException' });
+    expect(model.chatBodies).toHaveLength(0);
+    expect(model.proposals).toBe(1);
+  });
+
+  it("carries a refusal made after admission began as app-ai's own status and Brain error envelope", async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await openSession(env);
+
+    const refused = await envelopeOf(
+      await chat(env, session.accessToken, [], {
+        body: keepAliveChat(crypto.randomUUID(), 'Hello?'),
+      }),
+    );
+
+    expect(refused).toMatchObject({
+      responseMode: 'keep-alive',
+      status: 409,
+      error: { MessageDetail: 'grader_chat_not_open' },
+    });
+    expect(refused).not.toHaveProperty('result');
+    expect(model.chatBodies).toHaveLength(0);
+  });
+
+  it('reads a Grader inference and a chat message once, within the byte limit, and parses each once', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await openSession(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    const parse = vi.spyOn(JSON, 'parse');
+
+    const plainProposal = messageRequest(session.accessToken, tiles);
+    const proposalBody = JSON.stringify({
+      ...((await plainProposal.json()) as Record<string, unknown>),
+      responseMode: 'keep-alive',
+    });
+    const proposal = countedRequest(plainProposal.url, {
+      method: 'POST',
+      headers: plainProposal.headers,
+      body: proposalBody,
+    });
+    const proposed = await envelopeOf(await worker.fetch(proposal.request, env));
+    expect(proposed).toMatchObject({ responseMode: 'keep-alive', status: 200 });
+    expect(proposal.counts).toEqual({ clones: 0, reads: 0 });
+    expect(proposal.request.bodyUsed).toBe(true);
+    expect(parsesOf(parse, proposalBody)).toBe(1);
+
+    const plainChat = chatRequest(session.accessToken, ask('What first?'));
+    const chatBody = JSON.stringify({
+      ...((await plainChat.json()) as Record<string, unknown>),
+      responseMode: 'keep-alive',
+    });
+    const message = countedRequest(plainChat.url, {
+      method: 'POST',
+      headers: plainChat.headers,
+      body: chatBody,
+    });
+    const answered = await envelopeOf(await worker.fetch(message.request, env));
+    expect(answered).toMatchObject({ responseMode: 'keep-alive', status: 200 });
+    expect(message.counts).toEqual({ clones: 0, reads: 0 });
+    expect(parsesOf(parse, chatBody)).toBe(1);
+    expect(model.proposals).toBe(1);
+    expect(model.chatBodies).toHaveLength(1);
+  });
+
+  it('stops reading a streamed Grader inference at the byte limit and refuses it plainly', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    const limit = Number(ENV.AUDIT_MAX_MESSAGE_BYTES);
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let pulledBytes = 0;
+    let cancelled = false;
+    const oversized = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulledBytes >= 4 * limit) {
+          controller.close();
+          return;
+        }
+        pulledBytes += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const headers = new Headers(messageRequest(session.accessToken, session.tiles).headers);
+    headers.delete('Content-Length');
+
+    const refused = await worker.fetch(
+      new Request('https://app-ai.test/messages', {
+        method: 'POST',
+        headers,
+        body: oversized,
+        duplex: 'half',
+      } as RequestInit),
+      env,
+    );
+
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('Cache-Control')).toBeNull();
+    expect(await refused.json()).toMatchObject({ ExceptionType: 'AuditQuotaException' });
+    expect(cancelled).toBe(true);
+    expect(pulledBytes).toBeLessThanOrEqual(limit + 4 * chunk.byteLength);
+    expect(model.proposals).toBe(1);
+  });
+
+  it('holds a message whose work outlives the runtime grace until its lease, then releases it and admits its retry afresh', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    const outlived = deferred();
+    model.chatGate = outlived.promise;
+    const messageId = crypto.randomUUID();
+
+    const abandoned = await chat(env, session.accessToken, [], {
+      body: keepAliveChat(messageId, 'What first?'),
+    });
+    expect(abandoned.status).toBe(200);
+    await model.chatArrived[0]?.promise;
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('What first?'), { messageId }),
+      409,
+      'grader_chat_busy',
+    );
+
+    vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + LEASE_MILLISECONDS + 1_000);
+    await deliverStatusEvents(env);
+    const released = await sessionRecord(env, session.auditIdentifier);
+    expect(released).not.toHaveProperty('chatInFlight');
+    expect(released.chatMessages).toBe(0);
+
+    model.chatGate = null;
+    const retried = await chat(env, session.accessToken, ask('What first?'), { messageId });
+    expect(retried.status).toBe(200);
+    expect(((await retried.json()) as ChatBody).graderChat.remainingInAudit).toBe(24);
+
+    outlived.resolve();
+    expect(await envelopeOf(abandoned)).toMatchObject({
+      responseMode: 'keep-alive',
+      status: 504,
+      error: { ExceptionType: 'InferenceTimeoutException', MessageDetail: 'inference_timeout' },
+    });
+    await deliverStatusEvents(env);
+    const settled = await sessionRecord(env, session.auditIdentifier);
+    expect(settled.chatMessages).toBe(1);
+    expect(settled.chatAttempts).toBe(2);
+    expect(model.chatBodies).toHaveLength(2);
+    const visitor = counterStorages(env, 'grader-chat-visitor:')[0];
+    if (!visitor) throw new Error('No visitor counter was reserved');
+    expect(await counterRecord(visitor)).toMatchObject({ count: 1, pending: {} });
+    expect(await counterRecord(storageFor(env, 'grader-chat-daily'))).toMatchObject({
+      count: 1,
+      pending: {},
+    });
+  });
 });

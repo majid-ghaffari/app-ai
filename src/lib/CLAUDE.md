@@ -35,6 +35,21 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - Client-correctable canonical validation uses `WorkerError` with the Brain
   `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
   provider-protocol failures after a route reaches its adapter.
+- `request-body.ts` reads a `/messages` body exactly once: `readJsonBody` reads and parses a
+  validated merchant request's JSON body, keeping a read or parse failure for the handler to answer
+  as it always did, and `readBodyBytesWithin` reads a Grader session request's body and stops as
+  soon as it passes the audit byte limit. The router and `audit-auth.ts` hand that one parsed
+  value to the handler (`handleMessages` takes it as `body`), so no request is cloned, re-read or
+  re-serialized, and nothing reads a request again once a keep-alive answer has begun — the
+  runtime discards an unread body then.
+- `keep-alive-response.ts` owns the `/messages` keep-alive mode, and none of it runs before the
+  caller authenticated. `readKeepAliveOptIn` separates an exact `"responseMode": "keep-alive"` from
+  a body read once — the router calls it on a merchant's, `audit-auth.ts` on a Grader session's
+  after the byte limit and before the strict Grader chat check — and returns any other body
+  untouched. `keepAliveResponse` answers 200 at once with
+  `Cache-Control: no-store, no-transform`, writes a whitespace byte immediately and every
+  configured interval while the routed response is pending, then writes
+  `{ responseMode, status, result | error }` from it and hands the pending work to `waitUntil`.
 - `logger.ts` sanitizes every string on its way into a record — opaque provider
   handles and the value of any credential-bearing query parameter — so a URL
   quoted in a message, detail, or stack cannot carry a credential into a sink.

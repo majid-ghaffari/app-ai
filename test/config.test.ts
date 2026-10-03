@@ -33,6 +33,7 @@ import {
   auditStatusOrigins,
   auditStatusSigningSecret,
   auditMaxMessageBytes,
+  messagesKeepAliveIntervalMilliseconds,
   auditMaxRuns,
   auditMaxUploadBytes,
   auditRunHeadroom,
@@ -88,6 +89,7 @@ describe('config accessors — present values', () => {
     expect(auditRunHeadroom(ENV)).toBe(2);
     expect(auditMaxUploadBytes(ENV)).toBe(8000000);
     expect(auditMaxMessageBytes(ENV)).toBe(1000000);
+    expect(messagesKeepAliveIntervalMilliseconds(ENV)).toBe(15000);
   });
 
   it.each([
@@ -359,6 +361,18 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(missingRequiredSecretNames(ENV, ['anthropic'])).not.toContain(
       'GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL',
     );
+  });
+
+  it('the keep-alive interval names its variable and is a positive whole number', () => {
+    expect(() => messagesKeepAliveIntervalMilliseconds(EMPTY_ENV)).toThrow(
+      /MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS/,
+    );
+    expect(() =>
+      messagesKeepAliveIntervalMilliseconds({
+        ...ENV,
+        MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS: '0',
+      }),
+    ).toThrow(/MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS must be a positive integer/);
   });
 
   it('credentialedOrigins names CREDENTIALED_ORIGINS', () => {
@@ -644,6 +658,10 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(productionVars()).toContain('MASTER_SUBSCRIBER_ID = "1"');
   });
 
+  it('writes a keep-alive byte every 15 seconds, well under a 60-second idle cut', () => {
+    expect(productionVars()).toContain('MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS = "15000"');
+  });
+
   it('routes durable production QC telemetry and failures to Seq', () => {
     const vars = productionVars();
     for (const level of ['TRACE', 'DEBUG']) {
@@ -737,6 +755,7 @@ describe('production [vars] — the deployed configuration values', () => {
       'KIMI_API_BASE',
       'CREDENTIALED_ORIGINS',
       'MASTER_SUBSCRIBER_ID',
+      'MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS',
       'MODEL_FAST',
       'MODEL_BALANCED',
       'MODEL_FRONTIER',

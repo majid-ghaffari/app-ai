@@ -405,7 +405,12 @@ Once a run's analysis has completed, the store owner can chat with LimeSpot abou
 extension relays `POST /messages` with `X-Personalizer-System-Prompt: grader-chat`, the session's
 bearer and store-origin headers, and `X-LimeSpot-Audit-Plan-Version: 2`. The body is exactly
 `{ messageId, messages, graderReport }`; its contract, the prompt, and the link guard are in
-[docs/prompts/grader-chat.md](prompts/grader-chat.md).
+[docs/prompts/grader-chat.md](prompts/grader-chat.md). A request may also carry
+`"responseMode": "keep-alive"`. Authorization reads it only after the bearer verified and the body
+passed the byte limit, and removes it before this check. The keep-alive envelope begins only once
+authorization admitted the message, so a refusal on the way — the switch, the plan, the size or the
+shape — keeps its own status and plain error body
+([DECISIONS #36](DECISIONS.md#36-a-long-messages-call-can-keep-its-connection-alive-by-the-callers-choice)).
 
 The chat is enabled by default in production, and `GRADER_CHAT_ENABLED = "false"` is its off switch.
 Rollout needs no toggle: the chat is offered only to a client that declares plan version 2, so a

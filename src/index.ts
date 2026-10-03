@@ -29,7 +29,9 @@
  *
  * This file is the router only: it builds CORS headers, handles the OPTIONS
  * preflight, selects scoped audit auth or normal Context-ID auth, and dispatches
- * to a handler. All logic lives in handlers/, inference/, lib/, and toolsets/.
+ * to a handler, answering an authenticated `/messages` request that opted in to
+ * keep-alive through lib/keep-alive-response.ts. All logic lives in handlers/,
+ * inference/, lib/, and toolsets/.
  * Configuration is read exclusively through src/config.ts (typed `Env`,
  * fail-fast on a missing variable — the catch below maps that to the
  * Brain-shaped 500 envelope).
@@ -48,6 +50,8 @@ import {
   type ContextValidation,
 } from './lib/auth';
 import { errorResponse, errorResponseFrom, type CorsHeaders } from './lib/responses';
+import { keepAliveResponse, readKeepAliveOptIn, type KeepAlive } from './lib/keep-alive-response';
+import { readJsonBody } from './lib/request-body';
 import { handleHealth } from './handlers/health';
 import { handleFileUpload, handleDeleteFile } from './handlers/files';
 import { handleMessages } from './handlers/messages';
@@ -60,6 +64,7 @@ import {
   authorizeAuditRequest,
   finalizeAuditUsage,
   releaseAuditUsage,
+  type AuditAuthorization,
 } from './lib/audit-auth';
 import { auditFileTenantScope } from './inference/file-references';
 import { assertFreeVisualVerifyRoute, FREE_VISUAL_VERIFY_PROMPT } from './prompt-registry';
@@ -112,44 +117,37 @@ async function handleRequest(
       return await handleAuditSessionExchange(request, env, corsHeaders);
     }
 
+    const answerKeptAlive = (
+      keepAlive: KeepAlive,
+      requestLogging: LoggingRuntime,
+      answer: (keptAliveLogging: LoggingRuntime) => Promise<Response>,
+    ): Response =>
+      keepAliveResponse(
+        answer(requestLogging).catch((error: unknown) => {
+          requestLogging.logger('Router').error('Request handler error', error);
+          return errorResponseFrom(error, corsHeaders);
+        }),
+        corsHeaders,
+        keepAlive,
+        schedule,
+      );
+
     const auditAuthorization = await authorizeAuditRequest(request, env);
     if (auditAuthorization?.kind === 'grader-chat') {
-      return await handleGraderChat(request, env, corsHeaders, logging, auditAuthorization);
+      const { keepAlive } = auditAuthorization;
+      return keepAlive
+        ? answerKeptAlive(keepAlive, logging, (keptAliveLogging) =>
+            handleGraderChat(request, env, corsHeaders, keptAliveLogging, auditAuthorization),
+          )
+        : await handleGraderChat(request, env, corsHeaders, logging, auditAuthorization);
     }
     if (auditAuthorization) {
-      let response: Response;
-      try {
-        // An audit session authenticates by bearer token and carries no merchant
-        // context-ID, so its provider files are sealed into a tenant namespace of
-        // its own — never reachable from a merchant tenant, nor the reverse. The
-        // sealing key that derives that namespace is configuration, and a
-        // rejected one throws here, inside the guard that releases the
-        // reservation the authorization just took.
-        const tenantScope = await auditFileTenantScope(auditAuthorization.sessionIdentifier, env);
-        if (pathname === '/files' && method === 'POST') {
-          response = await handleFileUpload(request, env, corsHeaders, logging, { tenantScope });
-        } else if (pathname === '/messages' && method === 'POST') {
-          response = await handleMessages(request, env, corsHeaders, logging, {
-            audit: true,
-            tenantScope,
-            deadlineStartedAt: auditAuthorization.admittedAt,
-          });
-        } else {
-          response = errorResponse(
-            'Resource not found.',
-            corsHeaders,
-            404,
-            'RecordNotFoundException',
-          );
-        }
-      } catch (error) {
-        // A reserved request must never remain pending until session expiry merely because a
-        // handler threw instead of returning its normal error Response.
-        await releaseAuditUsage(auditAuthorization, env);
-        throw error;
-      }
-      await finalizeAuditUsage(auditAuthorization, response, env);
-      return response;
+      const { keepAlive } = auditAuthorization;
+      return keepAlive
+        ? answerKeptAlive(keepAlive, logging, (keptAliveLogging) =>
+            answerAuditRequest(request, env, corsHeaders, keptAliveLogging, auditAuthorization),
+          )
+        : await answerAuditRequest(request, env, corsHeaders, logging, auditAuthorization);
     }
 
     // Every endpoint except /health requires a valid context-ID. The same
@@ -197,7 +195,12 @@ async function handleRequest(
       return await handleDeleteFile(fileId, request, env, corsHeaders, logging);
     }
     if (pathname === '/messages' && method === 'POST') {
-      return await handleMessages(request, env, corsHeaders, logging);
+      const { body, keepAlive } = readKeepAliveOptIn(await readJsonBody(request), env);
+      return keepAlive
+        ? answerKeptAlive(keepAlive, logging, (keptAliveLogging) =>
+            handleMessages(request, env, corsHeaders, keptAliveLogging, { body }),
+          )
+        : await handleMessages(request, env, corsHeaders, logging, { body });
     }
     if (pathname === '/prompts' && method === 'GET') {
       return handlePrompts(validation, env, corsHeaders, logging, {
@@ -224,4 +227,36 @@ async function handleRequest(
     logging?.logger('Router').error('Request handler error', error);
     return errorResponseFrom(error, corsHeaders);
   }
+}
+
+async function answerAuditRequest(
+  request: Request,
+  env: Env,
+  corsHeaders: CorsHeaders,
+  logging: LoggingRuntime,
+  authorization: AuditAuthorization,
+): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  const { method } = request;
+  let response: Response;
+  try {
+    const tenantScope = await auditFileTenantScope(authorization.sessionIdentifier, env);
+    if (pathname === '/files' && method === 'POST') {
+      response = await handleFileUpload(request, env, corsHeaders, logging, { tenantScope });
+    } else if (pathname === '/messages' && method === 'POST') {
+      response = await handleMessages(request, env, corsHeaders, logging, {
+        audit: true,
+        tenantScope,
+        deadlineStartedAt: authorization.admittedAt,
+        ...(authorization.messageBody === undefined ? {} : { body: authorization.messageBody }),
+      });
+    } else {
+      response = errorResponse('Resource not found.', corsHeaders, 404, 'RecordNotFoundException');
+    }
+  } catch (error) {
+    await releaseAuditUsage(authorization, env);
+    throw error;
+  }
+  await finalizeAuditUsage(authorization, response, env);
+  return response;
 }

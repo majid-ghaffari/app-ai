@@ -87,7 +87,9 @@ There is no CODEOWNERS file in this repository, so marketing's ownership is reco
 
 ## Input
 
-The request body is exactly `{ messageId, messages, graderReport }`.
+The request body is exactly `{ messageId, messages, graderReport }`, once authorization has removed
+the transport's optional `"responseMode": "keep-alive"`
+([DECISIONS #36](../DECISIONS.md#36-a-long-messages-call-can-keep-its-connection-alive-by-the-callers-choice)).
 
 - `messageId` is a UUID v4 that lib mints for each visitor turn and keeps unchanged across every
   retry of that turn, matched without regard to case. It is bound to the audit and to the

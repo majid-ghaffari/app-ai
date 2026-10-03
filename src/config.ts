@@ -101,6 +101,11 @@ export interface Env {
   /** Comma-separated Origins allowed to send credentialed CORS requests. Non-secret var. */
   readonly CREDENTIALED_ORIGINS?: string;
   /**
+   * Milliseconds between the whitespace bytes a keep-alive `/messages` answer writes while the
+   * model works, held well under the shortest idle limit a client network is known to cut at.
+   */
+  readonly MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS?: string;
+  /**
    * The `SubscriberID` Personalizer reports for the master account. Only that
    * subscriber may read the operator diagnostics route; every other validated
    * merchant is answered as though the route did not exist. Non-secret var.
@@ -271,6 +276,7 @@ type RequiredVarName =
   | 'LOG_TARGETS_FATAL'
   | 'LOG_SEQ_INGEST_URL'
   | 'CREDENTIALED_ORIGINS'
+  | 'MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS'
   | 'MASTER_SUBSCRIBER_ID'
   | 'MODEL_FAST'
   | 'MODEL_BALANCED'
@@ -673,6 +679,11 @@ export function credentialedOrigins(env: Env): readonly string[] {
     .filter((origin) => origin.length > 0);
 }
 
+/** Milliseconds between the whitespace bytes of a keep-alive `/messages` answer. */
+export function messagesKeepAliveIntervalMilliseconds(env: Env): number {
+  return positiveIntegerVar(env, 'MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS');
+}
+
 /** Website/app-ai HMAC key used only to verify activation tokens. */
 export function auditActivationSigningSecret(env: Env): string {
   return strongSigningSecret(env, 'AUDIT_ACTIVATION_SIGNING_SECRET');
@@ -860,6 +871,7 @@ function positiveIntegerVar(
   env: Env,
   name:
     | 'MASTER_SUBSCRIBER_ID'
+    | 'MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS'
     | 'KIMI_EVIDENCE_MAX_BYTES'
     | 'KIMI_EVIDENCE_MAX_TOTAL_BYTES'
     | 'KIMI_EVIDENCE_MAX_TEXT_BYTES'

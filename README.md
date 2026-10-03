@@ -263,6 +263,19 @@ top-level `continuation` field on the matching next `/messages` request; Gemini
 routes require this to preserve the assistant's thought signatures. Unknown
 selectors take the bounded Anthropic-wire passthrough body.
 
+A caller whose network may drop a request that receives no reply bytes for a
+while adds `"responseMode": "keep-alive"` to the JSON body. app-ai then answers
+200 at once, writes a whitespace byte every
+`MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS` while the request runs, and ends with
+`{ "responseMode": "keep-alive", "status": <n>, "result": <body> }`, or `"error":
+<Brain error envelope>` in place of `result` when the status is not a 2xx. The
+status and body are those the plain answer would carry. app-ai reads the field
+only once the caller has authenticated and begins the keep-alive answer only once
+the request is authorized, so a request refused before then — a missing or
+invalid credential, or a Grader body over its size limit or outside its shape —
+is answered with its own status and plain error body. A request without the field
+is answered exactly as before ([docs/DECISIONS.md #36](docs/DECISIONS.md)).
+
 ## Development
 
 ### Local Setup
@@ -479,6 +492,11 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
    worker and make one authenticated `visual-verify-free` request. The live-store workflow is not
    pointed at the route until that smoke returns a parseable `{ pass, reason, fix }` verdict from
    `@cf/qwen/qwen3.8-27b`.
+6. Deploy this worker before a lib that sends the `/messages` `"responseMode": "keep-alive"`
+   opt-in, and roll back in the reverse order: roll the lib sender back, or remove its opt-in,
+   before rolling this worker back. A worker without the keep-alive mode refuses the member on the
+   strict Grader chat body
+   ([docs/DECISIONS.md #36](docs/DECISIONS.md#36-a-long-messages-call-can-keep-its-connection-alive-by-the-callers-choice)).
 
 Pushing `main` then auto-deploys through the repository launcher. The launcher
 injects the checked-out Git revision; a production worker built without it

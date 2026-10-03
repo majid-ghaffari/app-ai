@@ -39,6 +39,8 @@ import { graderChatRefusal } from './grader-chat-quota';
 import type { PromptName } from '../prompt-registry';
 import { WorkerError } from './responses';
 import { isSameStoreOrigin } from './store-origin';
+import { readKeepAliveOptIn, type KeepAlive } from './keep-alive-response';
+import { jsonBodyValue, readBodyBytesWithin, type JsonBody } from './request-body';
 import {
   isUsableProposal,
   readProposalManifest,
@@ -131,6 +133,10 @@ export interface AuditAuthorization {
   readonly prompt?: string;
   /** The pages the inference asked the model to plan, read from its page manifest. */
   readonly proposalManifest?: readonly ProposalManifestPage[];
+  /** An inference's JSON body, read once within the size limit and without its keep-alive opt-in. */
+  readonly messageBody?: JsonBody;
+  /** The keep-alive answer an inference opted in to, read once its body passed the size limit. */
+  readonly keepAlive: KeepAlive | null;
 }
 
 /** What a session's Grader chat offers, so the extension and lib can show the text box and count. */
@@ -214,6 +220,8 @@ export interface GraderChatAuthorization {
   readonly historyFingerprints: readonly string[];
   /** The fingerprint of the whole transcript, which the message identifier is bound to. */
   readonly transcriptFingerprint: string;
+  /** The keep-alive answer the message opted in to, read once its body passed the size limit. */
+  readonly keepAlive: KeepAlive | null;
 }
 
 /** Exchange one verified activation token for a scoped audit session. */
@@ -339,6 +347,8 @@ export async function authorizeAuditRequest(
   let proposalManifest: readonly ProposalManifestPage[] | undefined;
   let uploadBytes = 0;
   let referencedFileIdentifiers: readonly string[] = [];
+  let keepAlive: KeepAlive | null = null;
+  let messageBody: JsonBody | undefined;
   if (url.pathname === '/files') {
     kind = 'upload';
     // Upload destinations are multipart metadata, not the inference selector header. A single
@@ -373,8 +383,8 @@ export async function authorizeAuditRequest(
       throw forbidden('This system prompt is not available to grader sessions.');
     }
     proposalPrompt = selector;
-    const bytes = new Uint8Array(await request.clone().arrayBuffer());
-    if (bytes.byteLength > auditMaxMessageBytes(env)) {
+    const bytes = await readBodyBytesWithin(request, auditMaxMessageBytes(env));
+    if (!bytes) {
       throw quotaExceeded('The grader inference request is larger than the allowed size.');
     }
     let body: unknown;
@@ -383,7 +393,10 @@ export async function authorizeAuditRequest(
     } catch {
       throw invalidArgument('The grader inference request body must be valid JSON.');
     }
-    const message = validateAuditMessage(body);
+    const optIn = readKeepAliveOptIn({ value: body }, env);
+    keepAlive = optIn.keepAlive;
+    messageBody = optIn.body;
+    const message = validateAuditMessage(jsonBodyValue(optIn.body));
     referencedFileIdentifiers = message.fileIdentifiers;
     proposalManifest = readProposalManifest(message.texts);
   }
@@ -409,6 +422,8 @@ export async function authorizeAuditRequest(
     admittedAt,
     ...(proposalPrompt === undefined ? {} : { prompt: proposalPrompt }),
     ...(proposalManifest === undefined ? {} : { proposalManifest }),
+    ...(messageBody === undefined ? {} : { messageBody }),
+    keepAlive,
   };
 }
 
@@ -420,8 +435,8 @@ async function authorizeGraderChat(
   if (!graderChatEnabled(env)) throw graderChatRefusal('grader_chat_disabled');
   const planVersion = declaredAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER));
   if (!planIncludesGraderChat(planVersion)) throw graderChatRefusal('grader_chat_not_in_plan');
-  const bytes = new Uint8Array(await request.clone().arrayBuffer());
-  if (bytes.byteLength > auditMaxMessageBytes(env)) {
+  const bytes = await readBodyBytesWithin(request, auditMaxMessageBytes(env));
+  if (!bytes) {
     throw graderChatRefusal('grader_chat_input_too_long');
   }
   let body: unknown;
@@ -430,7 +445,11 @@ async function authorizeGraderChat(
   } catch {
     throw invalidArgument('The grader chat request body must be valid JSON.');
   }
-  const conversation = validateGraderChatBody(body, graderChatMaxInputCharacters(env));
+  const { body: chatBody, keepAlive } = readKeepAliveOptIn({ value: body }, env);
+  const conversation = validateGraderChatBody(
+    jsonBodyValue(chatBody),
+    graderChatMaxInputCharacters(env),
+  );
   return {
     kind: 'grader-chat',
     auditIdentifier: claims.auditIdentifier,
@@ -441,6 +460,7 @@ async function authorizeGraderChat(
     conversation,
     historyFingerprints: await graderChatHistoryFingerprints(conversation.turns),
     transcriptFingerprint: await transcriptFingerprint(conversation.turns),
+    keepAlive,
   };
 }
 

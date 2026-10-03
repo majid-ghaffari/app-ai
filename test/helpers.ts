@@ -45,6 +45,7 @@ export const ENV: Env = {
   CREDENTIALED_ORIGINS:
     'https://local-app.limespot.com,http://localhost:4200,http://localhost:3000',
   MASTER_SUBSCRIBER_ID: '1',
+  MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS: '15000',
   MODEL_FAST: 'claude-haiku-4-5',
   MODEL_BALANCED: 'claude-sonnet-5',
   MODEL_FRONTIER: 'claude-opus-4-8',
@@ -436,4 +437,50 @@ export async function opaqueFileEnv(
     }),
   );
   return { env: baseEnv, ids };
+}
+
+/** How often a request was cloned and how often a body-reading method consumed it. */
+export interface BodyReads {
+  clones: number;
+  reads: number;
+}
+
+/** A request that counts its clones and body reads; a stream read through `body` is not counted. */
+export function countedRequest(
+  url: string,
+  init: RequestInit,
+): { readonly request: Request; readonly counts: BodyReads } {
+  const counts: BodyReads = { clones: 0, reads: 0 };
+  class CountedRequest extends Request {
+    override clone(): Request {
+      counts.clones += 1;
+      return super.clone();
+    }
+    override json<T>(): Promise<T> {
+      counts.reads += 1;
+      return super.json<T>();
+    }
+    override text(): Promise<string> {
+      counts.reads += 1;
+      return super.text();
+    }
+    override arrayBuffer(): Promise<ArrayBuffer> {
+      counts.reads += 1;
+      return super.arrayBuffer();
+    }
+    override formData(): Promise<FormData> {
+      counts.reads += 1;
+      return super.formData();
+    }
+    override blob(): Promise<Blob> {
+      counts.reads += 1;
+      return super.blob();
+    }
+  }
+  return { request: new CountedRequest(url, init), counts };
+}
+
+/** How many times a `JSON.parse` spy parsed exactly `text`. */
+export function parsesOf(parse: { mock: { calls: unknown[][] } }, text: string): number {
+  return parse.mock.calls.filter(([parsed]) => parsed === text).length;
 }

@@ -3,7 +3,12 @@
 **Parent:** [app-ai/CLAUDE.md](../../CLAUDE.md)
 
 Route handlers. `src/index.ts` (the thin router) does CORS, the OPTIONS preflight,
-and context-ID auth, then dispatches to one of these. Each handler owns one route
+and context-ID auth, then dispatches to one of these. A `/messages` request that opted in
+to keep-alive — read only once the caller authenticated — reaches its handler with the opt-in
+already removed from the body the router or audit authorization read and parsed once, which
+`handleMessages` takes as its `body` option instead of reading the request again, and the
+router turns the handler's `Response` into the keep-alive envelope (`../lib/keep-alive-response.ts`),
+so no handler knows which mode it is answering in. Each handler owns one route
 group and returns a `Response`; inference and file operations go through the
 provider-neutral services in `../inference/`, and the AI-tool surface comes from
 the toolset registry (`../toolsets/`). Handlers do not import provider wire types.
@@ -161,4 +166,6 @@ or changes the inference response.
   per-route error envelopes ([docs/DECISIONS.md](../../docs/DECISIONS.md) #7).
 - The live surface (`/files`, `/messages`) is in production — its routes, success
   request/response shapes, headers, and status codes are a stable external contract;
-  keep them identical. Error bodies follow the Brain wire shape above.
+  keep them identical. Error bodies follow the Brain wire shape above. The keep-alive
+  answer is the one other `/messages` mode, chosen only by the caller's
+  `"responseMode": "keep-alive"`; it carries that same status and body inside its envelope.

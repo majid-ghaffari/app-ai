@@ -69,10 +69,8 @@ export default tseslint.config(
     },
   },
 
-  // Node integration scripts (including the optional token-savings diagnostic) — inside the lint
-  // gate like everything else, with Node globals instead of Worker ones.
   {
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'test/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

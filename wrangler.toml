@@ -88,6 +88,11 @@ CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,htt
 # subscriber may read GET /prompts; every other validated merchant is answered
 # as though the route did not exist.
 MASTER_SUBSCRIBER_ID = "1"
+# A /messages request whose JSON body carries responseMode "keep-alive" is answered 200 at once,
+# with a whitespace byte this often while the model works, then its outcome in a JSON envelope
+# (src/lib/keep-alive-response.ts). Networks that drop a request receiving no reply bytes cut at
+# 60 seconds, so the interval stays well under that.
+MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS = "15000"
 
 # ── Model routing ──
 # CAPABILITY TIERS bound to concrete models. Each prompt group declares a tier;

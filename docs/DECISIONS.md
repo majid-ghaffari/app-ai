@@ -1166,3 +1166,63 @@ lifetime, and the old bearer is refused from then on. A visitor's day is keyed b
 alert every `GRADER_CHAT_ALERT_EVERY` messages, decided inside the counter's transaction so each
 threshold alerts once. The chat is plan version 2 because lib must send it and show its terms;
 plan 1 clients are refused rather than offered something they cannot render.
+
+### 36. A long `/messages` call can keep its connection alive, by the caller's choice
+
+Some client networks drop an HTTP request that receives no reply bytes for a while: a VPN's proxy
+or an office proxy cutting at 60 seconds is common, and a Grader proposal, review or verification
+routinely takes longer than that. A plain `/messages` answer sends nothing — no status, no headers,
+no body — until the model has finished, so on such a network the call is lost before app-ai answers,
+however healthy the inference was.
+
+A caller that sets `"responseMode": "keep-alive"` in its JSON request body is answered at once:
+status 200 and the headers immediately, one whitespace byte straight away and another every
+`MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS` (15 seconds in production) while the request runs, and
+then one JSON envelope. Leading whitespace is valid JSON, so the body still parses as one value.
+Because the status is committed before the outcome is known, the outcome moves into the body:
+`{ "responseMode": "keep-alive", "status": <n>, "result": <body> }` when the request would have
+answered a 2xx, and `{ "responseMode": "keep-alive", "status": <n>, "error": <Brain error envelope> }`
+otherwise. `status` and the body are exactly what the plain answer would have carried — the upstream
+deadline's 504, a truncated reply's 502, a provider failure, a Grader chat refusal made once the
+message is being admitted — and a body that is not JSON travels as a string.
+
+The opt-in rides in the body rather than a header so the browser extension's relay, which forwards
+a `/messages` body verbatim but only an allowlisted set of headers, needs no change. Reading a body
+costs memory and CPU, so app-ai reads it for the opt-in only once the caller has authenticated, and
+reads each `/messages` body exactly once, parses it once and keeps no second copy: a merchant
+request's body is read and parsed after its context-ID validated, and a Grader session request's
+body is read after its bearer verified, stopping as soon as it passes the audit's byte limit, then
+parsed once. The opt-in is looked for in that parsed value, and the same value — never a clone, a
+re-read or a re-serialized copy — is what the handler receives. The keep-alive answer begins only once that authorization has admitted
+the request, so a request refused while authenticating or authorizing — a missing or invalid
+credential, an unsupported plan, an oversized or malformed Grader body, a switched-off chat, a
+refused reservation — is answered with its own status and plain error body, which a client that
+opted in reads exactly as it would without the opt-in. The opt-in is
+then removed, so every handler, the strict Grader chat body check and the unregistered passthrough
+see exactly the body they always did, and no provider ever receives it. Because the body has already
+been read before the keep-alive answer begins, the handler never reads the request again, which
+matters because the runtime discards a request body nobody has read once that answer has begun.
+Only the exact value `keep-alive` opts in: a request without it — or with any other value — is
+answered exactly as before, which keeps every released client, and the lib embedded in an installed
+extension, on the contract it was built for.
+
+The two releases are ordered in both directions. app-ai deploys before a lib that sends the opt-in,
+and a rollback runs the other way: the lib sender is rolled back, or its opt-in removed, before
+app-ai is. An app-ai without this mode does not know the member — the strict Grader chat body
+refuses it with 400 `ArgumentException`, and the unregistered passthrough forwards it to the
+provider, which refuses an unknown member — so rolling app-ai back under a lib that still sends it
+breaks the Grader chat and every unregistered-selector call that carries it.
+
+The interval is configuration because it is sized against client networks, not against anything in
+the worker. The keep-alive answer is marked `Cache-Control: no-store, no-transform`: Cloudflare does
+not compress a response carrying `no-transform`, so the single whitespace bytes are not held back to
+fill a compression block. Waiting costs no CPU time, and a streamed body keeps the invocation alive
+while the client is reading it. The pending work is also handed to `waitUntil`, so a caller that
+disconnects leaves it the runtime's 30-second grace to settle what it holds — the audit's ledger and a
+Grader chat message's stored outcome — rather than leaving the reservation to its lease. Work that
+outlives that grace ends with the invocation and settles exactly as a plain request whose caller
+disconnected does: its reservation stays held until the lease ends and the audit's alarm releases
+it. A Grader chat message released that way counts as a failed attempt and answers nothing, so a
+retry of the same `messageId` is admitted afresh. Replay is unaffected: a Grader chat `messageId`
+already answered is answered from its stored outcome before any model call, and that outcome
+reaches a keep-alive caller as the envelope's `result`, identical to the plain answer's body. The upstream inference deadline stays the only time limit; keep-alive adds none.

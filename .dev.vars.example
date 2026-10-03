@@ -35,6 +35,12 @@ CREDENTIALED_ORIGINS=https://local-app.limespot.com,http://localhost:4200,http:/
 # answered as though the route did not exist.
 MASTER_SUBSCRIBER_ID=1
 
+# REQUIRED. Milliseconds between the whitespace bytes a keep-alive /messages answer
+# writes while the model works (a request opts in with responseMode "keep-alive" in
+# its JSON body). Production keeps it well under the 60-second idle cut some client
+# networks apply.
+MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS=15000
+
 # ── Model routing ────────────────────────────────────────────────────────────
 #
 # Each prompt group declares a capability TIER. The model id bound to that tier

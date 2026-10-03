@@ -25,6 +25,7 @@ import type {
 import { getDefaultsBlock } from '../lib/brain-defaults';
 import { dedupUpload } from '../lib/file-dedup';
 import { jsonResponse, errorResponseFrom, WorkerError, type CorsHeaders } from '../lib/responses';
+import { jsonBodyValue, readJsonBody, type JsonBody } from '../lib/request-body';
 import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
 import {
   createDevelopmentInferenceTrace,
@@ -93,6 +94,7 @@ export async function handleMessages(
     readonly audit?: boolean;
     readonly tenantScope?: string;
     readonly deadlineStartedAt?: number;
+    readonly body?: JsonBody;
   } = {},
 ): Promise<Response> {
   const requestStartedAt = Date.now();
@@ -109,9 +111,10 @@ export async function handleMessages(
   );
   try {
     log.info('Request received');
+    const requestBody = options.body ?? (await readJsonBody(request));
     let rawBody: unknown;
     try {
-      rawBody = await request.json();
+      rawBody = jsonBodyValue(requestBody);
     } catch (error) {
       if (selector === FREE_VISUAL_VERIFY_PROMPT) throw invalidFreeVisualVerifyRequest();
       throw error;
