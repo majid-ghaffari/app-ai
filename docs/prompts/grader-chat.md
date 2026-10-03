@@ -80,6 +80,21 @@ states it. Marketing writes each price with its currency and, for a recurring on
 until marketing approves one. Never say and Objections guide the model's wording and never license
 a claim the other sections do not make.
 
+v2 makes the chat a product sales consultant for LimeSpot Growth Agents: it opens on the store's
+report, keeps to business needs and product coverage, answers only from the booklet, LimeSpot's own
+website and support portal and its knowledge of LimeSpot and of personalization and growth, never
+browses or researches anything for the store owner, refuses technical help of any kind, asks for
+the store's monthly revenue because pricing follows it, and steers to the Install LimeSpot button,
+after which the Onboarding Agent takes over, or to Talk to our team. Its Prices we may state are
+the LimeSpot Studio plan's tiers as Brain serves them from Chargebee
+(`pricing-plan-details?studioDefault=true`), one line per revenue tier; that plan carries no trial,
+so the booklet offers a free trial only as the 21-day challenge, open to stores with $1,000,000 or
+more in yearly sales and 50 or more products, the annual GMV and SKU eligibility
+limespot.com/max-challenge states. Every line keeps to the boundaries block: v2 says recommendations
+are designed to minimize impact on page load speed and SEO and never bounds that impact, and states
+no duration beyond the challenge's own length and the plan's 30-day revenue window. The booklet's editor note records the plan identifier
+and the check date; a plan change in Chargebee is a new booklet version.
+
 A published booklet is not edited in place: new wording is a new file and a new
 `GRADER_CHAT_BOOKLET_VERSION`, so the version a reply reports names the text it was grounded in.
 There is no CODEOWNERS file in this repository, so marketing's ownership is recorded here and in
@@ -195,7 +210,10 @@ fingerprints of its transcript and reply.
 - `test/assistant-prompt-blocks.test.ts` pins Studio's `chat` and the grader-chat composition byte
   for byte to their baselines, the single boundaries block, the absence of Studio-only instructions
   and of any platform outside the booklet, every booklet's headings and size cap, and v1's empty
-  price section and editor-only draft note.
+  price section and editor-only draft note. It holds v2 to the 21-day challenge's eligibility as
+  the only revenue threshold outside its prices, to page load speed and SEO impact described only
+  as something LimeSpot is designed to minimize, never bounded as minimal or none, and to no stated
+  duration beyond the challenge's length and the plan's 30-day revenue window.
 - `test/grader-chat-output.test.ts` holds the link guard to every off-site link form, scheme or bare,
   limespot.com links passing, wording never withheld, and unfinished or empty replies.
 - `test/grader-chat.test.ts` drives the real route with a stubbed provider: plan gating and the

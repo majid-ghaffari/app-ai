@@ -3,6 +3,7 @@ import sharedChatFormatting from '../assistant-shared/_shared-chat-formatting.md
 import graderIdentity from './_identity.md';
 import graderBoundaries from './_boundaries.md';
 import bookletV1 from './booklets/v1.md';
+import bookletV2 from './booklets/v2.md';
 
 /** The fixed headings of a Grader chat marketing booklet, in order. */
 export const GRADER_CHAT_BOOKLET_HEADINGS = [
@@ -15,7 +16,10 @@ export const GRADER_CHAT_BOOKLET_HEADINGS = [
 ] as const;
 
 /** Every marketing booklet file, keyed by the version `GRADER_CHAT_BOOKLET_VERSION` names. */
-export const graderChatBookletSources: ReadonlyMap<number, string> = new Map([[1, bookletV1]]);
+export const graderChatBookletSources: ReadonlyMap<number, string> = new Map([
+  [1, bookletV1],
+  [2, bookletV2],
+]);
 
 /** The model-visible text of a booklet file: its HTML-comment editor notes removed. */
 export function graderChatBookletText(source: string): string {

@@ -18,11 +18,27 @@ import sharedChatFormatting from '../src/prompts/assistant-shared/_shared-chat-f
 import graderIdentity from '../src/prompts/grader-chat/_identity.md';
 import graderBoundaries from '../src/prompts/grader-chat/_boundaries.md';
 import bookletV1 from '../src/prompts/grader-chat/booklets/v1.md';
+import bookletV2 from '../src/prompts/grader-chat/booklets/v2.md';
 import { ENV } from './helpers';
 
 const BOOKLET_MAX_CHARACTERS = 12_000;
+const NEWEST_BOOKLET_VERSION = 2;
 const PLATFORM_NAMES =
   /\b(?:Shopify|BigCommerce|SHOPLINE|WooCommerce|Magento|Adobe Commerce|Wix|Squarespace|PrestaShop|Ecwid|OpenCart|Salesforce Commerce)\b/iu;
+const CHALLENGE_ELIGIBILITY = '$1,000,000 or more in yearly sales and 50 or more products';
+const REVENUE_AMOUNT =
+  /\$\s?\d[\d,.]*(?:\s?(?:k|m|mm|million|thousand)\b)?|\b\d[\d,.]*\s?(?:k|m|mm|million|thousand)\b/giu;
+const PERFORMANCE_BOUND =
+  /\b(?:no|zero|minimal|negligible|little|not any|without(?: any)?)\s+(?:impact|effect|slowdown|slow-down)\b|\b(?:never|won't|will not|doesn't|does not)\s+(?:slow|affect|impact|hurt)\b/giu;
+const PLAN_TERMS = [
+  '21-day challenge',
+  '21-day free trial',
+  'the 21 days end',
+  'over the last 30 days',
+  'per 30 days',
+];
+const STATED_DURATION =
+  /\b(?:\d+(?:[.,]\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty-five|forty|sixty|ninety|few|several|couple(?: of)?|half an?)(?:[\s-]+(?:more|extra|additional|full|whole))?[\s-]+(?:second|minute|hour|day|week|month|year)s?\b|\b(?:within|in under|in less than|in about|after|over)\s+(?:a|an|the|one|a few|a couple of)\s+(?:second|minute|hour|day|week|month|year)s?\b|\b(?:instantly|immediately|overnight|right away|in no time|same[\s-]day)\b/giu;
 
 const bookletFiles = import.meta.glob('../src/prompts/grader-chat/booklets/*.md', {
   eager: true,
@@ -61,7 +77,13 @@ describe('grader-chat composition', () => {
       composePrompt(graderIdentity, graderBoundaries, sharedChatFormatting, booklet),
     );
     expect(getSystemPrompt('grader-chat', ENV)).toMatchObject({
-      prompt,
+      prompt: composePrompt(
+        graderIdentity,
+        graderBoundaries,
+        sharedChatFormatting,
+        getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: String(NEWEST_BOOKLET_VERSION) })
+          .booklet,
+      ),
       group: 'grader-sales',
       tier: 'balanced',
       model: ENV.MODEL_BALANCED,
@@ -136,8 +158,8 @@ describe('grader-chat composition', () => {
   });
 
   it('refuses a booklet version that names no booklet', () => {
-    expect(() => getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: '2' })).toThrow(
-      /GRADER_CHAT_BOOKLET_VERSION 2 names no booklet/,
+    expect(() => getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: '3' })).toThrow(
+      /GRADER_CHAT_BOOKLET_VERSION 3 names no booklet/,
     );
   });
 });
@@ -171,5 +193,41 @@ describe('marketing booklets', () => {
     const sections = graderChatBookletSections(getGraderChatPrompt(ENV).booklet);
     expect(sections.get('Prices we may state')).toBe('');
     expect(getGraderChatPrompt(ENV).prompt).not.toMatch(/DRAFT|marketing has not/iu);
+  });
+});
+
+describe('booklet v2', () => {
+  const booklet = getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: '2' }).booklet;
+  const sections = graderChatBookletSections(booklet);
+
+  it('offers the 21-day challenge only from $1,000,000 in yearly sales and 50 products, and names no other revenue threshold', () => {
+    expect(sections.get('Claims we may make')).toContain(
+      `The 21-day challenge, a 21-day free trial with hands-on help from our team, is open to stores with ${CHALLENGE_ELIGIBILITY}.`,
+    );
+    const outsidePrices = [...sections]
+      .filter(([heading]) => heading !== 'Prices we may state')
+      .map(([, body]) => body)
+      .join('\n');
+    const editorNotes = (bookletV2.match(/<!--[\s\S]*?-->/gu) ?? []).join('\n');
+    for (const text of [outsidePrices, editorNotes]) {
+      const amounts = text.match(REVENUE_AMOUNT) ?? [];
+      expect(amounts.length).toBeGreaterThan(0);
+      expect(new Set(amounts)).toEqual(new Set(['$1,000,000']));
+    }
+    for (const line of outsidePrices.split('\n').filter((text) => text.includes('$1,000,000'))) {
+      expect(line).toContain(CHALLENGE_ELIGIBILITY);
+    }
+  });
+
+  it('says LimeSpot is designed to minimize page load speed and SEO impact, and bounds that impact nowhere', () => {
+    expect(sections.get('Claims we may make')).toContain(
+      "Recommendations fit the store's existing design and are designed to minimize impact on page load speed and SEO.",
+    );
+    expect(booklet.match(PERFORMANCE_BOUND) ?? []).toEqual([]);
+  });
+
+  it('states no duration beyond the challenge length and the plan revenue window', () => {
+    const withoutPlanTerms = PLAN_TERMS.reduce((text, term) => text.replaceAll(term, ''), booklet);
+    expect(withoutPlanTerms.match(STATED_DURATION) ?? []).toEqual([]);
   });
 });
