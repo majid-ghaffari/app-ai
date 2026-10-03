@@ -73,3 +73,40 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
    inside a method body, never a change log, never a restatement of the line below it. Everything
    explanatory belongs in the `CLAUDE.md` files and the `docs/` pages beside them, where a reader
    finds it without reading the code. (`_standards/documentation-and-comments.md`)
+9. **Heavy jobs run one per slot, through the gate.** Several sessions share one machine, and a
+   test runner, bundler, compiler or container build is heavy enough that a few at once exhaust
+   RAM and take the machine down with swap thrash — which no amount of care after the fact undoes.
+   So start heavy work as
+   `_enforcement/resource-guard/with-resources.sh <label> -- <command>`, which takes one of
+   `max(1, min(cores / 4, RAM_GiB / 8))` machine-wide slots first and WAITS when none is free. A
+   wait is the gate working: it says why on stderr, and it never refuses. Run
+   `_enforcement/resource-guard/with-resources.sh --print-capacity` to see this machine's budget and
+   `--status` to see who holds it. Never raise the budget to get your job moving, and never bypass
+   the gate with `LIMESPOT_GUARD=off` outside a genuine emergency.
+   Caps inside the tools are equally binding, because they are what bounds a runner you invoke
+   directly: Jest sets `maxWorkers` and a `globalSetup` run lock, and Playwright sets
+   `workers: 1`. For .NET, run `dotnet build -m:N` at a share of the cores, and pass
+   `MSBUILDDISABLENODEREUSE=1` on the invocation itself unless you know the environment already
+   exports it — MSBuild otherwise leaves its worker nodes alive for about fifteen minutes per
+   build, so sequential builds in one session accumulate gigabytes that no concurrency limit would
+   ever notice. Never remove or raise one of these caps to make something finish sooner.
+   (`_standards/machine-resources.md`)
+10. **CI runs the test suites; the local loop is format, lint and build.** Before a push, run the
+    repository's formatter check, linter, and build or typecheck over what you touched, plus the
+    focused local runs permitted below — never a full suite CI runs. CI runs the suites on the
+    pushed head and is their authority: never re-run one locally to confirm or contradict it. A
+    repository's `CLAUDE.md` gate list names what its CI enforces, and where it reads as a local
+    checklist this rule governs. Focused local runs stay for a reported bug's reproduction test,
+    screenshots for a UI change, reproducing a test that failed on exact-head CI, proving a test is
+    not vacuous, and a suite CI does not run. That last suite runs at the milestone its repository
+    names; until it names one and updates its enforcement in the same change, its existing trigger
+    remains authoritative.
+    Where no CI runs a repository's suite, it stays local. A pull request merges only on green CI at
+    its exact head. (`_standards/testing.md`, "Local gates")
+11. **Differential-first when an expensive suite is authorized.** This rule never authorizes a run
+    that "Local gates" assigns elsewhere. For an allowed local or protected run, use the smallest
+    affected real-path set with no retries; reserve the full protected suite for its named final
+    milestone or a separately approved dispatch. Required pull-request CI still runs. Never overlap
+    traffic on a shared live target; after an incomplete protected run, restore and verify clean state
+    before the next dispatch. Never report focused green as full green. (`_standards/testing.md`,
+    "Differential-first validation for expensive suites")
