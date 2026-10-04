@@ -99,6 +99,16 @@ which app-ai has consumed, so that exchange answers 409 `AuditActivationConsumed
 visitor asks for a fresh link. One-use activations are what keep a copied link from taking over a
 live session.
 
+### A 30-day Grader session depends on the extension and the website
+
+App-ai accepts a session for 30 days, but a visitor reaches that only where the other two sides keep
+it. The extension holds the session in per-tab session storage, which a closed tab or browser
+clears, and the embedded lib keeps the report and chat in page memory, so a reload loses them. The
+website's report-email endpoints verify the same bearer with their own 24-hour window from the run's
+start and do not refuse a superseded or `GRADER_RUNS_VALID_FROM`-revoked session. And the website
+reuses one audit identifier per store, while app-ai keys the completion ledger and the chat
+allowance by it, so a store runs again after 30 days only once the website issues a new identifier.
+
 ### The Grader chat runs over a draft booklet
 
 `GRADER_CHAT_ENABLED` is `true` in production, and `false` switches the chat off. Only a client that

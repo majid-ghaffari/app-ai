@@ -60,7 +60,7 @@ export const ENV: Env = {
   AUDIT_SESSION_SIGNING_SECRET: 'test-session-signing-secret-distinct-32-bytes',
   AUDIT_STATUS_SIGNING_SECRET: 'test-audit-status-signing-secret-distinct-32-bytes',
   AUDIT_STATUS_ORIGINS: 'https://limespot.test',
-  AUDIT_SESSION_TTL_SECONDS: '86400',
+  AUDIT_SESSION_TTL_SECONDS: '2592000',
   AUDIT_MAX_RUNS: '4',
   AUDIT_RUN_HEADROOM: '2',
   AUDIT_MAX_UPLOAD_BYTES: '8000000',
@@ -74,6 +74,8 @@ export const ENV: Env = {
   GRADER_CHAT_EFFORT: 'low',
   GRADER_CHAT_BOOKLET_VERSION: '1',
   GRADER_CHAT_ALERT_EVERY: '500',
+  GRADER_RUNS_VALID_FROM: '2026-01-01T00:00:00Z',
+  GRADER_EXTENSION_BUILT_AFTER: '2026-01-01T00:00:00Z',
 };
 
 export const CORS = { 'Access-Control-Allow-Origin': '*' };

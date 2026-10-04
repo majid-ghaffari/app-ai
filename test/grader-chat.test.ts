@@ -50,6 +50,7 @@ const WEBHOOK_URL = 'https://hooks.slack.test/services/T000/B000/grader-chat';
 const VISITOR = '203.0.113.7';
 const REPLY = 'LimeSpot can add Trending products below your home page hero.';
 const LEASE_MILLISECONDS = 11 * 60 * 1000;
+const DAY_MILLISECONDS = 86_400_000;
 
 const REPORT = {
   platform: 'shopline',
@@ -93,6 +94,7 @@ interface ChatBody {
     readonly sessionExpiresAt: number;
     readonly bookletVersion: number;
     readonly withheld: boolean;
+    readonly runsValidFrom: string;
   };
 }
 
@@ -202,31 +204,44 @@ interface Session {
   readonly expiresAt: number;
 }
 
+async function exchangeRequest(
+  env: Env,
+  planVersion: string | null,
+  auditIdentifier: string,
+  tokenIdentifier: string,
+  headers: Record<string, string> = {},
+): Promise<Request> {
+  return new Request('https://app-ai.test/audit/session/exchange', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(planVersion === null ? {} : { 'X-LimeSpot-Audit-Plan-Version': planVersion }),
+      ...headers,
+    },
+    body: JSON.stringify({
+      activationToken: await activationToken(
+        env,
+        tokenIdentifier,
+        { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+        'merchant@example.com',
+        auditIdentifier,
+      ),
+      storeUrl: `${STORE_ORIGIN}/`,
+    }),
+  });
+}
+
 async function openSession(
   env: Env,
   planVersion: string | null = '2',
   auditIdentifier?: string,
-): Promise<Session & { readonly graderChat: Record<string, unknown> }> {
+): Promise<
+  Session & { readonly graderChat: Record<string, unknown>; readonly body: Record<string, unknown> }
+> {
   const tokenIdentifier = crypto.randomUUID();
   const audit = auditIdentifier ?? `audit-${tokenIdentifier}`;
   const response = await worker.fetch(
-    new Request('https://app-ai.test/audit/session/exchange', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(planVersion === null ? {} : { 'X-LimeSpot-Audit-Plan-Version': planVersion }),
-      },
-      body: JSON.stringify({
-        activationToken: await activationToken(
-          env,
-          tokenIdentifier,
-          { type: 'store-origin', storeOrigin: STORE_ORIGIN },
-          'merchant@example.com',
-          audit,
-        ),
-        storeUrl: `${STORE_ORIGIN}/`,
-      }),
-    }),
+    await exchangeRequest(env, planVersion, audit, tokenIdentifier),
     env,
   );
   expect(response.status).toBe(201);
@@ -240,7 +255,14 @@ async function openSession(
     auditIdentifier: audit,
     expiresAt: body.expiresAt,
     graderChat: body.graderChat,
+    body,
   };
+}
+
+function withHeader(request: Request, name: string, value: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set(name, value);
+  return new Request(request, { headers });
 }
 
 async function completedRun(
@@ -376,6 +398,7 @@ describe('grader chat plan gating', () => {
       sessionExpiresAt: session.expiresAt,
       bookletVersion: 1,
       withheld: false,
+      runsValidFrom: '2026-01-01T00:00:00.000Z',
     });
     expect(model.chatBodies).toHaveLength(1);
   });
@@ -940,6 +963,29 @@ describe('grader chat limits', () => {
       'audit_session_expired',
     );
     expect(model.chatBodies).toHaveLength(0);
+  });
+
+  it('keeps a session for 30 days: a 2-day-old session chats, and one 30 days and a second old is refused', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const exchangedAt = Date.now();
+    const session = await completedRun(env);
+
+    vi.setSystemTime(exchangedAt + 2 * DAY_MILLISECONDS);
+    const returned = await chat(env, session.accessToken, ask('I am back. What would you add?'));
+    expect(returned.status).toBe(200);
+    expect(((await returned.json()) as ChatBody).graderChat.sessionExpiresAt).toBe(
+      exchangedAt + 30 * DAY_MILLISECONDS,
+    );
+
+    vi.setSystemTime(exchangedAt + 30 * DAY_MILLISECONDS + 1_000);
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('And a month later?')),
+      401,
+      'audit_session_expired',
+    );
+    expect(model.chatBodies).toHaveLength(1);
   });
 
   it('caps every visitor message at the configured characters, counting code points', async () => {
@@ -1741,6 +1787,27 @@ describe('production readiness of the Grader chat', () => {
     }
   });
 
+  it('answers GET /health 503 when either Grader kill switch is missing or not an ISO-8601 UTC instant', async () => {
+    vi.stubGlobal('__APP_AI_REV__', 'fc00704');
+    vi.resetModules();
+    try {
+      const { default: servedWorker } = await import('../src/index');
+      for (const name of ['GRADER_RUNS_VALID_FROM', 'GRADER_EXTENSION_BUILT_AFTER'] as const) {
+        for (const value of ['', '2026-01-01']) {
+          const refused = await servedWorker.fetch(new Request('https://app-ai.test/health'), {
+            ...production,
+            GRADER_CHAT_ENABLED: 'false',
+            [name]: value,
+          });
+          expect(refused.status, `${name}=${JSON.stringify(value)}`).toBe(503);
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it('answers GET /health 503 when the grader-sales group is routed to a visual-only model', async () => {
     const visualOnly: Env = {
       ...production,
@@ -1793,12 +1860,26 @@ describe('the chat wire contract names the audit’s allowance', () => {
     ]);
     expect(session.graderChat).toMatchObject({ enabled: true, perAudit: 1, remainingInAudit: 1 });
 
+    expect(Object.keys(session.body)).toEqual([
+      'sessionIdentifier',
+      'accessToken',
+      'expiresAt',
+      'graderChat',
+      'runsValidFrom',
+      'extensionBuiltAfter',
+    ]);
+    expect(session.body).toMatchObject({
+      runsValidFrom: '2026-01-01T00:00:00.000Z',
+      extensionBuiltAfter: '2026-01-01T00:00:00.000Z',
+    });
+
     const answered = (await (await chat(env, session.accessToken, ask('Hi'))).json()) as ChatBody;
     expect(Object.keys(answered.graderChat)).toEqual([
       'remainingInAudit',
       'sessionExpiresAt',
       'bookletVersion',
       'withheld',
+      'runsValidFrom',
     ]);
     expect(answered.graderChat.remainingInAudit).toBe(0);
 
@@ -2160,8 +2241,9 @@ describe('a message identifier makes a retried request idempotent', () => {
       await chat(env, first.accessToken, ask('What would LimeSpot add?'), { messageId })
     ).json()) as ChatBody;
 
+    const kept = Number(ENV.AUDIT_SESSION_TTL_SECONDS) * 1000;
     vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
-    vi.setSystemTime(Date.now() + 23 * 3_600_000);
+    vi.setSystemTime(Date.now() + kept - 3_600_000);
     const reopened = await openSession(env, '2', first.auditIdentifier);
     const replay = (await (
       await chat(env, reopened.accessToken, ask('What would LimeSpot add?'), { messageId })
@@ -2528,6 +2610,421 @@ describe('records an earlier worker stored are upgraded where they are read', ()
     expect(settled.chatSettlements).toEqual([]);
     expect(settled).not.toHaveProperty('chatInFlight');
   }, 30_000);
+});
+
+describe('the Grader kill switches', () => {
+  const BUILT_AT = 'X-LimeSpot-Extension-Built-At';
+
+  function statusRequest(accessToken: string, headers: Record<string, string> = {}): Request {
+    return new Request('https://app-ai.test/audit/session', {
+      method: 'GET',
+      headers: { ...auditHeaders(accessToken), 'X-LimeSpot-Audit-Plan-Version': '2', ...headers },
+    });
+  }
+
+  it('resolves every exchange setting before consuming the activation or superseding a session', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const live = await completedRun(env);
+    const tokenIdentifier = crypto.randomUUID();
+    const reopen = async (): Promise<Response> =>
+      worker.fetch(await exchangeRequest(env, '2', live.auditIdentifier, tokenIdentifier), env);
+
+    for (const [name, value] of [
+      ['GRADER_RUNS_VALID_FROM', 'yesterday'],
+      ['GRADER_CHAT_MAX_INPUT_CHARACTERS', 'many'],
+    ] as const) {
+      const correct = env[name];
+      Object.assign(env, { [name]: value });
+      expect((await reopen()).status, `${name} malformed`).toBe(500);
+      Object.assign(env, { [name]: correct });
+      expect((await worker.fetch(statusRequest(live.accessToken), env)).status, name).toBe(200);
+    }
+
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T12:05:00Z' });
+    await expectRefusal(await reopen(), 410, 'grader_run_revoked', 'a cutoff still ahead');
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-01-01T00:00:00Z' });
+
+    expect((await reopen()).status).toBe(201);
+    await expectRefusal(
+      await worker.fetch(statusRequest(live.accessToken), env),
+      401,
+      'audit_session_expired',
+    );
+    expect(model.chatBodies).toHaveLength(0);
+  });
+
+  it('answers GET /audit/session with the chat terms and both cutoffs, spending nothing', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    expect((await chat(env, session.accessToken, ask('One'))).status).toBe(200);
+    const storages = [...(STORAGES_BY_ENV.get(env) ?? new Map<string, MemoryDurableStorage>())];
+    const before = await Promise.all(
+      storages.map(async ([name, storage]) => [name, JSON.stringify(await storage.get('session'))]),
+    );
+    const outbound = vi.spyOn(globalThis, 'fetch');
+
+    const response = await worker.fetch(statusRequest(session.accessToken), env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.json()).toEqual({
+      sessionIdentifier: expect.any(String),
+      expiresAt: session.expiresAt,
+      graderChat: {
+        enabled: true,
+        perAudit: 25,
+        remainingInAudit: 24,
+        maxInputCharacters: 500,
+        sessionExpiresAt: session.expiresAt,
+      },
+      runsValidFrom: '2026-01-01T00:00:00.000Z',
+      extensionBuiltAfter: '2026-01-01T00:00:00.000Z',
+    });
+    expect(outbound).not.toHaveBeenCalled();
+    expect(STORAGES_BY_ENV.get(env)?.size).toBe(storages.length);
+    expect(
+      await Promise.all(
+        storages.map(async ([name, storage]) => [
+          name,
+          JSON.stringify(await storage.get('session')),
+        ]),
+      ),
+    ).toEqual(before);
+    expect(model.chatBodies).toHaveLength(1);
+  });
+
+  it('refuses GET /audit/session as an audit request, never cacheably: no bearer, outdated build, raised cutoff, superseded', async () => {
+    const env = durableEnv();
+    upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await completedRun(env);
+    const refusedUncached = async (
+      request: Request,
+      status: number,
+      detail: string | undefined,
+      label: string,
+    ): Promise<void> => {
+      const response = await worker.fetch(request, env);
+      expect(response.status, label).toBe(status);
+      expect(response.headers.get('Cache-Control'), label).toBe('no-store');
+      const body = (await response.json()) as ErrorBody;
+      if (detail === undefined) {
+        expect(body.ExceptionType, label).toBe('AuditAuthorizationException');
+      } else {
+        expect(body.MessageDetail, label).toBe(detail);
+      }
+    };
+
+    await refusedUncached(
+      new Request('https://app-ai.test/audit/session', { method: 'GET' }),
+      401,
+      undefined,
+      'no bearer',
+    );
+
+    Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: '2026-10-04T00:00:00Z' });
+    await refusedUncached(
+      statusRequest(session.accessToken),
+      409,
+      'extension_update_required',
+      'an outdated build',
+    );
+    expect(
+      (
+        await worker.fetch(
+          statusRequest(session.accessToken, { [BUILT_AT]: '2026-10-04T00:00:00Z' }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: '2026-01-01T00:00:00Z' });
+
+    vi.setSystemTime(Date.parse('2026-10-02T12:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-02T00:00:00Z' });
+    await refusedUncached(
+      statusRequest(session.accessToken),
+      410,
+      'grader_run_revoked',
+      'a revoked run',
+    );
+
+    await openSession(env, '2', session.auditIdentifier);
+    await refusedUncached(
+      statusRequest(session.accessToken),
+      401,
+      'audit_session_expired',
+      'a superseded session',
+    );
+  });
+
+  it('adopts an upload-only run a worker without run times opened, so it continues after the cutoff', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await completedRun(env);
+    const storage = storageFor(env, session.auditIdentifier);
+    const headRecord = await sessionRecord(env, session.auditIdentifier);
+    await storage.put('session', {
+      ...headRecord,
+      run: 2,
+      runUploads: 1,
+      runInferences: 0,
+      runInferenceStarted: false,
+      runCompleted: false,
+    });
+
+    vi.setSystemTime(Date.parse('2026-10-01T14:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T13:00:00Z' });
+    expect((await worker.fetch(statusRequest(session.accessToken), env)).status).toBe(200);
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('Is it ready?')),
+      409,
+      'grader_chat_not_open',
+    );
+
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    expect(await sessionRecord(env, session.auditIdentifier)).toMatchObject({
+      run: 2,
+      runTimes: { run: 2, startedAt: Date.parse('2026-10-01T14:00:00Z') },
+    });
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    expect(await sessionRecord(env, session.auditIdentifier)).toMatchObject({
+      run: 2,
+      runCompleted: true,
+      runTimes: { run: 2, completedAt: Date.parse('2026-10-01T14:00:00Z') },
+    });
+    expect((await chat(env, session.accessToken, ask('And now?'))).status).toBe(200);
+    expect(model.proposals).toBe(2);
+  });
+
+  it('adopts an upload-only run without times for its proposal too, before any further upload', async () => {
+    const env = durableEnv();
+    upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await openSession(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    const { runTimes: _dropped, ...untimed } = await sessionRecord(env, session.auditIdentifier);
+    await storageFor(env, session.auditIdentifier).put('session', untimed);
+
+    vi.setSystemTime(Date.parse('2026-10-01T14:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T13:00:00Z' });
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    expect((await chat(env, session.accessToken, ask('Ready?'))).status).toBe(200);
+  });
+
+  it('reads run times a worker without them left behind as the session issue time, never as never or always revoked', async () => {
+    const env = durableEnv();
+    upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await completedRun(env);
+    const storage = storageFor(env, session.auditIdentifier);
+    const headRecord = await sessionRecord(env, session.auditIdentifier);
+    const runOne = headRecord.runTimes as { completedAt: number };
+    expect(headRecord.runTimes).toMatchObject({ run: 1, completedAt: expect.any(Number) });
+
+    const { runTimes: _dropped, ...withoutTimes } = headRecord;
+    await storage.put('session', withoutTimes);
+    vi.setSystemTime(Date.parse('2026-10-01T14:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T11:00:00Z' });
+    expect((await worker.fetch(statusRequest(session.accessToken), env)).status).toBe(200);
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T13:00:00Z' });
+    await expectRefusal(
+      await worker.fetch(statusRequest(session.accessToken), env),
+      410,
+      'grader_run_revoked',
+      'a record without run times, issued before the cutoff',
+    );
+
+    await storage.put('session', {
+      ...headRecord,
+      run: 2,
+      runUploads: 1,
+      runInferences: 1,
+      runInferenceStarted: true,
+      runCompleted: true,
+    });
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: new Date(runOne.completedAt + 1).toISOString() });
+    await expectRefusal(
+      await worker.fetch(statusRequest(session.accessToken), env),
+      410,
+      'grader_run_revoked',
+      'run 2 carrying run 1 times',
+    );
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('Still mine?')),
+      410,
+      'grader_run_revoked',
+    );
+
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    expect(await sessionRecord(env, session.auditIdentifier)).toMatchObject({
+      run: 3,
+      runTimes: { run: 3, completedAt: Date.parse('2026-10-01T14:00:00Z') },
+    });
+    expect((await chat(env, session.accessToken, ask('And the fresh run?'))).status).toBe(200);
+  });
+
+  it('reads a run completed without a recorded completion by its start', async () => {
+    const env = durableEnv();
+    upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await openSession(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    vi.setSystemTime(Date.parse('2026-10-01T12:30:00Z'));
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    const record = await sessionRecord(env, session.auditIdentifier);
+    const { completedAt: _dropped, ...started } = record.runTimes as Record<string, unknown>;
+    await storageFor(env, session.auditIdentifier).put('session', { ...record, runTimes: started });
+
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T12:15:00Z' });
+    await expectRefusal(
+      await worker.fetch(statusRequest(session.accessToken), env),
+      410,
+      'grader_run_revoked',
+    );
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T11:59:00Z' });
+    expect((await worker.fetch(statusRequest(session.accessToken), env)).status).toBe(200);
+  });
+
+  it('reports runsValidFrom, and refuses a run completed before a raised one until a fresh run completes', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await completedRun(env);
+    const messageId = crypto.randomUUID();
+    const before = (await (
+      await chat(env, session.accessToken, ask('What would you add?'), { messageId })
+    ).json()) as ChatBody;
+    expect(before.graderChat.runsValidFrom).toBe('2026-01-01T00:00:00.000Z');
+
+    vi.setSystemTime(Date.parse('2026-10-02T12:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-02T00:00:00Z' });
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('Anything else?')),
+      410,
+      'grader_run_revoked',
+    );
+    await expectRefusal(
+      await chat(env, session.accessToken, ask('What would you add?'), { messageId }),
+      410,
+      'grader_run_revoked',
+      'a replay of an answered message',
+    );
+    expect(model.chatBodies).toHaveLength(1);
+
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+    expect((await worker.fetch(messageRequest(session.accessToken, tiles), env)).status).toBe(200);
+    const fresh = await chat(env, session.accessToken, ask('And on the new run?'));
+    expect(fresh.status).toBe(200);
+    expect(((await fresh.json()) as ChatBody).graderChat.runsValidFrom).toBe(
+      '2026-10-02T00:00:00.000Z',
+    );
+  });
+
+  it('refuses the proposal and uploads of a run that started before a raised runsValidFrom', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    vi.useFakeTimers({ now: Date.parse('2026-10-01T12:00:00Z'), toFake: ['Date'] });
+    const session = await openSession(env);
+    const tiles = await uploadTiles(env, session.accessToken, 1);
+
+    vi.setSystemTime(Date.parse('2026-10-01T13:00:00Z'));
+    Object.assign(env, { GRADER_RUNS_VALID_FROM: '2026-10-01T12:30:00Z' });
+    await expectRefusal(
+      await worker.fetch(messageRequest(session.accessToken, tiles), env),
+      410,
+      'grader_run_revoked',
+    );
+    await expectRefusal(
+      await worker.fetch(uploadRequest(session.accessToken, 'late-tile.webp'), env),
+      410,
+      'grader_run_revoked',
+    );
+    expect(model.proposals).toBe(0);
+  });
+
+  it('answers an extension build made before GRADER_EXTENSION_BUILT_AFTER with extension_update_required at exchange', async () => {
+    const env = durableEnv({ GRADER_EXTENSION_BUILT_AFTER: '2026-10-01T00:00:00Z' });
+    upstream();
+    const tokenIdentifier = crypto.randomUUID();
+    const audit = `audit-${tokenIdentifier}`;
+
+    const outdated = await worker.fetch(
+      await exchangeRequest(env, '2', audit, tokenIdentifier, {
+        [BUILT_AT]: '2026-09-30T23:59:59Z',
+      }),
+      env,
+    );
+    expect(outdated.status).toBe(409);
+    expect(await outdated.json()).toEqual({
+      Message: 'This version of the LimeSpot extension needs an update. Update it and try again.',
+      ExceptionType: 'ExtensionUpdateRequiredException',
+      MessageDetail: 'extension_update_required',
+    });
+    const malformed = await worker.fetch(
+      await exchangeRequest(env, '2', audit, tokenIdentifier, { [BUILT_AT]: 'last tuesday' }),
+      env,
+    );
+    expect(malformed.status).toBe(400);
+    expect(((await malformed.json()) as ErrorBody).ExceptionType).toBe('ArgumentException');
+
+    const current = await worker.fetch(
+      await exchangeRequest(env, '2', audit, tokenIdentifier, {
+        [BUILT_AT]: '2026-10-01T00:00:00Z',
+      }),
+      env,
+    );
+    expect(current.status).toBe(201);
+    expect(await current.json()).toMatchObject({ extensionBuiltAfter: '2026-10-01T00:00:00.000Z' });
+  });
+
+  it('answers an outdated build with extension_update_required on every Grader call, a build naming none as made before the header', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: '2026-10-04T00:00:00Z' });
+    const outdated = (request: Request): Request =>
+      withHeader(request, BUILT_AT, '2026-10-03T23:59:59Z');
+    const current = (request: Request): Request =>
+      withHeader(request, BUILT_AT, '2026-10-04T00:00:00Z');
+
+    for (const [label, request] of [
+      ['an upload', uploadRequest(session.accessToken, 'tile.webp')],
+      ['a proposal', messageRequest(session.accessToken, session.tiles)],
+      ['a chat message', chatRequest(session.accessToken, ask('Hello?'))],
+    ] as const) {
+      await expectRefusal(
+        await worker.fetch(outdated(request.clone()), env),
+        409,
+        'extension_update_required',
+        `${label} from an outdated build`,
+      );
+      await expectRefusal(
+        await worker.fetch(request.clone(), env),
+        409,
+        'extension_update_required',
+        `${label} from a build naming no build time`,
+      );
+    }
+    expect(model.chatBodies).toHaveLength(0);
+    expect(model.proposals).toBe(1);
+
+    const answered = await worker.fetch(
+      current(chatRequest(session.accessToken, ask('Hello?'))),
+      env,
+    );
+    expect(answered.status).toBe(200);
+  });
+
+  it('lets a build naming no build time through while the cutoff predates the header', async () => {
+    const env = durableEnv({ GRADER_EXTENSION_BUILT_AFTER: '2026-10-03T00:00:00Z' });
+    upstream();
+    const session = await completedRun(env);
+    expect((await chat(env, session.accessToken, ask('Hello?'))).status).toBe(200);
+  });
 });
 
 describe('a Grader session over keep-alive answers', () => {

@@ -43,7 +43,8 @@ export type GraderChatRefusalCode =
   | 'grader_chat_attempt_limit'
   | 'grader_chat_visitor_limit'
   | 'grader_chat_daily_limit'
-  | 'audit_session_expired';
+  | 'audit_session_expired'
+  | 'grader_run_revoked';
 
 const REFUSALS: Readonly<
   Record<
@@ -116,6 +117,11 @@ const REFUSALS: Readonly<
     status: 401,
     exceptionType: 'AuditAuthorizationException',
     message: 'The grader session has expired.',
+  },
+  grader_run_revoked: {
+    status: 410,
+    exceptionType: 'GraderRunRevokedException',
+    message: 'This grader run is no longer available. Run the Grader again.',
   },
 };
 

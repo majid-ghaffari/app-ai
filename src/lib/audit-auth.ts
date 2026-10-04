@@ -1,11 +1,12 @@
 /**
  * Scoped authorization for extension-driven Studio audits.
  *
- * A website-issued, email-verified activation JWT is exchanged once for a
- * short-lived app-ai-signed session. The session is origin-bound and can call
- * only the onboarding proposal upload/inference surface and, under plan version 2,
- * the Grader chat. Strongly consistent reservations and owned file identifiers live
- * in AuditSessionAuthority.
+ * A website-issued, email-verified activation JWT is exchanged once for an
+ * app-ai-signed session that lasts `AUDIT_SESSION_TTL_SECONDS`. The session is
+ * origin-bound and can call only the onboarding proposal upload/inference
+ * surface, under plan version 2 the Grader chat, and the read-only session
+ * status. Strongly consistent reservations and owned file identifiers live in
+ * AuditSessionAuthority.
  */
 
 import {
@@ -18,11 +19,15 @@ import {
   auditSessionTtlSeconds,
   graderChatEnabled,
   graderChatMaxInputCharacters,
+  graderExtensionBuiltAfter,
+  graderRunsValidFrom,
+  parseUtcInstant,
   type Env,
 } from '../config';
 import {
   createAuditAuthoritySession,
   finalizeAuditAuthorityRequest,
+  readAuditAuthoritySession,
   reserveAuditAuthorityRequest,
   type AuditAuthorityReservation,
 } from './audit-session-authority';
@@ -71,6 +76,11 @@ const ALLOWED_AUDIT_INFERENCE_PROMPTS = new Set(['onboarding-batch-all', 'onboar
 
 /** The registered prompt a scoped audit session's sales chat selects on `POST /messages`. */
 export const GRADER_CHAT_PROMPT = 'grader-chat' satisfies PromptName;
+
+/** The header an extension names its build time in, as an ISO-8601 UTC instant. */
+export const EXTENSION_BUILT_AT_HEADER = 'X-LimeSpot-Extension-Built-At';
+
+const UNDECLARED_EXTENSION_BUILT_AT = Date.parse('2026-10-03T00:00:00Z');
 
 const GRADER_REPORT_PLATFORMS = ['shopify', 'shopline', 'bigcommerce'] as const;
 const GRADER_REPORT_PAGE_STATES = [
@@ -158,6 +168,25 @@ export interface AuditSessionExchange {
   readonly accessToken: string;
   readonly expiresAt: number;
   readonly graderChat: GraderChatSessionTerms;
+  /**
+   * ISO-8601 UTC instant before which a Grader run no longer counts, from `GRADER_RUNS_VALID_FROM`:
+   * a client drops a run it cached that completed before it.
+   */
+  readonly runsValidFrom: string;
+  /**
+   * ISO-8601 UTC instant an extension build must postdate, from `GRADER_EXTENSION_BUILT_AFTER`, so
+   * the extension can warn before a refusal.
+   */
+  readonly extensionBuiltAfter: string;
+}
+
+/** A live Grader session's standing, answered by `GET /audit/session` without spending anything. */
+export interface AuditSessionStatus {
+  readonly sessionIdentifier: string;
+  readonly expiresAt: number;
+  readonly graderChat: GraderChatSessionTerms;
+  readonly runsValidFrom: string;
+  readonly extensionBuiltAfter: string;
 }
 
 /** One text turn of a Grader chat conversation, in the shape a transcript store would receive. */
@@ -211,6 +240,8 @@ export interface GraderChatAuthorization {
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  /** Epoch seconds the session was issued. */
+  readonly issuedAt: number;
   /** Epoch seconds the session ends. */
   readonly expiresAt: number;
   /** Epoch milliseconds the request was admitted at; its inference deadline counts from here. */
@@ -250,6 +281,9 @@ export async function exchangeAuditActivation(
   auditStatusSigningSecret(env);
   const now = epochSeconds();
   const expiresAt = now + auditSessionTtlSeconds(env);
+  const cutoffs = graderCutoffs(env);
+  assertRunOpensAfterCutoff(env, now * 1000);
+  const chatOffer = graderChatOffer(planVersion, env);
   const sessionIdentifier = await opaqueSessionIdentifier(activation.tokenIdentifier);
   const claims: AuditSessionClaims = {
     version: TOKEN_VERSION,
@@ -279,17 +313,79 @@ export async function exchangeAuditActivation(
     sessionIdentifier,
     accessToken: `${AUDIT_TOKEN_PREFIX}${await signToken(claims, sessionSigningSecret)}`,
     expiresAt: expiresAt * 1000,
-    graderChat: graderChatSessionTerms(planVersion, chatMessages, expiresAt * 1000, env),
+    graderChat: graderChatSessionTerms(chatOffer, chatMessages, expiresAt * 1000),
+    ...cutoffs,
+  };
+}
+
+/**
+ * Read a live Grader session's standing without spending anything: no reservation, attempt,
+ * counter or model call. Refuses as an audit request would: an expired or superseded session 401
+ * `audit_session_expired`, a revoked run 410 `grader_run_revoked`, an outdated extension build 409
+ * `extension_update_required`.
+ */
+export async function readAuditSessionStatus(
+  request: Request,
+  env: Env,
+): Promise<AuditSessionStatus> {
+  const claims = await verifiedAuditClaims(request, env);
+  if (!claims) throw unauthorized('A grader session token is required.');
+  const cutoffs = graderCutoffs(env);
+  const chatOffer = graderChatOffer(
+    declaredAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER)),
+    env,
+  );
+  const chatMessages = await readAuditAuthoritySession(
+    {
+      auditIdentifier: claims.auditIdentifier,
+      sessionIdentifier: claims.sessionIdentifier,
+      storeOrigin: claims.storeOrigin,
+      issuedAt: claims.issuedAt,
+      expiresAt: claims.expiresAt,
+    },
+    env,
+  );
+  return {
+    sessionIdentifier: claims.sessionIdentifier,
+    expiresAt: claims.expiresAt * 1000,
+    graderChat: graderChatSessionTerms(chatOffer, chatMessages, claims.expiresAt * 1000),
+    ...cutoffs,
+  };
+}
+
+function graderCutoffs(env: Env): {
+  readonly runsValidFrom: string;
+  readonly extensionBuiltAfter: string;
+} {
+  return {
+    runsValidFrom: new Date(graderRunsValidFrom(env)).toISOString(),
+    extensionBuiltAfter: new Date(graderExtensionBuiltAfter(env)).toISOString(),
+  };
+}
+
+function assertRunOpensAfterCutoff(env: Env, openedAt: number): void {
+  if (graderRunsValidFrom(env) > openedAt) throw graderChatRefusal('grader_run_revoked');
+}
+
+type GraderChatOffer =
+  | { readonly enabled: false }
+  | { readonly enabled: true; readonly perAudit: number; readonly maxInputCharacters: number };
+
+function graderChatOffer(planVersion: number, env: Env): GraderChatOffer {
+  if (!planIncludesGraderChat(planVersion) || !graderChatEnabled(env)) return { enabled: false };
+  return {
+    enabled: true,
+    perAudit: graderChatMessageAllowance(env),
+    maxInputCharacters: graderChatMaxInputCharacters(env),
   };
 }
 
 function graderChatSessionTerms(
-  planVersion: number,
+  offer: GraderChatOffer,
   chatMessages: number,
   sessionExpiresAt: number,
-  env: Env,
 ): GraderChatSessionTerms {
-  if (!planIncludesGraderChat(planVersion) || !graderChatEnabled(env)) {
+  if (!offer.enabled) {
     return {
       enabled: false,
       perAudit: 0,
@@ -298,12 +394,11 @@ function graderChatSessionTerms(
       sessionExpiresAt,
     };
   }
-  const perAudit = graderChatMessageAllowance(env);
   return {
     enabled: true,
-    perAudit,
-    remainingInAudit: Math.max(0, perAudit - chatMessages),
-    maxInputCharacters: graderChatMaxInputCharacters(env),
+    perAudit: offer.perAudit,
+    remainingInAudit: Math.max(0, offer.perAudit - chatMessages),
+    maxInputCharacters: offer.maxInputCharacters,
     sessionExpiresAt,
   };
 }
@@ -316,20 +411,8 @@ export async function authorizeAuditRequest(
   request: Request,
   env: Env,
 ): Promise<AuditAuthorization | GraderChatAuthorization | null> {
-  const authorizationHeader = request.headers.get('Authorization');
-  if (!authorizationHeader) return null;
-  const match = authorizationHeader.match(/^Bearer (\S+)$/);
-  if (!match?.[1]?.startsWith(AUDIT_TOKEN_PREFIX)) return null;
-
-  const claims = await verifyToken(
-    match[1].slice(AUDIT_TOKEN_PREFIX.length),
-    auditSessionSigningSecret(env),
-  );
-  if (!isAuditSessionClaims(claims)) throw unauthorized('The grader session token is invalid.');
-  if (claims.expiresAt <= epochSeconds()) throw graderChatRefusal('audit_session_expired');
-  assertTemporalClaims(claims.issuedAt, claims.expiresAt);
-  assertRequestStoreOrigin(request, claims.storeOrigin);
-  assertSupportedAuditPlan(request);
+  const claims = await verifiedAuditClaims(request, env);
+  if (!claims) return null;
 
   const url = new URL(request.url);
   if (request.method !== 'POST' || (url.pathname !== '/files' && url.pathname !== '/messages')) {
@@ -407,6 +490,7 @@ export async function authorizeAuditRequest(
       sessionIdentifier: claims.sessionIdentifier,
       auditIdentifier: claims.auditIdentifier,
       storeOrigin: claims.storeOrigin,
+      issuedAt: claims.issuedAt,
       expiresAt: claims.expiresAt,
       kind,
       uploadBytes,
@@ -425,6 +509,29 @@ export async function authorizeAuditRequest(
     ...(messageBody === undefined ? {} : { messageBody }),
     keepAlive,
   };
+}
+
+/**
+ * The verified claims of a request's `ls_audit_` bearer, or `null` when it carries none: signature,
+ * expiry, the store-origin header, the extension build and the plan version are checked here.
+ */
+async function verifiedAuditClaims(request: Request, env: Env): Promise<AuditSessionClaims | null> {
+  const authorizationHeader = request.headers.get('Authorization');
+  if (!authorizationHeader) return null;
+  const match = authorizationHeader.match(/^Bearer (\S+)$/);
+  if (!match?.[1]?.startsWith(AUDIT_TOKEN_PREFIX)) return null;
+
+  const claims = await verifyToken(
+    match[1].slice(AUDIT_TOKEN_PREFIX.length),
+    auditSessionSigningSecret(env),
+  );
+  if (!isAuditSessionClaims(claims)) throw unauthorized('The grader session token is invalid.');
+  if (claims.expiresAt <= epochSeconds()) throw graderChatRefusal('audit_session_expired');
+  assertTemporalClaims(claims.issuedAt, claims.expiresAt);
+  assertRequestStoreOrigin(request, claims.storeOrigin);
+  assertCurrentExtensionBuild(request, env);
+  assertSupportedAuditPlan(request);
+  return claims;
 }
 
 async function authorizeGraderChat(
@@ -455,6 +562,7 @@ async function authorizeGraderChat(
     auditIdentifier: claims.auditIdentifier,
     sessionIdentifier: claims.sessionIdentifier,
     storeOrigin: claims.storeOrigin,
+    issuedAt: claims.issuedAt,
     expiresAt: claims.expiresAt,
     admittedAt: Date.now(),
     conversation,
@@ -984,6 +1092,28 @@ function normalizeStoreOrigin(storeUrl: string): string {
     throw invalidArgument('The store URL must be an HTTPS storefront origin.');
   }
   return url.origin;
+}
+
+/**
+ * Refuse a request from an extension build made before `GRADER_EXTENSION_BUILT_AFTER` with 409
+ * `extension_update_required`. A request naming no build time was made by a build older than the
+ * header; a malformed one is refused 400.
+ */
+export function assertCurrentExtensionBuild(request: Request, env: Env): void {
+  const declared = request.headers.get(EXTENSION_BUILT_AT_HEADER);
+  const builtAt = declared === null ? UNDECLARED_EXTENSION_BUILT_AT : parseUtcInstant(declared);
+  if (builtAt === null) {
+    throw invalidArgument(`${EXTENSION_BUILT_AT_HEADER} must be an ISO-8601 UTC timestamp.`);
+  }
+  if (builtAt >= graderExtensionBuiltAfter(env)) return;
+  throw new WorkerError(
+    'This version of the LimeSpot extension needs an update. Update it and try again.',
+    {
+      status: 409,
+      exceptionType: 'ExtensionUpdateRequiredException',
+      messageDetail: 'extension_update_required',
+    },
+  );
 }
 
 /** Refuse a grader request that names an audit plan this worker holds no allowance for. */

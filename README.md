@@ -102,6 +102,7 @@ Normal protected endpoints require `X-Personalizer-Context-ID`. The extension au
 | ------ | ------------------------- | --------------------------------------- | -------------- |
 | GET    | `/health`                 | Health check                            | No             |
 | POST   | `/audit/session/exchange` | Exchange a website activation JWT       | Activation JWT |
+| GET    | `/audit/session`          | A Grader session's standing, read-only  | Audit bearer   |
 | POST   | `/files`                  | Prompt-aware direct provider upload     | Yes            |
 | DELETE | `/files/{id}`             | Delete one opaque file reference        | Yes            |
 | POST   | `/messages`               | Registered prompt completion            | Yes            |
@@ -113,11 +114,14 @@ header or a `personalizerContextId` query parameter; every other route reads the
 header only.
 
 Scoped `ls_audit_…` sessions may use only `POST /files`, proposal-only `POST
-/messages`, and — under plan version 2 — the `grader-chat` sales chat on `POST /messages`. They are
+/messages`, and — under plan version 2 — the `grader-chat` sales chat on `POST /messages`, plus the
+read-only `GET /audit/session`, which reserves and writes nothing. They are
 bound to the activated store, atomically quota-controlled
 by an audit-keyed `AuditSessionAuthority`, never call Brain, and cannot delete files or use
-`/chat`. The exact public/staff entitlement claims, headers, limits, and signed website-status
-callback contract are in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
+`/chat`. A session lasts 30 days, and two dated kill switches, `GRADER_RUNS_VALID_FROM` and
+`GRADER_EXTENSION_BUILT_AFTER`, end older runs and older extension builds. The exact public/staff
+entitlement claims, headers, limits, kill switches, and signed website-status callback contract are
+in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
 
 ### `POST /files` — prompt-aware direct upload
 

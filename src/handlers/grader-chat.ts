@@ -1,4 +1,4 @@
-import { graderChatEffort, type Env } from '../config';
+import { graderChatEffort, graderRunsValidFrom, type Env } from '../config';
 import {
   getFilePolicy,
   getGraderChatPrompt,
@@ -110,7 +110,7 @@ export async function handleGraderChat(
       bookletVersion: admission.outcome.bookletVersion,
       totalMs: Date.now() - startedAt,
     });
-    return chatResponse(admission.outcome, remainingInAudit, authorization, corsHeaders);
+    return chatResponse(admission.outcome, remainingInAudit, authorization, corsHeaders, env);
   }
 
   const { reservation, quota } = admission;
@@ -177,7 +177,7 @@ export async function handleGraderChat(
     bookletVersion: graderPrompt.bookletVersion,
     totalMs: Date.now() - startedAt,
   });
-  return chatResponse(outcome, remainingInAudit, authorization, corsHeaders);
+  return chatResponse(outcome, remainingInAudit, authorization, corsHeaders, env);
 }
 
 /** The report as the JSON data the model reads: app-ai's counts and session origin added, backticks escaped. */
@@ -254,6 +254,7 @@ async function admitChatMessage(
         auditIdentifier: authorization.auditIdentifier,
         sessionIdentifier: authorization.sessionIdentifier,
         storeOrigin: authorization.storeOrigin,
+        issuedAt: authorization.issuedAt,
         expiresAt: authorization.expiresAt,
         messageId: authorization.conversation.messageId,
         transcriptFingerprint: authorization.transcriptFingerprint,
@@ -293,6 +294,7 @@ function chatResponse(
   remainingInAudit: number,
   authorization: GraderChatAuthorization,
   corsHeaders: CorsHeaders,
+  env: Env,
 ): Response {
   return jsonResponse(
     {
@@ -302,6 +304,7 @@ function chatResponse(
         sessionExpiresAt: authorization.expiresAt * 1000,
         bookletVersion: outcome.bookletVersion,
         withheld: outcome.withheld,
+        runsValidFrom: new Date(graderRunsValidFrom(env)).toISOString(),
       },
     },
     corsHeaders,

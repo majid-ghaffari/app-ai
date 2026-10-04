@@ -12,7 +12,13 @@
  * apart from all of that, and separately addressed instances host the chat's daily counters.
  */
 
-import { auditMaxRuns, auditSessionAuthority, auditSessionTtlSeconds, type Env } from '../config';
+import {
+  auditMaxRuns,
+  auditSessionAuthority,
+  auditSessionTtlSeconds,
+  graderRunsValidFrom,
+  type Env,
+} from '../config';
 import {
   GRADER_CHAT_MESSAGE_CEILING,
   auditRunCeiling,
@@ -92,6 +98,14 @@ interface PendingReservation {
   readonly storeOrigin?: string;
 }
 
+/** When one run of one session opened and, once it did, completed, in epoch milliseconds. */
+interface RunTimes {
+  readonly sessionIdentifier: string;
+  readonly run: number;
+  readonly startedAt: number;
+  readonly completedAt?: number;
+}
+
 /** The one Grader chat message an audit has in flight. */
 interface ChatReservation {
   readonly reservationIdentifier: string;
@@ -151,6 +165,12 @@ interface SessionRecord {
   readonly runInferences: number;
   readonly runInferenceStarted: boolean;
   readonly runCompleted: boolean;
+  /**
+   * When a run opened and completed, named by its session and run number so times a worker that
+   * keeps none carried onto another run are recognized as stale. Absent on a record such a worker
+   * wrote.
+   */
+  readonly runTimes?: RunTimes;
   readonly fileIdentifiers: readonly string[];
   readonly pending: Readonly<Record<string, PendingReservation>>;
   readonly completedReservations: readonly string[];
@@ -210,6 +230,8 @@ interface ReserveInput {
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  /** Epoch seconds the bearer was issued, the earliest any run of its session can have opened. */
+  readonly issuedAt: number;
   readonly expiresAt: number;
   readonly reservationIdentifier: string;
   readonly kind: ReservationKind;
@@ -228,6 +250,7 @@ interface ChatReserveInput {
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  readonly issuedAt: number;
   readonly expiresAt: number;
   readonly reservationIdentifier: string;
   readonly messageId: string;
@@ -257,6 +280,16 @@ interface FreeVisualVerificationReserveInput {
   readonly dailyLimit?: number;
   readonly acceptanceReserve?: number;
   readonly quotaClass?: FreeVisualVerificationQuotaClass;
+}
+
+/** The session a status read names, checked against the audit's record. */
+export interface AuditAuthoritySessionReference {
+  readonly auditIdentifier: string;
+  readonly sessionIdentifier: string;
+  readonly storeOrigin: string;
+  /** Epoch seconds the bearer was issued. */
+  readonly issuedAt: number;
+  readonly expiresAt: number;
 }
 
 /** Data required to create one atomic audit-session record. */
@@ -308,6 +341,25 @@ export async function createAuditAuthoritySession(
   return typeof body.chatMessages === 'number' ? body.chatMessages : 0;
 }
 
+/**
+ * Read the audit's record for a live session without writing anything, answering the chat messages
+ * the audit has been answered. An expired or superseded session is refused `audit_session_expired`
+ * and a revoked run `grader_run_revoked`.
+ */
+export async function readAuditAuthoritySession(
+  input: AuditAuthoritySessionReference,
+  env: Env,
+): Promise<number> {
+  const response = await authorityStub(input.auditIdentifier, env).fetch(
+    internalRequest(input.storeOrigin, '/status', input),
+  );
+  if (response.status === 401) throw graderChatRefusal('audit_session_expired');
+  if (response.status === 412) throw graderChatRefusal('grader_run_revoked');
+  assertAuthoritySuccess(response);
+  const body = (await response.json()) as { chatMessages?: unknown };
+  return typeof body.chatMessages === 'number' ? body.chatMessages : 0;
+}
+
 /** Atomically reserve quota and validate file ownership before paid upstream work. */
 export async function reserveAuditAuthorityRequest(
   input: Omit<ReserveInput, 'reservationIdentifier'>,
@@ -318,6 +370,7 @@ export async function reserveAuditAuthorityRequest(
     internalRequest(input.storeOrigin, '/reserve', { ...input, reservationIdentifier }),
   );
   if (response.status === 401) throw graderChatRefusal('audit_session_expired');
+  if (response.status === 412) throw graderChatRefusal('grader_run_revoked');
   if (response.status === 403) {
     throw new WorkerError('The inference request references a file outside this grader session.', {
       status: 403,
@@ -386,6 +439,8 @@ export interface GraderChatMessageInput {
   readonly auditIdentifier: string;
   readonly sessionIdentifier: string;
   readonly storeOrigin: string;
+  /** Epoch seconds the bearer was issued. */
+  readonly issuedAt: number;
   readonly expiresAt: number;
   /** The caller's identifier for this turn, the same on every retry of it. */
   readonly messageId: string;
@@ -429,6 +484,7 @@ export async function reserveGraderChatMessage(
   );
   if (response.status === 400) throw graderChatRefusal('grader_chat_message_reused');
   if (response.status === 401) throw graderChatRefusal('audit_session_expired');
+  if (response.status === 412) throw graderChatRefusal('grader_run_revoked');
   if (response.status === 403) throw graderChatRefusal('grader_chat_history_unverified');
   if (response.status === 402) throw graderChatRefusal('grader_chat_attempt_limit');
   if (response.status === 409) throw graderChatRefusal('grader_chat_busy');
@@ -567,6 +623,9 @@ export class AuditSessionAuthority implements DurableObject {
     if (path === '/exchange') return this.exchange(await readInput<ExchangeInput>(request));
     if (path === '/reserve') return this.reserve(await readInput<ReserveInput>(request));
     if (path === '/finalize') return this.finalize(await readInput<FinalizeInput>(request));
+    if (path === '/status') {
+      return this.status(await readInput<AuditAuthoritySessionReference>(request));
+    }
     if (path === '/reserve-chat') {
       return this.reserveChat(await readInput<ChatReserveInput>(request));
     }
@@ -602,6 +661,18 @@ export class AuditSessionAuthority implements DurableObject {
     } finally {
       await this.scheduleAlarm();
     }
+  }
+
+  private async status(input: AuditAuthoritySessionReference): Promise<Response> {
+    const session = await readSession(this.state.storage);
+    if (!session || !matchesSession(session, input)) return internalResponse(401);
+    if (runRevoked(session, graderRunsValidFrom(this.env), input.issuedAt)) {
+      return internalResponse(412);
+    }
+    return new Response(JSON.stringify({ chatMessages: session.chatMessages ?? 0 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   private async exchange(input: ExchangeInput): Promise<Response> {
@@ -642,6 +713,7 @@ export class AuditSessionAuthority implements DurableObject {
         ...(superseded?.chatSettlements ? { chatSettlements: superseded.chatSettlements } : {}),
         run: 1,
         ...FRESH_RUN,
+        runTimes: { sessionIdentifier: input.sessionIdentifier, run: 1, startedAt: Date.now() },
         pending: superseded ? withAdmittingOrigin(superseded.pending, superseded.storeOrigin) : {},
         completedReservations: [],
         abandonedReservations: superseded?.abandonedReservations ?? [],
@@ -671,6 +743,7 @@ export class AuditSessionAuthority implements DurableObject {
       if (stored.pending[input.reservationIdentifier]) return 200;
       if (serializedBytes(stored) > SESSION_RECORD_BUDGET_BYTES) return 503;
       const ceiling = auditRunCeiling(this.env);
+      const validFrom = graderRunsValidFrom(this.env);
 
       if (input.kind === 'upload') {
         if (publicAttemptsExhausted(stored)) return 402;
@@ -678,7 +751,10 @@ export class AuditSessionAuthority implements DurableObject {
         if (session.runInferenceStarted) {
           if (session.run >= auditMaxRuns(this.env)) return 410;
           session = startNextRun(session);
+        } else {
+          session = withAdoptedRunTimes(session, Date.now());
         }
+        if (runRevoked(session, validFrom, input.issuedAt)) return 412;
         const pendingUploads = Object.values(session.pending).filter(
           (item) => item.kind === 'upload' && admittedBySession(item, session),
         );
@@ -701,16 +777,18 @@ export class AuditSessionAuthority implements DurableObject {
         return 200;
       }
 
-      if (stored.runInferences >= ceiling.inferences) return 429;
-      if (!stored.runCompleted && publicAttemptsExhausted(stored)) return 402;
-      const attemptNumber = stored.completedAttempts + 1;
-      const owned = new Set(stored.fileIdentifiers);
+      const current = withAdoptedRunTimes(stored, Date.now());
+      if (runRevoked(current, validFrom, input.issuedAt)) return 412;
+      if (current.runInferences >= ceiling.inferences) return 429;
+      if (!current.runCompleted && publicAttemptsExhausted(current)) return 402;
+      const attemptNumber = current.completedAttempts + 1;
+      const owned = new Set(current.fileIdentifiers);
       if (
         referencedFiles.some(({ reference, digest }) => !owned.has(digest) && !owned.has(reference))
       ) {
         return 403;
       }
-      const session = abandonPendingInferences(stored);
+      const session = abandonPendingInferences(current);
       await this.writeSession(storage, {
         ...session,
         runInferences: session.runInferences + 1,
@@ -741,6 +819,9 @@ export class AuditSessionAuthority implements DurableObject {
     const outcome = await this.state.storage.transaction(async (storage) => {
       const stored = await readSession(storage);
       if (!stored || !matchesSession(stored, input)) return { status: 401 } as const;
+      if (runRevoked(stored, graderRunsValidFrom(this.env), input.issuedAt)) {
+        return { status: 412 } as const;
+      }
       const answered = stored.chatAnswered?.find(
         (message) => message.messageId === input.messageId,
       );
@@ -1064,6 +1145,7 @@ export class AuditSessionAuthority implements DurableObject {
           session.messageCount +
           (input.succeeded && reservation.kind === 'message' && ownSession ? 1 : 0),
         runCompleted: session.runCompleted || completesRun,
+        ...(completesRun ? { runTimes: completedRunTimes(session, Date.now()) } : {}),
         runUploads: session.runUploads + (uploadSucceeded ? 1 : 0),
         fileIdentifiers,
         pending,
@@ -1205,8 +1287,9 @@ function releaseSession(session: SessionRecord): SessionRecord {
       );
     }
   }
+  const { runTimes: _released, ...current } = session;
   return {
-    ...session,
+    ...current,
     ...NO_SESSION_TOTALS,
     ...FRESH_RUN,
     pending: leased,
@@ -1334,11 +1417,71 @@ function publicAttemptsExhausted(session: SessionRecord): boolean {
 }
 
 function startNextRun(session: SessionRecord): SessionRecord {
+  const run = session.run + 1;
   return {
     ...abandonPendingInferences(session),
     ...FRESH_RUN,
-    run: session.run + 1,
+    run,
+    runTimes: { sessionIdentifier: session.sessionIdentifier, run, startedAt: Date.now() },
   };
+}
+
+function currentRunTimes(session: SessionRecord): RunTimes | undefined {
+  const times = session.runTimes;
+  return times?.sessionIdentifier === session.sessionIdentifier && times.run === session.run
+    ? times
+    : undefined;
+}
+
+function completedRunTimes(session: SessionRecord, completedAt: number): RunTimes {
+  return {
+    sessionIdentifier: session.sessionIdentifier,
+    run: session.run,
+    startedAt: currentRunTimes(session)?.startedAt ?? completedAt,
+    completedAt,
+  };
+}
+
+/**
+ * Whether the current run produced no proposal yet carries no times of its own, as when a worker
+ * that keeps none opened it with an upload: it has no report to revoke, so it is adopted as opening
+ * now and continues with the files it owns.
+ */
+function adoptableRun(session: SessionRecord): boolean {
+  return (
+    currentRunTimes(session) === undefined && !session.runInferenceStarted && !session.runCompleted
+  );
+}
+
+function withAdoptedRunTimes(session: SessionRecord, now: number): SessionRecord {
+  if (!adoptableRun(session)) return session;
+  return {
+    ...session,
+    runTimes: { sessionIdentifier: session.sessionIdentifier, run: session.run, startedAt: now },
+  };
+}
+
+/**
+ * Whether the current run is older than `validFrom`: by its completion, or its start while it has
+ * not completed. A run that reached a proposal with its times missing or carried over from another
+ * run reads as the session's issue time, the earliest any of its runs can have opened, and a run
+ * completed without a recorded completion reads as its start; both err toward a fresh run, which the
+ * next upload opens. An upload-only run without times is adopted as opening now.
+ */
+function runRevoked(
+  session: SessionRecord,
+  validFrom: number,
+  issuedAtSeconds: number,
+  now = Date.now(),
+): boolean {
+  const times = currentRunTimes(session);
+  let runTime: number;
+  if (times !== undefined) {
+    runTime = session.runCompleted ? (times.completedAt ?? times.startedAt) : times.startedAt;
+  } else {
+    runTime = adoptableRun(session) ? now : issuedAtSeconds * 1000;
+  }
+  return runTime < validFrom;
 }
 
 function abandonPendingInferences(session: SessionRecord): SessionRecord {

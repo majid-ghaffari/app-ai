@@ -131,8 +131,9 @@ system prompt's.
 ## Output
 
 The response is the `/messages` envelope with one text block holding the reply, trimmed, plus
-`graderChat: { remainingInAudit, sessionExpiresAt, bookletVersion, withheld }`, where `remainingInAudit`
-is what is left of the audit's allowance across all of its runs and sessions. The model writes short
+`graderChat: { remainingInAudit, sessionExpiresAt, bookletVersion, withheld, runsValidFrom }`, where
+`remainingInAudit` is what is left of the audit's allowance across all of its runs and sessions and
+`runsValidFrom` is the deployment's run-validity instant (docs/AUDIT-AUTH.md → Kill switches). The model writes short
 chat-bubble prose under the shared formatting rules.
 
 Before the visitor sees it, the reply passes one deterministic check in code

@@ -24,6 +24,8 @@ import {
   graderChatMaxInputCharacters,
   graderChatMessagesPerDay,
   graderChatMessagesPerVisitorPerDay,
+  graderExtensionBuiltAfter,
+  graderRunsValidFrom,
   inferenceQuotaInternalOrigin,
   inlineEvidenceBucket,
   missingRequiredSecretNames,
@@ -85,6 +87,8 @@ function productionReadinessFailure(env: Env): Error | null {
   }
   try {
     validateModelRouting(env);
+    graderRunsValidFrom(env);
+    graderExtensionBuiltAfter(env);
     if (providers.has('kimi')) inlineEvidenceBucket(env);
     if (providers.has('cloudflare')) {
       workersAiBinding(env);

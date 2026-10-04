@@ -51,6 +51,8 @@ import {
   graderChatMessagesPerDay,
   graderChatMessagesPerAudit,
   graderChatMessagesPerVisitorPerDay,
+  graderExtensionBuiltAfter,
+  graderRunsValidFrom,
   freeVisualVerifyAcceptanceReserve,
   freeVisualVerifyEnabled,
   inferenceQuotaInternalOrigin,
@@ -84,7 +86,9 @@ describe('config accessors — present values', () => {
     expect(auditSessionSigningSecret(ENV)).toBe(ENV.AUDIT_SESSION_SIGNING_SECRET);
     expect(auditStatusSigningSecret(ENV)).toBe(ENV.AUDIT_STATUS_SIGNING_SECRET);
     expect(auditStatusOrigins(ENV)).toEqual(['https://limespot.test']);
-    expect(auditSessionTtlSeconds(ENV)).toBe(86400);
+    expect(auditSessionTtlSeconds(ENV)).toBe(2592000);
+    expect(graderRunsValidFrom(ENV)).toBe(Date.parse('2026-01-01T00:00:00Z'));
+    expect(graderExtensionBuiltAfter(ENV)).toBe(Date.parse('2026-01-01T00:00:00Z'));
     expect(auditMaxRuns(ENV)).toBe(4);
     expect(auditRunHeadroom(ENV)).toBe(2);
     expect(auditMaxUploadBytes(ENV)).toBe(8000000);
@@ -273,6 +277,25 @@ describe('config accessors — missing config = error (no fallback defaults)', (
 
   it('audit numeric limits and the Durable Object binding fail fast', () => {
     expect(() => auditSessionTtlSeconds(EMPTY_ENV)).toThrow(/AUDIT_SESSION_TTL_SECONDS/);
+    expect(() => graderRunsValidFrom(EMPTY_ENV)).toThrow(/GRADER_RUNS_VALID_FROM/);
+    expect(() => graderExtensionBuiltAfter(EMPTY_ENV)).toThrow(/GRADER_EXTENSION_BUILT_AFTER/);
+    for (const malformed of [
+      '2026-01-01',
+      '2026-01-01T00:00:00',
+      '2026-01-01T00:00:00+02:00',
+      '2026-02-30T00:00:00Z',
+      'yesterday',
+    ]) {
+      expect(() => graderRunsValidFrom({ ...ENV, GRADER_RUNS_VALID_FROM: malformed })).toThrow(
+        /GRADER_RUNS_VALID_FROM must be an ISO-8601 UTC timestamp/,
+      );
+      expect(() =>
+        graderExtensionBuiltAfter({ ...ENV, GRADER_EXTENSION_BUILT_AFTER: malformed }),
+      ).toThrow(/GRADER_EXTENSION_BUILT_AFTER must be an ISO-8601 UTC timestamp/);
+    }
+    expect(
+      graderRunsValidFrom({ ...ENV, GRADER_RUNS_VALID_FROM: '2026-10-03T17:30:00.250Z' }),
+    ).toBe(Date.parse('2026-10-03T17:30:00.250Z'));
     expect(() => auditMaxRuns({ ...ENV, AUDIT_MAX_RUNS: '0' })).toThrow(
       /AUDIT_MAX_RUNS must be a positive integer/,
     );
@@ -700,8 +723,17 @@ describe('production [vars] — the deployed configuration values', () => {
     }
   });
 
-  it('keeps a grader session, and its chat, for 24 hours', () => {
-    expect(parsedProductionVars().get('AUDIT_SESSION_TTL_SECONDS')).toBe('86400');
+  it('keeps a grader session, and its chat, for 30 days, as the test fixture does', () => {
+    expect(parsedProductionVars().get('AUDIT_SESSION_TTL_SECONDS')).toBe('2592000');
+    expect(ENV.AUDIT_SESSION_TTL_SECONDS).toBe(
+      parsedProductionVars().get('AUDIT_SESSION_TTL_SECONDS'),
+    );
+  });
+
+  it('ships both Grader kill switches at a past instant, so a deploy invalidates nothing', () => {
+    const vars = parsedProductionVars();
+    expect(vars.get('GRADER_RUNS_VALID_FROM')).toBe('2026-01-01T00:00:00Z');
+    expect(vars.get('GRADER_EXTENSION_BUILT_AFTER')).toBe('2026-01-01T00:00:00Z');
   });
 
   it('ships the Grader chat on with its operator defaults', () => {
@@ -785,6 +817,8 @@ describe('production [vars] — the deployed configuration values', () => {
       'GRADER_CHAT_EFFORT',
       'GRADER_CHAT_BOOKLET_VERSION',
       'GRADER_CHAT_ALERT_EVERY',
+      'GRADER_RUNS_VALID_FROM',
+      'GRADER_EXTENSION_BUILT_AFTER',
     ]) {
       expect(vars).toContain(`${name} = `);
     }

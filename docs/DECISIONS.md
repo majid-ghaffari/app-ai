@@ -1160,7 +1160,7 @@ back. The visitor still sees answered messages only.
 
 Limits follow where abuse lands. The allowance belongs to the audit, like the completion ledger, and
 neither a retry nor a reopened link restores it, because both are free to start. Reopening is
-cheap on purpose: a new activation supersedes the active session rather than waiting out a 24-hour
+cheap on purpose: a new activation supersedes the active session rather than waiting out its
 lifetime, and the old bearer is refused from then on. A visitor's day is keyed by a day-scoped HMAC pseudonym of
 `CF-Connecting-IP`, so the raw address is never stored, and the deployment's day has a ceiling and an
 alert every `GRADER_CHAT_ALERT_EVERY` messages, decided inside the counter's transaction so each
@@ -1226,3 +1226,56 @@ it. A Grader chat message released that way counts as a failed attempt and answe
 retry of the same `messageId` is admitted afresh. Replay is unaffected: a Grader chat `messageId`
 already answered is answered from its stored outcome before any model call, and that outcome
 reaches a keep-alive caller as the envelope's `result`, identical to the plain answer's body. The upstream inference deadline stays the only time limit; keep-alive adds none.
+
+### 37. A Grader session lasts 30 days, and two dated switches can end every cached run
+
+A store gets its Grader run, and its report and chat stay usable for 30 days: the extension keeps the
+report, the chat and the session for that long, so a visitor who returns days later goes on chatting
+while the run's allowance lasts. After 30 days the store may run the Grader again; app-ai keeps an
+audit's completion ledger and chat allowance for as long as the website reuses its audit identifier,
+so that reset is the website's to make by issuing a new one. `AUDIT_SESSION_TTL_SECONDS` is
+therefore `2592000`, and it stays the one value that bounds a session in app-ai — the bearer's
+`expiresAt` claim, the session record's expiry and its alarm, `graderChat.sessionExpiresAt`, and how
+long an answered chat message's stored outcome is kept for replay. A reissued session still
+supersedes the old one at once, so the old bearer answers `audit_session_expired` from then on.
+
+Time is not what holds spending. Every cap is per run or per day — the run ceiling, retries per
+session, the two completed public runs, the 25 chat messages an audit (50 at most under plan 2),
+twice that in attempts, and the visitor's and deployment's UTC-day counters — so a longer session
+admits no more paid work than a shorter one; it only lets the same allowance be used later. The
+longer bearer is still narrow: it reaches only `POST /files` for the proposal and QC destinations,
+`POST /messages` for the two proposal prompts and the Grader chat, and the read-only
+`GET /audit/session`, under one audit, from the same store origin. Every request that can spend is
+reserved against the audit's record, which names only the newest session, and the status read checks
+the same record while reserving and writing nothing.
+
+Lifetimes no live session needs stay shorter rather than following it: a provider file reference
+lasts at most 15 days, because a run reads its tiles only while it runs and the chat reads none, and
+lengthening it would widen every merchant upload's reference window and the secret-rotation bound;
+a sealed continuation lasts 24 hours and no audit route uses one; the chat's counters stay UTC days.
+
+A cache that lives a month needs a way to end it. `GRADER_RUNS_VALID_FROM` is an instant before which
+a run no longer counts, by its completion or, when it never completed, its start; the exchange and
+every chat reply report it so the extension drops an older cached run, and app-ai refuses such a
+session `grader_run_revoked`, so a stale client cannot keep using it either. It is a date rather than
+a counter because the question a client asks of its cache is "is my run older than this?", which a
+date answers with no state of its own, and because the server can answer the same question from the
+run's own times. `GRADER_EXTENSION_BUILT_AFTER` is the matching instant for extension builds: a build
+names when it was made in `X-LimeSpot-Extension-Built-At`, and an older one is refused
+`extension_update_required` at exchange and on every Grader call. A build that names nothing predates
+the header, so it is read as made at the instant the header was introduced, which lets both switches
+ship at a past instant without refusing any released build. Neither switch restores an attempt or a
+message. The run cutoff is enforced from the server's own run times; the build cutoff is a
+compatibility switch, not a security boundary, because the build time is whatever the caller says.
+A per-run switch would need an operator write path into the audit's Durable Object that does not
+exist, so there is none.
+
+A client that restores a cached run makes no call that would be refused, so a raised cutoff would
+reach it only when it next spent something. `GET /audit/session` closes that: the extension reads the
+session's standing with its own bearer before it reopens a cached run, and the call spends and writes
+nothing. Run times name their session and run, because a rolled-back worker carries an unknown member
+onto its next run; times it left absent or stale on a run that reached a proposal read as the
+bearer's issue time, which errs toward a fresh run without refusing every run regardless, and a run
+it opened with uploads alone, which has no report to revoke, is adopted as opening now. The exchange resolves every setting it answers with
+before it consumes the one-time activation, so a deployment fault never costs the visitor the link or
+the session they still hold.

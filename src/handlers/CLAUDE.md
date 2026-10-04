@@ -88,7 +88,8 @@ or changes the inference response.
   envelope — no secret name, binding, or model id. Provider-specific bindings and configuration
   required by a resolved route are validated there too; the protected Workers AI route checks its
   binding, authority, internal origin, enable switch, daily limit, and acceptance reserve; while the
-  Grader chat is enabled, its configuration and its route (`graderChatRoute`) are checked too. The
+  Grader chat is enabled, its configuration and its route (`graderChatRoute`) are checked too, and the
+  two Grader kill switches, `GRADER_RUNS_VALID_FROM` and `GRADER_EXTENSION_BUILT_AFTER`, always are. The
   reason goes to the log.
 - A merchant route hit by an absent required secret answers the generic
   `SECRET_CONFIGURATION_PUBLIC_MESSAGE` envelope (`../lib/responses.ts`); the
@@ -131,9 +132,16 @@ or changes the inference response.
   through to the router's 404.
 - The audit exchange and `ls_audit_…` bearer branch are the deliberate alternate
   auth path. They never call Brain and can dispatch only `POST /files` and
-  `POST /messages` for its explicit onboarding proposal and QC prompt allowlist.
-  The exchange refuses an unsupported `X-LimeSpot-Audit-Plan-Version` before it
-  reads the activation.
+  `POST /messages` for its explicit onboarding proposal and QC prompt allowlist,
+  each reserved first, and the read-only, unreserved `GET /audit/session`.
+  The exchange refuses an extension build older than `GRADER_EXTENSION_BUILT_AFTER`
+  (`X-LimeSpot-Extension-Built-At`) and an unsupported `X-LimeSpot-Audit-Plan-Version`
+  before it reads the activation, and answers with `runsValidFrom` and
+  `extensionBuiltAfter`; a Grader chat reply carries `graderChat.runsValidFrom`.
+  `GET /audit/session` (`handleAuditSessionStatus`) reads a live session's
+  standing with its own bearer and the same headers — chat terms and both
+  cutoffs — reserving and writing nothing, and refuses exactly as an audit
+  request does; every answer, refusals included, carries `Cache-Control: no-store`.
 - AI tools are consumed ONLY through the toolset registry
   (`../toolsets/registry.ts`): each endpoint passes the subscriber's available
   integration parties and AI-tool capabilities and treats the composition as

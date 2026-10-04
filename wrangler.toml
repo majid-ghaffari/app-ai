@@ -145,9 +145,9 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 # The website signs the exact callback path into the token; this list is the set
 # of hosts app-ai will deliver a status event to.
 AUDIT_STATUS_ORIGINS = "https://limespot.com"
-# A session, and the Grader chat with it, lasts 24 hours. A new activation for the same audit
+# A session, and the Grader chat with it, lasts 30 days. A new activation for the same audit
 # supersedes the active session, so a visitor who lost theirs reopens from a fresh link.
-AUDIT_SESSION_TTL_SECONDS = "86400"
+AUDIT_SESSION_TTL_SECONDS = "2592000"
 # A session runs the Grader at most AUDIT_MAX_RUNS times: its first run and the
 # retries Studio offers. One abuse ceiling is derived from the grader plan
 # (src/lib/audit-plan.ts) times AUDIT_RUN_HEADROOM: each run's inference
@@ -176,6 +176,18 @@ GRADER_CHAT_MAX_REPLY_TOKENS = "600"
 GRADER_CHAT_EFFORT = "low"
 GRADER_CHAT_BOOKLET_VERSION = "1"
 GRADER_CHAT_ALERT_EVERY = "500"
+
+# ── Grader kill switches (ISO-8601 UTC instants; docs/AUDIT-AUTH.md → Kill switches) ──
+# Runs that completed, or never completed and started, before GRADER_RUNS_VALID_FROM no longer count:
+# their session is refused grader_run_revoked, and the exchange (runsValidFrom) and every chat reply
+# (graderChat.runsValidFrom) report the instant so the extension drops a cached run older than it.
+# Setting it to now and deploying invalidates every run so far. It restores no attempt or message.
+GRADER_RUNS_VALID_FROM = "2026-01-01T00:00:00Z"
+# Extension builds made before GRADER_EXTENSION_BUILT_AFTER, by the X-LimeSpot-Extension-Built-At
+# header they send, are refused extension_update_required at exchange and on every Grader call; the
+# exchange reports it as extensionBuiltAfter. A build that sends no such header is read as made at
+# 2026-10-03T00:00:00Z.
+GRADER_EXTENSION_BUILT_AFTER = "2026-01-01T00:00:00Z"
 
 # ── Logging ──
 # Logging is level-routed entirely by configuration. Production sends durable QC

@@ -113,14 +113,16 @@ It returns HTTP 201:
 {
   "sessionIdentifier": "<opaque SHA-256-derived identifier>",
   "accessToken": "ls_audit_<session JWT>",
-  "expiresAt": 1787356800000,
+  "expiresAt": 1789862400000,
   "graderChat": {
     "enabled": true,
     "perAudit": 25,
     "remainingInAudit": 25,
     "maxInputCharacters": 500,
-    "sessionExpiresAt": 1787356800000
-  }
+    "sessionExpiresAt": 1789862400000
+  },
+  "runsValidFrom": "2026-01-01T00:00:00.000Z",
+  "extensionBuiltAfter": "2026-01-01T00:00:00.000Z"
 }
 ```
 
@@ -129,7 +131,49 @@ only when `GRADER_CHAT_ENABLED` is on and the exchange declared plan version 2; 
 reads `enabled: false` with `perAudit`, `remainingInAudit` and `maxInputCharacters` of `0`. `perAudit` is
 the number of messages the audit is answered across all of its runs and sessions, and
 `remainingInAudit` what is left of it after earlier sessions of the same audit, so a reopened link shows
-the true count.
+the true count. `runsValidFrom` and `extensionBuiltAfter` are the deployment's two kill switches as
+ISO-8601 UTC instants, so the extension can drop a cached run or warn about its own build before
+app-ai refuses either (see Kill switches below).
+
+The exchange resolves every setting its answer and its session depend on — the signing keys, the
+callback destination, the session lifetime, both kill-switch instants and the chat terms — before it
+consumes the activation or supersedes the audit's session, so a deployment fault or a refusal leaves
+the link usable and the visitor's current session live. It refuses with 410 `grader_run_revoked`,
+consuming nothing, while `GRADER_RUNS_VALID_FROM` is still ahead of the moment the run would open,
+because that run would already be revoked.
+
+### Session status
+
+`GET /audit/session` reads a live session's standing with its own bearer, so the extension can check
+a run it cached before showing it again. It sends the same `Authorization: Bearer ls_audit_<session
+JWT>`, `X-LimeSpot-Audit-Store-Origin`, `X-LimeSpot-Audit-Plan-Version` and
+`X-LimeSpot-Extension-Built-At` headers as every audit request, and no body. Every answer, a refusal
+included, carries `Cache-Control: no-store`, because the standing changes as the session does and a
+410 is otherwise heuristically cacheable. It answers 200:
+
+```json
+{
+  "sessionIdentifier": "<opaque identifier>",
+  "expiresAt": 1789862400000,
+  "graderChat": {
+    "enabled": true,
+    "perAudit": 25,
+    "remainingInAudit": 24,
+    "maxInputCharacters": 500,
+    "sessionExpiresAt": 1789862400000
+  },
+  "runsValidFrom": "2026-01-01T00:00:00.000Z",
+  "extensionBuiltAfter": "2026-01-01T00:00:00.000Z"
+}
+```
+
+`graderChat` is the exchange's shape for the plan the request names, with the allowance as it stands
+now. The call reserves nothing, writes nothing, starts no attempt, touches no daily counter and calls
+no model. It refuses exactly as an audit request does: no audit bearer or an invalid one 401
+`AuditAuthorizationException`, an expired or superseded session 401 `audit_session_expired`, a
+session whose current run is older than `GRADER_RUNS_VALID_FROM` 410 `grader_run_revoked`, an
+outdated build 409 `extension_update_required`, an unsupported plan 409
+`audit_plan_version_unsupported`, and a store-origin header naming another store 403.
 
 The session JWT uses the same exact HS256 header and this payload:
 
@@ -144,13 +188,14 @@ The session JWT uses the same exact HS256 header and this payload:
   "attemptLimit": 2,
   "storeOrigin": "https://merchant.example",
   "issuedAt": 1787270400,
-  "expiresAt": 1787356800
+  "expiresAt": 1789862400
 }
 ```
 
 The extension background worker sends `Authorization: Bearer ls_audit_<session
-JWT>`, `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`, and the
-`X-LimeSpot-Audit-Plan-Version` it follows (see "The plan is versioned" below). App-ai requires
+JWT>`, `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`, the
+`X-LimeSpot-Audit-Plan-Version` it follows (see "The plan is versioned" below), and the
+`X-LimeSpot-Extension-Built-At` instant its build was made (see Kill switches below). App-ai requires
 that explicit store-origin header to be the same store as the signed `storeOrigin`. MV3
 background requests have a `chrome-extension://…` Origin (or none), and browser
 JavaScript cannot set the forbidden HTTP `Origin` header, so HTTP Origin is not
@@ -190,6 +235,9 @@ An audit session can call only:
   session-owned Files API references.
 - `POST /messages` with `grader-chat` under plan version 2: the Grader chat, a text-only
   conversation about the audit's own report, described below.
+- `GET /audit/session`, the one read-only exception: the session's standing, described under
+  Session status above. Every other call in this list is reserved against the audit's record before
+  any paid work; this one reserves, writes and spends nothing.
 
 Proposal inference remains proposal-only: review is an accepted upload destination but
 not an allowed `/messages` selector. The audit path cannot delete files, call `/chat`, select another prompt,
@@ -374,10 +422,23 @@ worker that has not learned the version refuses the run at its exchange rather t
   enforces them before it signs an activation: per-IP and per-email hourly windows, the resend
   interval, the UTC-day email budget, Turnstile, and the launch kill switch. App-ai does not
   duplicate them. The Grader chat's own daily limits are app-ai's (see Grader chat).
-- **Session lifetime.** 24 hours (`AUDIT_SESSION_TTL_SECONDS`), and the Grader chat ends with it. A
-  visitor who lost the session — a closed tab or browser — reopens the Grader from a fresh link,
-  whose activation supersedes the old session at once (see "Exchange and session contract"). The
-  lifetime is a security boundary for new work only: no upload, inference or chat message is
+- **Session lifetime.** 30 days (`AUDIT_SESSION_TTL_SECONDS`, `2592000`), and the Grader chat ends
+  with it, so a visitor who keeps the session can return days later and go on chatting while the
+  audit's message allowance lasts. That one value sets the bearer's `expiresAt` claim, the session
+  record's expiry and alarm, `graderChat.sessionExpiresAt`, and how long a chat message's stored
+  outcome is kept after it was answered; nothing else in app-ai bounds a session. Spending is held
+  per run and per day, not by time: the session lifetime changes no allowance, attempt cap or daily
+  limit. A visitor who lost the session — a closed tab or browser — reopens the Grader from a fresh
+  link, whose activation supersedes the old session at once (see "Exchange and session contract").
+  Three lifetimes stay shorter on purpose, because no live session needs them longer. A provider
+  file reference lasts at most 15 days (`src/inference/file-references.ts`): a run reads its tiles
+  only while it runs, the chat reads no file, and a retry uploads its own; holding references
+  longer would widen every merchant upload's reference window and the `TOKEN_ENCRYPTION_SECRET`
+  rotation bound with it. A sealed continuation lasts 24 hours (`src/inference/continuation.ts`),
+  and no audit route uses one: the proposal prompts are one-shot and the chat's route refuses a
+  model that needs provider state between turns. The chat's visitor and deployment counters stay
+  UTC-day windows, and a settlement older than a day is dropped because the counters it names have
+  reset. The lifetime is a security boundary for new work only: no upload, inference or chat message is
   admitted after it, and an expired or superseded bearer answers 401
   `AuditAuthorizationException` with `MessageDetail` `audit_session_expired`. A reservation holds a
   lease from its admission: the upstream inference deadline (`src/inference/deadline.ts`), which
@@ -398,6 +459,65 @@ activation limits, a daily activation ceiling, and the launch-wide budget kill
 switch. Cloudflare/Anthropic account alerts and hard spending controls are the
 outer operational cap. The public issuer must not launch without those controls;
 per-session app-ai limits alone are not a global budget.
+
+## Kill switches
+
+The extension keeps a run's report, chat and session for as long as the session lasts, so the
+deployment holds two switches that make every client drop what it cached, both ISO-8601 UTC instants
+in `wrangler.toml` `[vars]`, both read-only to clients, and both shipped at a past instant so a deploy
+invalidates nothing. Each is configuration, so it changes through a committed `wrangler.toml` edit
+merged to `main`, which deploys it.
+
+### Run validity: `GRADER_RUNS_VALID_FROM`
+
+A run no longer counts once it is older than `GRADER_RUNS_VALID_FROM`: it completed before that
+instant, or, never having completed, it opened before it. The session record keeps the current run's
+times for this (`runTimes`, below). A session whose current run is older is refused 410
+`GraderRunRevokedException` / `grader_run_revoked` on a chat message (a replay of an answered one
+included), a proposal inference, an upload into that run, and `GET /audit/session`. An upload that opens the next run —
+the first upload after the run reserved a proposal, which is how a retry starts — is admitted while
+the session has a retry left, because that run opens now; the next exchange's run opens now as well.
+The exchange and `GET /audit/session` report the instant as `runsValidFrom` and every chat reply as
+`graderChat.runsValidFrom`, normalized to `toISOString()` form. The extension calls `GET
+/audit/session` before it reopens a cached run, so a raised instant drops that run before it is shown,
+with no upload, proposal or chat message spent to learn it.
+
+Revoking a run restores nothing: a completed public attempt still counts toward the audit's two, and
+answered chat messages still count toward its allowance, because both belong to the audit and the
+operator decision keeps every spending cap as it is. A visitor whose run is revoked starts a fresh run
+within those limits. App-ai enforces the instant on its own routes only; the website's report-email
+endpoints verify the bearer themselves and refuse a revoked run only once they apply the same instant.
+
+To invalidate every run so far, set `GRADER_RUNS_VALID_FROM` to the current UTC instant, for example
+`GRADER_RUNS_VALID_FROM = "2026-11-02T18:00:00Z"`, and merge the change to `main`.
+
+### Extension build: `GRADER_EXTENSION_BUILT_AFTER`
+
+The extension names the instant its build was made in `X-LimeSpot-Extension-Built-At`, an ISO-8601
+UTC instant such as `2026-10-15T09:30:00Z`, on the exchange and on every relayed `/files` and
+`/messages` call. A build made before `GRADER_EXTENSION_BUILT_AFTER` answers 409
+`ExtensionUpdateRequiredException` / `extension_update_required`. The exchange checks it before it
+reads or consumes the activation, so the visitor can exchange the same link after updating while the
+link is still valid; every other audit request checks it after the bearer and store origin and before
+any reservation, so a refused request spends nothing. A request naming no build time is read as made
+at `2026-10-03T00:00:00Z`, because the header did not exist before then, so every build that sends
+none is older than any later cutoff; a malformed value answers 400 `ArgumentException`. The exchange
+reports the cutoff as `extensionBuiltAfter`, so a build can warn before it is refused. The header is
+a compatibility switch, not a security boundary: any caller can name any instant. An extension
+released before the header shows its generic failure for this refusal, since it shows its update
+notice only for `audit_plan_version_unsupported`.
+
+To make every older build update, set `GRADER_EXTENSION_BUILT_AFTER` to the build instant of the
+oldest build still allowed and merge the change to `main`.
+
+### No per-run switch
+
+There is no switch that revokes one run. Its natural place, a flag on the audit's Durable Object
+record, has no operator write path — only the worker writes Durable Object storage, so flipping it
+would need a new authenticated operator route — and `FILES_KV` holds best-effort dedup metadata that
+is never an authority, so a revocation key there would contradict its contract. One session already
+ends early when a fresh activation for the same audit supersedes it, which only the visitor's
+extension can exchange.
 
 ## Grader chat
 
@@ -445,6 +565,10 @@ carries a new identifier.
 
 ### Admission, in order
 
+Like every audit request, a chat message is first refused when its extension build predates
+`GRADER_EXTENSION_BUILT_AFTER` (409 `extension_update_required`) or its plan version is unsupported
+(409 `audit_plan_version_unsupported`).
+
 1. `GRADER_CHAT_ENABLED` off → 503 `ServiceUnavailableException` / `grader_chat_disabled`.
 2. A plan without chat (version 1, or no header) → 403 `AuditScopeException` /
    `grader_chat_not_in_plan`. An unsupported version is refused 409 first, as for every audit
@@ -456,6 +580,8 @@ carries a new identifier.
 4. The session authority takes the message atomically:
    - the session is missing, expired or replaced → 401 `AuditAuthorizationException` /
      `audit_session_expired`;
+   - the session's current run is older than `GRADER_RUNS_VALID_FROM` → 410
+     `GraderRunRevokedException` / `grader_run_revoked`, a replay of an answered message included;
    - the identifier was answered: the same transcript is replayed from its stored outcome, and
      anything else answers 400 `ArgumentException` / `grader_chat_message_reused`;
    - another message of the audit is in flight → 409 `GraderChatBusyException` /
@@ -480,7 +606,8 @@ carries a new identifier.
    refunds its attempt.
 
 A refused message reaches no model. The 200 body is the `/messages` envelope plus
-`graderChat: { remainingInAudit, sessionExpiresAt, bookletVersion, withheld }`.
+`graderChat: { remainingInAudit, sessionExpiresAt, bookletVersion, withheld, runsValidFrom }`, where
+`runsValidFrom` is the deployment's run-validity instant as the exchange reports it.
 
 ### Accounting is the chat's own
 
@@ -662,9 +789,24 @@ that day's counts and held messages. That is acceptable because the counters are
 data rides on them; the audit's own chat state, whose new members an earlier worker ignores, is
 unaffected.
 
-A rolled-back worker refuses a new activation while a session is active instead of superseding it,
-so rolling back past this release under 24-hour sessions locks a visitor who lost theirs out until
-it expires; roll `AUDIT_SESSION_TTL_SECONDS` back with it.
+A rolled-back worker that refuses a new activation while a session is active, instead of
+superseding it, locks a visitor who lost theirs out until the session expires, which under 30-day
+sessions is up to 30 days; roll `AUDIT_SESSION_TTL_SECONDS` back with such a worker.
+
+A session record carries `runTimes: { sessionIdentifier, run, startedAt, completedAt? }`, epoch
+milliseconds for the current run, which `GRADER_RUNS_VALID_FROM` is compared with. A worker without
+them carries the member through untouched: its next run keeps the previous run's times, and a run it
+completes gets no completion time. The times therefore name their session and run, and the authority
+trusts them only when both match the record. A run that has reached a proposal with times that are
+absent or name another run reads as the session's issue time, taken from the request's verified
+bearer, the earliest any run of the session can have opened; a run marked completed without a
+completion time reads as its start. Both err toward a fresh run: such a run is revoked only when its
+session was issued before the instant, never accepted forever and never refused regardless, and the
+visitor's next upload opens a run with its own times. A run that only uploaded — the state such a
+worker leaves when it opens a retry run with its first upload — has no report to revoke, so it is
+adopted as opening at the moment it is next read: the status read and chat admission take it as
+current, and its next upload or proposal records that moment as its start and continues with the
+files it owns.
 
 The authority writes one session shape, divided into runs, and also reads a session stored without
 runs, whose counters cover the whole session. It reads such a session as its first run: the stored
@@ -717,3 +859,11 @@ claim set is matched exactly on both sides, so there is no shape both accept: a 
 token carrying it as an unexpected key. app-ai therefore deploys first, while the website mints no
 activation tokens and nothing can be refused; the website issuer follows; the audit request path is
 enabled last. Enabling the website issuer ahead of the worker would 401 every exchange.
+
+**The 30-day session and the kill switches deploy before the extension and lib.** Every field they
+add is additive — `runsValidFrom` and `extensionBuiltAfter` on the exchange, `graderChat.runsValidFrom`
+on a chat reply — and the released extension and lib copy only the fields they know, so they keep
+working unchanged. The website's report-email endpoints hold their own 24-hour window from the run's
+start, so a report email for an older run is refused there however long the app-ai session lasts. Raising `GRADER_EXTENSION_BUILT_AFTER` past `2026-10-03T00:00:00Z` refuses
+every build that sends no `X-LimeSpot-Extension-Built-At`, so it waits until the build that sends the
+header is the one visitors have.

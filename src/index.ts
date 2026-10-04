@@ -8,6 +8,8 @@
  *   GET    /health                 — liveness (no auth)
  *   POST   /audit/session/exchange — one-time website activation exchange
  *                                    (authenticated by the website's JWT)
+ *   GET    /audit/session          — a Grader session's standing, read with its
+ *                                    own `ls_audit_…` bearer; spends nothing
  *   POST   /files                  — prompt-aware direct upload to each declared
  *                                    prompt's provider file route; returns
  *                                    sealed opaque references
@@ -22,9 +24,9 @@
  *   GET    /prompts                — master-only prompt/model routing diagnostics
  *                                    (context-ID by header or query parameter)
  *
- * Every route except /health and the audit exchange requires a validated
- * context-ID; POST /files and POST /messages alone also accept a scoped
- * `ls_audit_…` bearer. There is no GET /files: nothing enumerates a provider
+ * Every route except /health and the two audit-session routes requires a
+ * validated context-ID; POST /files and POST /messages alone also accept a
+ * scoped `ls_audit_…` bearer, which GET /audit/session requires. There is no GET /files: nothing enumerates a provider
  * account, so it reaches the 404 below.
  *
  * This file is the router only: it builds CORS headers, handles the OPTIONS
@@ -56,7 +58,7 @@ import { handleHealth } from './handlers/health';
 import { handleFileUpload, handleDeleteFile } from './handlers/files';
 import { handleMessages } from './handlers/messages';
 import { handleChat } from './handlers/chat';
-import { handleAuditSessionExchange } from './handlers/audit-session';
+import { handleAuditSessionExchange, handleAuditSessionStatus } from './handlers/audit-session';
 import { handleGraderChat } from './handlers/grader-chat';
 import { handlePrompts, promptsDiagnosticsContextId } from './handlers/prompts';
 import {
@@ -115,6 +117,9 @@ async function handleRequest(
     }
     if (pathname === '/audit/session/exchange' && method === 'POST') {
       return await handleAuditSessionExchange(request, env, corsHeaders);
+    }
+    if (pathname === '/audit/session' && method === 'GET') {
+      return await handleAuditSessionStatus(request, env, corsHeaders, logging);
     }
 
     const answerKeptAlive = (

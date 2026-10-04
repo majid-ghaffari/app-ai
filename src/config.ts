@@ -212,7 +212,10 @@ export interface Env {
   readonly AUDIT_STATUS_ORIGINS?: string;
   /** Strongly consistent authority for activation consumption, quotas, and file ownership. */
   readonly AUDIT_SESSIONS?: DurableObjectNamespace;
-  /** Lifetime of an exchanged audit session in seconds. */
+  /**
+   * Lifetime of an exchanged audit session in seconds: its bearer's expiry claim, the session record,
+   * and how long a chat message's stored outcome is kept after it was answered.
+   */
   readonly AUDIT_SESSION_TTL_SECONDS?: string;
   /** Runs one audit session may start: its first run and every retry. */
   readonly AUDIT_MAX_RUNS?: string;
@@ -243,6 +246,17 @@ export interface Env {
   readonly GRADER_CHAT_BOOKLET_VERSION?: string;
   /** The deployment's daily chat count raises an alert at every multiple of this many messages. */
   readonly GRADER_CHAT_ALERT_EVERY?: string;
+  /**
+   * ISO-8601 UTC instant before which a Grader run no longer counts: a session whose current run
+   * completed, or started when it never completed, before it is refused `grader_run_revoked`. The
+   * exchange and every chat reply report it, so a client drops a run it cached from before it.
+   */
+  readonly GRADER_RUNS_VALID_FROM?: string;
+  /**
+   * ISO-8601 UTC instant an extension build must postdate: an exchange or Grader call declaring an
+   * earlier `X-LimeSpot-Extension-Built-At` is refused `extension_update_required`.
+   */
+  readonly GRADER_EXTENSION_BUILT_AFTER?: string;
   /**
    * OPTIONAL Slack incoming-webhook URL the daily chat-volume alert is posted to. SECRET when
    * configured; without it an alert is only logged.
@@ -304,6 +318,8 @@ type RequiredVarName =
   | 'GRADER_CHAT_EFFORT'
   | 'GRADER_CHAT_BOOKLET_VERSION'
   | 'GRADER_CHAT_ALERT_EVERY'
+  | 'GRADER_RUNS_VALID_FROM'
+  | 'GRADER_EXTENSION_BUILT_AFTER'
   | 'OPENAI_API_KEY'
   | 'MOONSHOT_API_KEY'
   | 'KIMI_API_KEY'
@@ -827,6 +843,16 @@ export function graderChatAlertEvery(env: Env): number {
   return positiveIntegerVar(env, 'GRADER_CHAT_ALERT_EVERY');
 }
 
+/** Epoch milliseconds before which a Grader run, by its completion or else its start, is revoked. */
+export function graderRunsValidFrom(env: Env): number {
+  return utcInstantVar(env, 'GRADER_RUNS_VALID_FROM');
+}
+
+/** Epoch milliseconds an extension build must postdate to exchange or call the Grader. */
+export function graderExtensionBuiltAfter(env: Env): number {
+  return utcInstantVar(env, 'GRADER_EXTENSION_BUILT_AFTER');
+}
+
 /**
  * The Slack incoming-webhook URL a chat-volume alert is posted to, or `null` when none is
  * configured. OPTIONAL by design, like `LOG_SEQ_API_KEY`: absence makes an alert log-only. A value
@@ -865,6 +891,30 @@ function strongSigningSecret(
     throw new Error(`${name} must contain at least 32 bytes.`);
   }
   return secret;
+}
+
+const UTC_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u;
+
+/** Parse an ISO-8601 UTC instant into epoch milliseconds, refusing any other form. */
+export function parseUtcInstant(text: string): number | null {
+  if (!UTC_INSTANT.test(text)) return null;
+  const value = Date.parse(text);
+  return Number.isFinite(value) && new Date(value).toISOString().slice(0, 19) === text.slice(0, 19)
+    ? value
+    : null;
+}
+
+function utcInstantVar(
+  env: Env,
+  name: 'GRADER_RUNS_VALID_FROM' | 'GRADER_EXTENSION_BUILT_AFTER',
+): number {
+  const value = parseUtcInstant(requireVar(env, name));
+  if (value === null) {
+    throw new Error(
+      `${name} must be an ISO-8601 UTC timestamp such as 2026-01-01T00:00:00Z. ${SET_IN_VARS}`,
+    );
+  }
+  return value;
 }
 
 function positiveIntegerVar(

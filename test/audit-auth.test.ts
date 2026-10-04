@@ -2702,6 +2702,9 @@ describe('audit plan versions', () => {
     expect(preflight.headers.get('Access-Control-Allow-Headers')?.split(', ')).toContain(
       PLAN_VERSION_HEADER,
     );
+    expect(preflight.headers.get('Access-Control-Allow-Headers')?.split(', ')).toContain(
+      'X-LimeSpot-Extension-Built-At',
+    );
   });
 });
 

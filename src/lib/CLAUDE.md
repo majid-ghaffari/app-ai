@@ -151,10 +151,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   of the request's whole transcript. `chatAnswered` records each answered message identifier with
   its transcript fingerprint and reservation, and its outcome — the `/messages` envelope, booklet
   version and withheld flag — is stored under `chat-outcome:<messageId>` in the same transaction that
-  counts it, kept for `AUDIT_SESSION_TTL_SECONDS` and deleted by the alarm. A replay with the same
-  transcript returns that outcome with no reservation, inference or charge; the same identifier with
-  another transcript, or one whose outcome is gone, answers 400 `grader_chat_message_reused`; a
-  replay while the original is in flight answers 409 `grader_chat_busy`. A model failure answers
+  counts it, kept for `AUDIT_SESSION_TTL_SECONDS` (30 days, the session's own lifetime) and deleted
+  by the alarm. A replay with the same transcript returns that outcome with no reservation, inference
+  or charge; the same identifier with another transcript, or one whose outcome is gone, answers 400
+  `grader_chat_message_reused`; a replay while the original is in flight answers 409
+  `grader_chat_busy`. A model failure answers
   nothing, so its retry is admitted afresh.
 - Every model call is an attempt, apart from the answered allowance the visitor sees. The audit's
   `chatAttempts` and the visitor's daily counter count each admitted message, answered or not, and
@@ -175,6 +176,25 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   lapses unanswered is released by the alarm, or by the next admission, with a settlement due at
   once, and a commit for a reservation no longer in flight answers 410, which the handler returns as
   504 `InferenceTimeoutException`, so each reservation is either committed or released, never both.
+- `AUDIT_SESSION_TTL_SECONDS` is the one bound on a session's life: `audit-auth.ts` signs it into the
+  bearer's `expiresAt` claim, the authority stores and alarms on that expiry, and chat outcomes are
+  kept for it. Shorter lifetimes beside it — a file reference's 15 days, a continuation's 24 hours,
+  the chat's UTC-day counters — are owned elsewhere and no audit session depends on them outliving it.
+- The authority keeps the current run's `runTimes`, named by session and run number because a worker
+  without them carries the member onto its next run. `runRevoked` compares the completion, or the
+  start when the run never completed, with `GRADER_RUNS_VALID_FROM`; on a run that reached a
+  proposal, times that are absent or name another run read as the bearer's issue time, and a
+  completed run without a completion time as its start, while an upload-only run without times is
+  adopted as opening now (`withAdoptedRunTimes` stamps it on its next upload or proposal). A revoked run's chat message (a replay included), proposal, upload and status read are
+  refused 412 internally, answered 410 `grader_run_revoked`, while an upload that opens the next run
+  is admitted, since that run opens now. `/status` is the authority's one read-only path: it checks
+  the session and the run and answers the audit's answered chat count, writing nothing.
+  `exchangeAuditActivation` resolves every setting its answer depends on, the cutoffs and chat terms
+  included, and refuses a run the cutoff would already revoke, before the activation is consumed.
+  `audit-auth.ts` refuses an extension build older than `GRADER_EXTENSION_BUILT_AFTER`, read from
+  `X-LimeSpot-Extension-Built-At` and taken as `2026-10-03T00:00:00Z` when absent, with 409
+  `extension_update_required` at exchange before the activation is read and on every audit request
+  before any reservation; a malformed value is 400.
 - A valid new activation supersedes the audit's active session. `releaseSession` ends the old
   session exactly as expiry does — run, files and totals go; completed attempts, leased
   reservations, the outbox, consumed activations and chat state stay — and the record then names
