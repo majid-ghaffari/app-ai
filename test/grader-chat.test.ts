@@ -2379,7 +2379,7 @@ describe('the link guard is the only deterministic output check on the real rout
     return (await response.json()) as ChatBody;
   }
 
-  it('withholds every off-site link form, and counts each', async () => {
+  it('withholds every off-site link form, a listed brand written as a link included, and counts each', async () => {
     const env = durableEnv({ GRADER_CHAT_MESSAGES_PER_AUDIT: '50' });
     const model = upstream();
     const session = await completedRun(env);
@@ -2420,6 +2420,12 @@ describe('the link guard is the only deterministic output check on the real rout
       'Visit evil\u3002example today.',
       'Visit evil\uFF61example today.',
       'Visit evil\uFF0Eexample today.',
+      'See judge.me/apps for reviews.',
+      'Open https://judge.me now.',
+      'Open judge.me:443 now.',
+      'Visit www.judge.me today.',
+      'Read [reviews](judge.me) today.',
+      'Write to x@judge.me today.',
     ];
     for (const reply of withheld) {
       const body = await replyThrough(env, session.accessToken, model, reply);
@@ -2430,7 +2436,7 @@ describe('the link guard is the only deterministic output check on the real rout
     expect((await sessionRecord(env, session.auditIdentifier)).chatReplies).toEqual([]);
   }, 30_000);
 
-  it('delivers limespot.com links and leaves wording to the prompt', async () => {
+  it('delivers limespot.com links and a listed brand named as a plain word, and leaves wording to the prompt', async () => {
     const env = durableEnv();
     const model = upstream();
     const session = await completedRun(env);
@@ -2443,6 +2449,8 @@ describe('the link guard is the only deterministic output check on the real rout
       '**Tip**: LimeSpot places widgets on product pages.',
       'At 10:30 the report ran, and the ratio was 3:1.',
       'Write to hello@limespot.com.',
+      'LimeSpot works with Judge.me.',
+      'Yotpo, Okendo, Loox, Judge.me, Stamped and Ryviu are all included.',
       'LimeSpot plans include a 15-day free trial.',
       'The Grader found three gaps on your home page.',
       'Your home page shows no product discovery after the hero, and the Install LimeSpot button on the report installs LimeSpot on this store.',

@@ -103,10 +103,13 @@ order, and stays under the size cap `test/assistant-prompt-blocks.test.ts` pins.
 editor notes, stripped before the model sees the text. The boundaries block names its sections: a
 price is stated only by quoting Prices we may state word for word, so a price carries its currency
 and, when recurring, its period, and a trial or fee fact only as Claims we may make states it. No
-check in code holds the model to the booklet; the prompt does. New wording is a new version file,
-never an edit to a published one, so the `bookletVersion` a reply reports names the text it was
-grounded in; the change updates `docs/prompts/grader-chat.md`. The repository has no CODEOWNERS
-file, so marketing's ownership is a review convention, not an enforced rule.
+check in code holds the model to the booklet; the prompt does. A reply that repeats a booklet line
+still goes through the link guard, so every non-blank line of every booklet passes it, which
+`test/assistant-prompt-blocks.test.ts` pins; a brand whose name is shaped like a hostname joins the
+guard's brand list in `src/lib/grader-chat-output.ts` before a booklet names it. New wording is a
+new version file, never an edit to a published one, so the `bookletVersion` a reply reports names
+the text it was grounded in; the change updates `docs/prompts/grader-chat.md`. The repository has
+no CODEOWNERS file, so marketing's ownership is a review convention, not an enforced rule.
 
 ## Registered-prompt inventory
 

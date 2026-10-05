@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { reviewGraderChatReply } from '../src/lib/grader-chat-output';
 import {
   getGraderChatPrompt,
   getSystemPrompt,
@@ -185,6 +186,18 @@ describe('marketing booklets', () => {
       ]);
       expect(booklet.length, path).toBeLessThanOrEqual(BOOKLET_MAX_CHARACTERS);
       expect(booklet, path).not.toContain('<!--');
+    }
+  });
+
+  it('passes the link guard as written, so a reply that repeats a booklet line is delivered', () => {
+    for (const path of Object.keys(bookletFiles)) {
+      const booklet = getGraderChatPrompt({
+        ...ENV,
+        GRADER_CHAT_BOOKLET_VERSION: String(bookletVersionOf(path)),
+      }).booklet;
+      for (const line of booklet.split('\n').filter((text) => text.trim() !== '')) {
+        expect(reviewGraderChatReply(line, true), `${path}: ${line}`).toEqual({ withheld: false });
+      }
     }
   });
 

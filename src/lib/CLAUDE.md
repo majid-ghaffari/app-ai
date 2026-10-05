@@ -246,6 +246,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   and a limespot.com host (bare hostnames, Markdown targets and bracketed IPv6 literals go through
   the same `URL` rule), or a `mailto:` link to exactly one recipient at limespot.com with no query
   and no `%` (plain email addresses follow that exact-recipient rule). Any four dot-separated octets
-  withhold the reply, and so does an unfinished or empty one. It judges no claim: what the chat may
-  claim is the boundaries prompt's to govern, grounded in the booklet, beside the "AI can make
-  mistakes" disclaimer lib shows in the chat UI.
+  withhold the reply, and so does an unfinished or empty one. A brand on its list of names shaped
+  like a hostname (`Judge.me`) passes only as a plain whitespace-bounded word, in any letter case,
+  with nothing but opening or closing punctuation, emphasis or a possessive around it; with a
+  scheme, path, port, query, fragment, subdomain or `@`, or as a Markdown link target, it is read as
+  a hostname like any other. Markdown targets are read before brands are set aside, and brands are
+  recognized only after folding. It judges no claim: what the chat may claim is the boundaries
+  prompt's to govern, grounded in the booklet, beside the "AI can make mistakes" disclaimer lib
+  shows in the chat UI.

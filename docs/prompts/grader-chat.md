@@ -79,8 +79,10 @@ by quoting Prices we may state word for word, and a trial or fee fact only as Cl
 states it. Marketing writes each price with its currency and, for a recurring one, its period —
 `The Essential plan is $49/month.`; v1, engineering's draft, leaves Prices we may state empty and
 states no price. Never say and Objections guide the model's wording and never license a claim the
-other sections do not make. A reply that repeats booklet wording still passes the link guard, so a
-name the guard reads as a host withholds every reply that repeats it.
+other sections do not make. A reply that repeats booklet wording still goes through the link guard,
+so every non-blank booklet line passes it, which `test/assistant-prompt-blocks.test.ts` pins, and a
+brand whose name is shaped like a hostname, such as Judge.me, joins the guard's brand list before a
+booklet names it.
 
 v2 makes the chat a product sales consultant for LimeSpot Growth Agents: it opens on the store's
 report, keeps to business needs and product coverage, answers only from the booklet, LimeSpot's own
@@ -194,6 +196,19 @@ is withheld too rather than delivered cut off. Nothing else about a reply's word
 code; its claims rest on the boundaries block, the booklet, and the disclaimer lib shows beside the
 chat.
 
+A brand whose name is shaped like a hostname — the guard's list, `Judge.me` alone today — is no
+link when it stands as a plain word, so it passes in any letter case: bounded by whitespace, with
+only opening quotes, a parenthesis or emphasis before it and only sentence punctuation, closing
+quotes, a parenthesis, emphasis or a possessive `'s` after it (`Judge.me.`, `(Judge.me,`,
+`**Judge.me**`, `Judge.me's`). Written any other way it is read as a hostname like any other, so
+`judge.me/apps`, `https://judge.me`, `//judge.me`, `www.judge.me`, `apps.judge.me`, `judge.me:443`,
+`judge.me?ref=x`, `judge.me#install`, `x@judge.me` and `<judge.me>` are withheld, and so is the
+name as the target of a Markdown link. The word is recognized after the same folding, invisible-character removal and dot
+mapping, so a folded or obfuscated variant can neither hide a scheme, path or port from the guard
+nor carry one through the allowance, and Markdown link targets are read from the text before any
+brand is set aside. lib renders a bare brand as plain text and links only `[label](https://…)`, so
+a standalone brand is never clickable.
+
 The report is never an authority. Its text arrives from the client and can carry anything a page
 script planted, and its figures describe the store's own suggestions, never a LimeSpot commitment;
 the boundaries block says so, and the link guard withholds a link the report planted.
@@ -216,18 +231,21 @@ fingerprints of its transcript and reply.
 
 - `test/assistant-prompt-blocks.test.ts` pins Studio's `chat` and the grader-chat composition byte
   for byte to their baselines, the single boundaries block, the absence of Studio-only instructions
-  and of any platform outside the booklet, every booklet's headings and size cap, and v1's empty
-  price section and editor-only draft note. It holds v2 to the 21-day challenge's eligibility as
-  the only revenue threshold outside its prices, to page load speed and SEO impact described only
-  as something LimeSpot is designed to minimize, never bounded as minimal or none, and to no stated
-  duration beyond the challenge's length and the plan's 30-day revenue window.
+  and of any platform outside the booklet, every booklet's headings and size cap, every non-blank
+  booklet line passing the link guard, and v1's empty price section and editor-only draft note. It
+  holds v2 to the 21-day challenge's eligibility as the only revenue threshold outside its prices,
+  to page load speed and SEO impact described only as something LimeSpot is designed to minimize,
+  never bounded as minimal or none, and to no stated duration beyond the challenge's length and
+  the plan's 30-day revenue window.
 - `test/grader-chat-output.test.ts` holds the link guard to every off-site link form, scheme or bare,
-  limespot.com links passing, wording never withheld, and unfinished or empty replies.
+  limespot.com links passing, a listed brand passing as a plain word in any letter case and folded
+  form and withheld in every link form, wording never withheld, and unfinished or empty replies.
 - `test/grader-chat.test.ts` drives the real route with a stubbed provider: plan gating and the
   disabled switch, the exchange terms, merchant refusal, history fingerprints, accounting kept apart
   from the audit, every limit, the input cap, the strict body and its `messageId`, the fenced report
   and effort gating, the link guard end to end with a link a tampered report planted, every off-site
-  link form withheld and limespot.com links and ordinary wording delivered, `messageId` replay, a lost response retried, a
+  link form withheld, a listed brand written as a link included, and limespot.com links, a listed
+  brand named as a plain word and ordinary wording delivered, `messageId` replay, a lost response retried, a
   replay in flight and a reused identifier, the volume alert and its outbox under a lost counter
   response and across a day rollover, the daily counters' limit past a lapsed lease, a visitor
   crossing midnight, counter cleanup, readiness through

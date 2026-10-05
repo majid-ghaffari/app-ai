@@ -204,6 +204,69 @@ describe('the link guard is the only check on what a reply says', () => {
     }
   });
 
+  it('passes a listed brand shaped like a hostname when it stands as a plain word', () => {
+    for (const reply of [
+      'LimeSpot works with Judge.me',
+      'LimeSpot works with Judge.me.',
+      'Yotpo, Okendo, Loox, Judge.me, Stamped and Ryviu are all included.',
+      'Do you use Judge.me?',
+      'It works with JUDGE.ME and judge.me alike!',
+      'Reviews come from Judge.me: LimeSpot shows them in widgets.',
+      'Pick a review app (Judge.me) and connect it.',
+      'Pick a review app (Yotpo or Judge.me), then connect it.',
+      'Connect “Judge.me” or "Judge.me" or ‘Judge.me’ in a minute.',
+      'Connect **Judge.me** or _Judge.me_ in a minute.',
+      "LimeSpot shows Judge.me’s reviews and Judge.me's ratings.",
+      'Reviews from Judge.me...',
+      '- Judge.me\n- Yotpo',
+      'Connect Judge.me and see [our site](https://limespot.com/integrations).',
+      'Connect Ｊｕｄｇｅ．ｍｅ today.',
+      'Connect Judge\u3002me today.',
+      'Connect Jud\u200Bge.me today.',
+    ]) {
+      expect(review(reply), reply).toEqual({ withheld: false });
+    }
+  });
+
+  it('withholds a listed brand written as a link: scheme, path, port, query, fragment, subdomain, address or Markdown target', () => {
+    for (const reply of [
+      'See judge.me/apps for reviews.',
+      'See judge.me/ for reviews.',
+      'See Judge.me\\apps for reviews.',
+      'Open https://judge.me now.',
+      'Open http://Judge.me today.',
+      'Open //judge.me now.',
+      'Open judge.me:443 now.',
+      'Open judge.me:443/apps now.',
+      'Open judge.me?ref=limespot now.',
+      'Open judge.me#install now.',
+      'Visit www.judge.me today.',
+      'Visit apps.judge.me today.',
+      'Visit judge.me.evil.example today.',
+      'Visit judge.me./apps today.',
+      'Read [reviews](judge.me) today.',
+      'Read [reviews]( judge.me ) today.',
+      'Read [reviews](judge.me "Judge.me") today.',
+      'Read [reviews](https://judge.me) today.',
+      'Read [Judge.me](https://limespot.com/integrations) today.',
+      'Read <judge.me> today.',
+      'Write to x@judge.me today.',
+      'Write to mailto:x@judge.me today.',
+      'Visit evil_judge.me today.',
+      'Visit judge.me.com today.',
+      'Visit judge.me-reviews.com today.',
+      'Visit judgeme.com today.',
+      'Open judge.me\u200B/apps now.',
+      'Open judge.me／apps now.',
+      'Open https://judge\u3002me now.',
+      'Open ｈｔｔｐｓ://judge.me now.',
+      'Open judge.me:４４３ now.',
+      'Open judge\uFF0Eme/apps now.',
+    ]) {
+      expect(review(reply), reply).toEqual({ withheld: true, reason: 'external-link' });
+    }
+  });
+
   it('never withholds a reply for its wording: claims are the prompt’s to govern', () => {
     for (const reply of [
       'LimeSpot can add Trending products below your home page hero.',

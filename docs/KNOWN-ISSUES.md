@@ -134,12 +134,6 @@ start and do not refuse a superseded or `GRADER_RUNS_VALID_FROM`-revoked session
 reuses one audit identifier per store, while app-ai keys the completion ledger and the chat
 allowance by it, so a store runs again after 30 days only once the website issues a new identifier.
 
-### The Grader chat withholds a reply that names the Judge.me integration
-
-Booklet v2 lists Judge.me among LimeSpot's integrations. The link guard reads `Judge.me` as a
-hostname off limespot.com, so a reply that repeats the name, such as one listing the integrations,
-is withheld and the visitor sees lib's notice instead.
-
 ### The Grader chat's claims rest on its prompt
 
 No check in code decides what the chat may claim: telling a claim from harmless wording takes

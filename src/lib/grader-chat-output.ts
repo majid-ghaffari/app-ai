@@ -24,6 +24,11 @@ const IPV4_OCTET = '(?:25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])';
 const IPV4_LITERAL = new RegExp(`(?<![0-9.])(?:${IPV4_OCTET}\\.){3}${IPV4_OCTET}(?![0-9])`, 'u');
 const LIMESPOT_MAILTO = /^mailto:[^\s@%?,;/\\:]+@(?:[a-z0-9-]+\.)*limespot\.com$/iu;
 const LIMESPOT_EMAIL = /^[^\s@%?,;/\\:]+@(?:[a-z0-9-]+\.)*limespot\.com$/iu;
+const HOSTNAME_SHAPED_BRANDS: ReadonlySet<string> = new Set(['judge.me']);
+const WORD = /\S+/gu;
+const WORD_OPENING_PUNCTUATION = /^["'“‘(*_]+/u;
+const WORD_CLOSING_PUNCTUATION = /[.,;:!?"'’”)*_]+$/u;
+const POSSESSIVE_SUFFIX = /['’]s$/u;
 
 /**
  * Decide whether a model reply may reach the visitor. The link guard is the only check on what a
@@ -36,7 +41,12 @@ const LIMESPOT_EMAIL = /^[^\s@%?,;/\\:]+@(?:[a-z0-9-]+\.)*limespot\.com$/iu;
  * limespot.com with no query and no `%`. A plain email address passes only under that same
  * exact-recipient rule, and a bare hostname, a Markdown target or a bracketed IPv6 literal only
  * under the same `URL` rule as `https://`. Any four dot-separated octets withhold the reply
- * whatever follows them, since no IP literal is limespot.com. A reply the model did not finish, or
+ * whatever follows them, since no IP literal is limespot.com. A brand on the listed names shaped
+ * like a hostname, `Judge.me`, is no link when it stands as a plain word: in any letter case,
+ * bounded by whitespace, with only opening quotes, a parenthesis or emphasis before it and only
+ * sentence punctuation, closing quotes, a parenthesis, emphasis or a possessive `'s` after it. With
+ * a scheme, a path, a port, a query or fragment, `www.` or another subdomain, an `@`, or as a
+ * Markdown link target it is read as a hostname like any other. A reply the model did not finish, or
  * left empty, is withheld too rather than delivered cut off. Claims are the prompt's to govern,
  * never this check's.
  */
@@ -58,11 +68,20 @@ function visibleText(source: string): string {
 }
 
 function linkTargets(text: string): string[] {
+  const prose = text.replace(WORD, (word) => (isStandaloneBrand(word) ? ' ' : word));
   const targets = LINK_PATTERNS.flatMap((pattern) =>
-    [...text.matchAll(pattern)].map((match) => match[0]),
+    [...prose.matchAll(pattern)].map((match) => match[0]),
   );
   for (const match of text.matchAll(MARKDOWN_LINK_TARGET)) targets.push(match[1] ?? '');
   return targets;
+}
+
+function isStandaloneBrand(word: string): boolean {
+  const name = word
+    .replace(WORD_OPENING_PUNCTUATION, '')
+    .replace(WORD_CLOSING_PUNCTUATION, '')
+    .replace(POSSESSIVE_SUFFIX, '');
+  return HOSTNAME_SHAPED_BRANDS.has(name.toLowerCase());
 }
 
 function isLimeSpotTarget(raw: string): boolean {
