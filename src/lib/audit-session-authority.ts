@@ -124,8 +124,16 @@ interface ChatAnsweredMessage {
   readonly transcriptFingerprint: string;
   readonly reservationIdentifier: string;
   readonly answeredAt: number;
-  /** When its stored outcome is deleted; absent once it has been. */
+  /**
+   * When this entry, its stored outcome and its reply fingerprint are deleted. Absent on an entry
+   * an earlier worker kept after deleting its outcome, which is already past it.
+   */
   readonly outcomeExpiresAt?: number;
+  /**
+   * The transcript fingerprint of the reply the message was answered with, `null` when the reply
+   * was withheld. Absent on an entry an earlier worker wrote, which names no reply.
+   */
+  readonly replyFingerprint?: string | null;
 }
 
 /** A chat message whose visitor and deployment daily counters are still to be committed or released. */
@@ -656,7 +664,7 @@ export class AuditSessionAuthority implements DurableObject {
       await expireDailyChatCounter(this.state.storage);
       await this.expirePendingSession();
       await this.drainChatSettlements();
-      await this.deleteExpiredChatOutcomes();
+      await this.deleteExpiredChatRecords();
       await this.flushStatusOutbox();
     } finally {
       await this.scheduleAlarm();
@@ -822,7 +830,9 @@ export class AuditSessionAuthority implements DurableObject {
       if (runRevoked(stored, graderRunsValidFrom(this.env), input.issuedAt)) {
         return { status: 412 } as const;
       }
-      const answered = stored.chatAnswered?.find(
+      const now = Date.now();
+      const current = await this.pruneExpiredChat(storage, stored, now);
+      const answered = current.chatAnswered?.find(
         (message) => message.messageId === input.messageId,
       );
       if (answered) {
@@ -831,10 +841,9 @@ export class AuditSessionAuthority implements DurableObject {
         }
         const replay = await storage.get<GraderChatOutcome>(chatOutcomeKey(input.messageId));
         if (!replay) return { status: 400 } as const;
-        return { status: 200, replay, chatMessages: stored.chatMessages ?? 0 } as const;
+        return { status: 200, replay, chatMessages: current.chatMessages ?? 0 } as const;
       }
-      const now = Date.now();
-      const inFlight = stored.chatInFlight;
+      const inFlight = current.chatInFlight;
       if (inFlight?.reservationIdentifier === input.reservationIdentifier) {
         return { status: 201 } as const;
       }
@@ -844,21 +853,21 @@ export class AuditSessionAuthority implements DurableObject {
           ? ({ status: 400 } as const)
           : ({ status: 409 } as const);
       }
-      if (serializedBytes(stored) > SESSION_RECORD_BUDGET_BYTES) return { status: 503 } as const;
-      if (!stored.runCompleted) {
-        return { status: runAnalysisPending(stored) ? 423 : 424 } as const;
+      if (serializedBytes(current) > SESSION_RECORD_BUDGET_BYTES) return { status: 503 } as const;
+      if (!current.runCompleted) {
+        return { status: runAnalysisPending(current) ? 423 : 424 } as const;
       }
-      if ((stored.chatMessages ?? 0) >= graderChatMessageAllowance(this.env)) {
+      if ((current.chatMessages ?? 0) >= graderChatMessageAllowance(this.env)) {
         return { status: 429 } as const;
       }
-      if ((stored.chatAttempts ?? 0) >= graderChatAttemptAllowance(this.env)) {
+      if ((current.chatAttempts ?? 0) >= graderChatAttemptAllowance(this.env)) {
         return { status: 402 } as const;
       }
-      const replies = new Set(stored.chatReplies ?? []);
+      const replies = new Set(current.chatReplies ?? []);
       if (input.historyFingerprints.some((fingerprint) => !replies.has(fingerprint))) {
         return { status: 403 } as const;
       }
-      const released = releaseLapsedChat(stored, now);
+      const released = releaseLapsedChat(current, now);
       await this.writeSession(storage, {
         ...released,
         chatAttempts: (released.chatAttempts ?? 0) + 1,
@@ -915,6 +924,7 @@ export class AuditSessionAuthority implements DurableObject {
             reservationIdentifier: inFlight.reservationIdentifier,
             answeredAt: now,
             outcomeExpiresAt: now + auditSessionTtlSeconds(this.env) * 1000,
+            replyFingerprint: input.replyFingerprint ?? null,
           },
         ].slice(-GRADER_CHAT_MESSAGE_CEILING),
         chatSettlements: [
@@ -1015,24 +1025,28 @@ export class AuditSessionAuthority implements DurableObject {
     }
   }
 
-  private async deleteExpiredChatOutcomes(): Promise<void> {
+  private async deleteExpiredChatRecords(): Promise<void> {
     await this.state.storage.transaction(async (storage) => {
       const session = await readSession(storage);
-      const now = Date.now();
-      const expired = (session?.chatAnswered ?? []).filter(
-        (message) => message.outcomeExpiresAt !== undefined && message.outcomeExpiresAt <= now,
-      );
-      if (!session || expired.length === 0) return;
-      for (const message of expired) await storage.delete(chatOutcomeKey(message.messageId));
-      await this.writeSession(storage, {
-        ...session,
-        chatAnswered: (session.chatAnswered ?? []).map((message) => {
-          if (!expired.includes(message)) return message;
-          const { outcomeExpiresAt: _deleted, ...kept } = message;
-          return kept;
-        }),
-      } satisfies SessionRecord);
+      if (session) await this.pruneExpiredChat(storage, session, Date.now());
     });
+  }
+
+  private async pruneExpiredChat(
+    storage: DurableObjectStorage | DurableObjectTransaction,
+    session: SessionRecord,
+    now: number,
+  ): Promise<SessionRecord> {
+    const kept = withoutExpiredChat(session, now);
+    if (kept === session) return session;
+    const keptMessages = new Set((kept.chatAnswered ?? []).map((message) => message.messageId));
+    for (const message of session.chatAnswered ?? []) {
+      if (!keptMessages.has(message.messageId)) {
+        await storage.delete(chatOutcomeKey(message.messageId));
+      }
+    }
+    await this.writeSession(storage, kept);
+    return kept;
   }
 
   private async reserveGraderChatQuota(input: unknown): Promise<Response> {
@@ -1260,11 +1274,36 @@ function sessionAlarmCandidates(session: SessionRecord): number[] {
   if (session.chatInFlight) {
     candidates.push(Math.max(now, leaseEnd(session.chatInFlight.admittedAt)));
   }
-  const outcomeExpiries = (session.chatAnswered ?? []).flatMap((message) =>
-    message.outcomeExpiresAt === undefined ? [] : [message.outcomeExpiresAt],
-  );
-  if (outcomeExpiries.length > 0) candidates.push(Math.max(now, Math.min(...outcomeExpiries)));
+  const chatExpiries = (session.chatAnswered ?? []).map(chatAnsweredExpiry);
+  if (chatExpiries.length > 0) candidates.push(Math.max(now, Math.min(...chatExpiries)));
+  if (withoutExpiredChat(session, now) !== session) candidates.push(now);
   return candidates;
+}
+
+function chatAnsweredExpiry(message: ChatAnsweredMessage): number {
+  return message.outcomeExpiresAt ?? message.answeredAt;
+}
+
+function withoutExpiredChat(session: SessionRecord, now: number): SessionRecord {
+  const answered = session.chatAnswered ?? [];
+  const replies = session.chatReplies ?? [];
+  const live = answered.filter((message) => chatAnsweredExpiry(message) > now);
+  const named = namedReplies(answered);
+  const liveNamed = namedReplies(live);
+  const unnamedLive = live.some((message) => message.replyFingerprint === undefined);
+  const liveReplies = replies.filter(
+    (fingerprint) => liveNamed.has(fingerprint) || (!named.has(fingerprint) && unnamedLive),
+  );
+  if (live.length === answered.length && liveReplies.length === replies.length) return session;
+  return { ...session, chatAnswered: live, chatReplies: liveReplies };
+}
+
+function namedReplies(messages: readonly ChatAnsweredMessage[]): Set<string> {
+  return new Set(
+    messages.flatMap((message) =>
+      typeof message.replyFingerprint === 'string' ? [message.replyFingerprint] : [],
+    ),
+  );
 }
 
 function releaseExpiredSession(session: SessionRecord, now: number): SessionRecord {

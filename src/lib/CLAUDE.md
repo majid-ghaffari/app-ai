@@ -159,17 +159,23 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   analysis completed. The chat state belongs to the audit, like the completion ledger: neither a
   retry, an expiry, nor a superseding exchange resets it, so no reopened link restores a spent
   message. Every assistant turn must match a stored transcript fingerprint of a reply this audit
-  was given.
+  was given in the last `AUDIT_SESSION_TTL_SECONDS`.
 - A chat message is idempotent by the caller's `messageId`, bound to the audit and to a fingerprint
   of the request's whole transcript. `chatAnswered` records each answered message identifier with
-  its transcript fingerprint and reservation, and its outcome — the `/messages` envelope, booklet
-  version and withheld flag — is stored under `chat-outcome:<messageId>` in the same transaction that
-  counts it, kept for `AUDIT_SESSION_TTL_SECONDS` (30 days, the session's own lifetime) and deleted
-  by the alarm. A replay with the same transcript returns that outcome with no reservation, inference
-  or charge; the same identifier with another transcript, or one whose outcome is gone, answers 400
+  its transcript fingerprint, its reply's fingerprint (`null` when withheld) and reservation, and its
+  outcome — the `/messages` envelope, booklet version and withheld flag — is stored under
+  `chat-outcome:<messageId>` in the same transaction that counts it. The entry, its outcome and its
+  reply's fingerprint in `chatReplies` live `AUDIT_SESSION_TTL_SECONDS` (30 days, the session's own
+  lifetime) from the answer and are deleted together (`withoutExpiredChat`) by the alarm, or first by
+  the next chat admission inside its own transaction, so a late alarm changes no answer and an
+  identifier reused after the window never shares an outcome key with the entry it replaced. An
+  outcome key is deleted only when no live entry names its identifier. A reply
+  fingerprint an earlier worker stored names no entry; it is deleted with the last live entry that
+  worker wrote. A replay with the same transcript returns that outcome with no reservation,
+  inference or charge; the same identifier with another transcript answers 400
   `grader_chat_message_reused`; a replay while the original is in flight answers 409
-  `grader_chat_busy`. A model failure answers
-  nothing, so its retry is admitted afresh.
+  `grader_chat_busy`. After the 30 days the identifier is unknown and is admitted as a new message.
+  A model failure answers nothing, so its retry is admitted afresh.
 - Every model call is an attempt, apart from the answered allowance the visitor sees. The audit's
   `chatAttempts` and the visitor's daily counter count each admitted message, answered or not, and
   refuse past `GRADER_CHAT_ATTEMPTS_PER_ANSWER` (`audit-plan.ts`) times the audit's and the
@@ -190,8 +196,8 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   once, and a commit for a reservation no longer in flight answers 410, which the handler returns as
   504 `InferenceTimeoutException`, so each reservation is either committed or released, never both.
 - `AUDIT_SESSION_TTL_SECONDS` is the one bound on a session's life: `audit-auth.ts` signs it into the
-  bearer's `expiresAt` claim, the authority stores and alarms on that expiry, and chat outcomes are
-  kept for it. Shorter lifetimes beside it — a file reference's 15 days, a continuation's 24 hours,
+  bearer's `expiresAt` claim, the authority stores and alarms on that expiry, and chat outcomes and
+  the fingerprints of the messages they answer are kept for it. Shorter lifetimes beside it — a file reference's 15 days, a continuation's 24 hours,
   the chat's UTC-day counters — are owned elsewhere and no audit session depends on them outliving it.
 - The authority keeps the current run's `runTimes`, named by session and run number because a worker
   without them carries the member onto its next run. `runRevoked` compares the completion, or the

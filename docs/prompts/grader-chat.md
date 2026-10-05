@@ -187,7 +187,8 @@ reason, stop reason, tokens, remaining messages, booklet version, elapsed time â
 inference trace. The validated `{ role, content }` turns and the returned reply are the shape a
 transcript store would receive. Visitor text is never stored; a delivered reply is stored only as
 its message's outcome, so a retried request can be answered with it, and is deleted with that
-outcome after `AUDIT_SESSION_TTL_SECONDS`.
+outcome after `AUDIT_SESSION_TTL_SECONDS`, together with the message's identifier and the
+fingerprints of its transcript and reply.
 
 ## Verification
 

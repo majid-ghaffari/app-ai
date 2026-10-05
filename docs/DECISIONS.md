@@ -1194,6 +1194,19 @@ counts it, so a retry after a lost response is answered from that outcome with n
 charge, a retry while the original runs is refused as busy, and the identifier cannot be reused for
 another conversation.
 
+None of it is kept longer than a session needs it. The outcome, the identifier, its transcript
+fingerprint and the reply's fingerprint live `AUDIT_SESSION_TTL_SECONDS` from the answer and are
+deleted together by the audit's alarm, while the audit keeps only its counts. A session is shorter
+than that from any answer it was given, so inside its own session a retry is always replayed and
+every reply it was given still verifies as history; only a conversation carried into a reissued link
+loses the replies older than 30 days, which then no longer verify. After the window the identifier is
+unknown, so a request carrying it is a new message under the same allowance. Admission deletes
+expired entries and their outcomes in its own transaction before it reads the record, and an outcome
+key is deleted only while no live entry names its identifier, so how late the alarm runs never
+changes an answer and never takes the outcome of a message that reused an identifier.
+Fingerprints an earlier worker stored name no message; each is deleted with the last live entry that
+worker wrote, so it too is gone within 30 days.
+
 An answered-message allowance alone bounds nothing a caller can abandon: a call aborted after the
 provider began answers nothing and would be released. So every admitted message is also an attempt,
 counted by the audit and by the visitor's day and held to twice their answered allowances; a
@@ -1278,7 +1291,7 @@ audit's completion ledger and chat allowance for as long as the website reuses i
 so that reset is the website's to make by issuing a new one. `AUDIT_SESSION_TTL_SECONDS` is
 therefore `2592000`, and it stays the one value that bounds a session in app-ai — the bearer's
 `expiresAt` claim, the session record's expiry and its alarm, `graderChat.sessionExpiresAt`, and how
-long an answered chat message's stored outcome is kept for replay. A reissued session still
+long an answered chat message's stored outcome and fingerprints are kept for replay. A reissued session still
 supersedes the old one at once, so the old bearer answers `audit_session_expired` from then on.
 
 Time is not what holds spending. Every cap is per run or per day — the run ceiling, retries per

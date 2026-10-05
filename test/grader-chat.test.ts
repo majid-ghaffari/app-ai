@@ -2232,36 +2232,142 @@ describe('a message identifier makes a retried request idempotent', () => {
     expect(await counts(env, session.auditIdentifier)).toEqual({ audit: 1, visitor: 1, daily: 1 });
   });
 
-  it('replays across a reopened link while the outcome is kept, then refuses the identifier', async () => {
+  it('replays and verifies history across a reopened link for 30 days, then forgets the message, its fingerprints and its outcome', async () => {
     const env = durableEnv();
     const model = upstream();
     const first = await completedRun(env);
     const messageId = crypto.randomUUID();
+    const question = 'What would LimeSpot add?';
     const answered = (await (
-      await chat(env, first.accessToken, ask('What would LimeSpot add?'), { messageId })
+      await chat(env, first.accessToken, ask(question), { messageId })
     ).json()) as ChatBody;
+    const reply = answered.content[0]?.text ?? '';
+    const [entry] = (await sessionRecord(env, first.auditIdentifier)).chatAnswered as Array<{
+      transcriptFingerprint: string;
+      replyFingerprint: string;
+    }>;
+    if (!entry) throw new Error('The answered message was not recorded');
+    expect(typeof entry.replyFingerprint).toBe('string');
 
     const kept = Number(ENV.AUDIT_SESSION_TTL_SECONDS) * 1000;
     vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
     vi.setSystemTime(Date.now() + kept - 3_600_000);
-    const reopened = await openSession(env, '2', first.auditIdentifier);
+    await deliverStatusEvents(env);
+    const withHistory = await chat(env, first.accessToken, [
+      ...ask(question),
+      { role: 'assistant', content: reply },
+      { role: 'user', content: 'Does it work on my platform?' },
+    ]);
+    expect(withHistory.status).toBe(200);
+    expect(model.chatBodies).toHaveLength(2);
+    const reopened = await completedRun(env, first.auditIdentifier);
     const replay = (await (
-      await chat(env, reopened.accessToken, ask('What would LimeSpot add?'), { messageId })
+      await chat(env, reopened.accessToken, ask(question), { messageId })
     ).json()) as ChatBody;
     expect(replay.content).toEqual(answered.content);
     expect(replay.id).toBe(answered.id);
+    expect(model.chatBodies).toHaveLength(2);
 
     vi.setSystemTime(Date.now() + 2 * 3_600_000);
     await deliverStatusEvents(env);
     expect(await storageFor(env, first.auditIdentifier).get(`chat-outcome:${messageId}`)).toBe(
       undefined,
     );
+    const record = await sessionRecord(env, first.auditIdentifier);
+    expect(record.chatAnswered).toHaveLength(1);
+    expect(record.chatReplies).toHaveLength(1);
+    expect(JSON.stringify(record)).not.toContain(entry.transcriptFingerprint);
+    expect(JSON.stringify(record)).not.toContain(entry.replyFingerprint);
+    expect(JSON.stringify(record)).not.toContain(messageId);
+    expect(record.chatMessages).toBe(2);
     await expectRefusal(
-      await chat(env, reopened.accessToken, ask('What would LimeSpot add?'), { messageId }),
-      400,
-      'grader_chat_message_reused',
+      await chat(env, reopened.accessToken, [
+        ...ask(question),
+        { role: 'assistant', content: reply },
+        { role: 'user', content: 'And the price?' },
+      ]),
+      403,
+      'grader_chat_history_unverified',
     );
-    expect(model.chatBodies).toHaveLength(1);
+    const reused = await chat(env, reopened.accessToken, ask(question), { messageId });
+    expect(reused.status).toBe(200);
+    expect(model.chatBodies).toHaveLength(3);
+  }, 30_000);
+
+  it('keeps the new outcome of an identifier reused before a delayed alarm, and replays it with no second inference or charge', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const first = await completedRun(env);
+    const messageId = crypto.randomUUID();
+    const question = 'What would LimeSpot add?';
+    expect((await chat(env, first.accessToken, ask(question), { messageId })).status).toBe(200);
+
+    vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + Number(ENV.AUDIT_SESSION_TTL_SECONDS) * 1000 + 3_600_000);
+    const reopened = await completedRun(env, first.auditIdentifier);
+    model.reply = 'A newer answer for the reused identifier.';
+    const reused = (await (
+      await chat(env, reopened.accessToken, ask(question), { messageId })
+    ).json()) as ChatBody;
+    expect(reused.content).toEqual([
+      { type: 'text', text: 'A newer answer for the reused identifier.' },
+    ]);
+    expect(model.chatBodies).toHaveLength(2);
+
+    await deliverStatusEvents(env);
+    expect(
+      await storageFor(env, first.auditIdentifier).get(`chat-outcome:${messageId}`),
+    ).toBeDefined();
+    const charged = await sessionRecord(env, first.auditIdentifier);
+    const replay = await chat(env, reopened.accessToken, ask(question), { messageId });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(reused);
+    expect(model.chatBodies).toHaveLength(2);
+    const replayed = await sessionRecord(env, first.auditIdentifier);
+    expect(replayed.chatMessages).toBe(2);
+    expect(replayed.chatAttempts).toBe(charged.chatAttempts);
+  }, 30_000);
+
+  it('deletes the chat fingerprints an earlier worker stored with no reply named, within the life of its entries', async () => {
+    const env = durableEnv();
+    upstream();
+    const session = await completedRun(env);
+    const answered = await chat(env, session.accessToken, ask('What would LimeSpot add?'));
+    expect(answered.status).toBe(200);
+    const storage = storageFor(env, session.auditIdentifier);
+    const record = await sessionRecord(env, session.auditIdentifier);
+    const [entry] = record.chatAnswered as Array<Record<string, unknown>>;
+    if (!entry) throw new Error('The answered message was not recorded');
+    const { replyFingerprint: legacyReply, ...unnamed } = entry;
+    const answeredAt = Date.now();
+    await storage.put('session', {
+      ...record,
+      chatAnswered: [
+        {
+          messageId: 'message-whose-outcome-an-earlier-worker-deleted',
+          transcriptFingerprint: 'transcript-fingerprint-kept-past-its-outcome',
+          reservationIdentifier: 'reservation-long-settled',
+          answeredAt: answeredAt - 40 * 24 * 3_600_000,
+        },
+        unnamed,
+      ],
+      chatReplies: ['reply-fingerprint-an-earlier-worker-stored', legacyReply],
+    });
+
+    vi.useFakeTimers({ now: answeredAt, toFake: ['Date'] });
+    await deliverStatusEvents(env);
+    let current = await sessionRecord(env, session.auditIdentifier);
+    expect(current.chatAnswered).toEqual([unnamed]);
+    expect(current.chatReplies).toEqual([
+      'reply-fingerprint-an-earlier-worker-stored',
+      legacyReply,
+    ]);
+
+    vi.setSystemTime(Number(unnamed.outcomeExpiresAt) + 1000);
+    await deliverStatusEvents(env);
+    current = await sessionRecord(env, session.auditIdentifier);
+    expect(current.chatAnswered).toEqual([]);
+    expect(current.chatReplies).toEqual([]);
   }, 30_000);
 });
 

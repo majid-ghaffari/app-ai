@@ -426,7 +426,7 @@ worker that has not learned the version refuses the run at its exchange rather t
   with it, so a visitor who keeps the session can return days later and go on chatting while the
   audit's message allowance lasts. That one value sets the bearer's `expiresAt` claim, the session
   record's expiry and alarm, `graderChat.sessionExpiresAt`, and how long a chat message's stored
-  outcome is kept after it was answered; nothing else in app-ai bounds a session. Spending is held
+  outcome and fingerprints are kept after it was answered; nothing else in app-ai bounds a session. Spending is held
   per run and per day, not by time: the session lifetime changes no allowance, attempt cap or daily
   limit. A visitor who lost the session — a closed tab or browser — reopens the Grader from a fresh
   link, whose activation supersedes the old session at once (see "Exchange and session contract").
@@ -550,11 +550,15 @@ fingerprint of that transcript and stores its outcome: the `/messages` envelope,
 and whether the reply was withheld. A later request with the same identifier and the same transcript
 is a replay: it is answered from that stored outcome before any quota is held, with no inference and
 no charge, and its `remainingInAudit` is the audit's allowance as it stands now. A replay is valid
-from any live session of the audit, a reopened link included. The outcome is kept for
-`AUDIT_SESSION_TTL_SECONDS` after the message was answered and then deleted by the audit's alarm.
+from any live session of the audit, a reopened link included. The outcome, the identifier, its
+transcript fingerprint and the reply's fingerprint are kept for `AUDIT_SESSION_TTL_SECONDS` after
+the message was answered and then deleted together by the audit's alarm, or by the next chat
+admission when it comes first; the audit keeps only its counts. From then on the identifier is unknown, so a request carrying it is admitted as a new
+message under the same allowance and history check, and an assistant turn carrying that reply is no
+longer one this audit was given.
 
-- The same identifier with a different transcript, or an identifier whose outcome has been
-  deleted, answers 400 `ArgumentException` / `grader_chat_message_reused`.
+- The same identifier with a different transcript answers 400 `ArgumentException` /
+  `grader_chat_message_reused`.
 - A replay while the original is still being answered answers 409 `GraderChatBusyException` /
   `grader_chat_busy`; the caller retries it once the original has finished.
 - A message the model failed, or that was refused, answered nothing, so a retry with the same
@@ -582,8 +586,9 @@ Like every audit request, a chat message is first refused when its extension bui
      `audit_session_expired`;
    - the session's current run is older than `GRADER_RUNS_VALID_FROM` → 410
      `GraderRunRevokedException` / `grader_run_revoked`, a replay of an answered message included;
-   - the identifier was answered: the same transcript is replayed from its stored outcome, and
-     anything else answers 400 `ArgumentException` / `grader_chat_message_reused`;
+   - the identifier was answered in the last `AUDIT_SESSION_TTL_SECONDS`: the same transcript is
+     replayed from its stored outcome, and anything else answers 400 `ArgumentException` /
+     `grader_chat_message_reused`;
    - another message of the audit is in flight → 409 `GraderChatBusyException` /
      `grader_chat_busy`, or 400 `grader_chat_message_reused` when it carries the same identifier
      with a different transcript;
@@ -595,8 +600,8 @@ Like every audit request, a chat message is first refused when its extension bui
      `GraderChatQuotaException` / `grader_chat_audit_limit`;
    - the audit has started twice that many messages, answered or not → 429
      `GraderChatQuotaException` / `grader_chat_attempt_limit`;
-   - an assistant turn is not a reply this audit was given → 403 `AuditScopeException` /
-     `grader_chat_history_unverified`.
+   - an assistant turn is not a reply this audit was given in the last
+     `AUDIT_SESSION_TTL_SECONDS` → 403 `AuditScopeException` / `grader_chat_history_unverified`.
 5. The visitor's daily allowance, `GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY` → 429
    `GraderChatQuotaException` / `grader_chat_visitor_limit`; then the deployment's,
    `GRADER_CHAT_MESSAGES_PER_DAY` → 429 `GraderChatQuotaException` / `grader_chat_daily_limit`. The

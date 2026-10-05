@@ -78,6 +78,15 @@ the same bytes on the same route deletes it. If those bytes never come again, th
 stay until an operator deletes them. If writing that key to `FILES_KV` fails twice as well, the id is
 lost, and an error-level log records that it happened.
 
+### A Grader chat record no alarm wakes keeps its fingerprints until the audit is used again
+
+Every answered chat message's identifier, transcript fingerprint and reply fingerprint are deleted
+by the audit's Durable Object alarm 30 days after the answer. A record an earlier worker left with no
+alarm still scheduled — a chat answered while sessions lasted a day, whose outcome and session alarms
+have both fired — is not woken by a deploy, and nothing in app-ai enumerates audit objects, so its
+fingerprints stay until that audit next takes an exchange, an upload, a proposal or an admitted
+chat message, whose alarm then deletes them at once.
+
 ### Rotating `TOKEN_ENCRYPTION_SECRET` is a hard cutover
 
 Neither sealed envelope carries a key identifier: a file reference

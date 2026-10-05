@@ -37,8 +37,8 @@ or changes the inference response.
   exactly the reply text its fingerprint was taken over, or none when withheld, and it is returned
   only after the audit's ledger committed the message with that response as its stored outcome; the
   daily counters settle after it, from this request or the audit's alarm. A request whose
-  `messageId` the audit already answered, with the same transcript, is answered from the stored
-  outcome before any quota is held or model called. It captures the UTC day once per admission for
+  `messageId` the audit answered in the last 30 days, with the same transcript, is answered from the
+  stored outcome before any quota is held or model called. It captures the UTC day once per admission for
   the visitor's counter and both holds; when a counter refuses that day because midnight passed, it
   releases the message and admits it once more on the new day. The handler never delivers a volume
   alert: the deployment counter's alarm does.
