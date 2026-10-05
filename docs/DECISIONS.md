@@ -58,21 +58,64 @@ This keeps prompt wording out of JS (pure text, byte-for-byte) while staying
 filesystem-free. A prompt needing runtime `${}` interpolation can't be a static
 `.md` — that dynamic piece stays in JS.
 
-### 5. KV dedup is a graceful no-op, with expiry-bounded TTL and an existence check
+### 5. Uploaded files expire, and KV dedup reuses one only while a full reference fits
 
 The Files API does not dedup by content — re-uploading identical bytes mints a
 fresh `file_id`. `lib/file-dedup.ts` hashes the bytes (SHA-256) and, when
 `env.FILES_KV` is bound, reuses the stored `file_id` only on the same tenant +
-provider account + file-policy + compatible-group + hash route. Four
+provider account + file-policy + compatible-group + hash route. Six
 decisions:
 
+- **Every Anthropic upload expires in 30 days.** The `anthropic-provider-files`
+  policy requests a 30-day lifetime (`requestedLifetimeSeconds` in
+  `inference/model-catalog.ts`), the adapter sends it as `expires_in_seconds` on
+  every upload, and Anthropic deletes the file at its `expires_at`, so nothing
+  app-ai uploads there outlives 30 days without a timer, a sweep, or an operator.
+  Files API calls send no beta flag, because `files-api-2025-04-14` hides
+  `expires_at`; the adapter reads the expiry Anthropic answers into the reference
+  and the dedup record, and refuses an upload answered without a usable one
+  rather than keep a file that never expires. Anthropic offers no upload purpose
+  or metadata to tag a file with, and its files are workspace-wide, so the expiry
+  is the one retention control that names only app-ai's own uploads.
+- **Reuse only while a full reference fits.** A reference lasts at most 15 days
+  (`MAX_REFERENCE_TTL_SECONDS`), and Studio's screen cache keeps one for 14. Under
+  a policy that requests a lifetime, a dedup hit is reused only while its file has
+  at least 15 days left; a file with less, an expired one, or one with no expiry
+  is uploaded afresh and its record replaced. The old file is left to expire,
+  because references minted from it may still be read. Every reference therefore
+  runs its full 15 days and ends before its file, and no file is handed out after
+  its first 15 days. A Grader run reads its tiles only inside the run — its batch,
+  per-page fallback, repairs and a resumed "Try again" reuse references minted in
+  that run — the Grader chat and a replayed `messageId` read no file, and a Studio
+  screen cache yields after 14 days, so none of them needs a file past the
+  reference it holds. A policy that leaves retention to its provider (the dormant
+  OpenAI, Moonshot, Kimi and Gemini routes) keeps reusing until expiry, because
+  app-ai cannot promise those files a 15-day remainder.
+- **An upload without a usable expiry is never kept.** An upload whose answered
+  `expires_at` is missing, unreadable, or shorter than a full reference lifetime
+  is deleted and refused, so no reference outlives its file and nothing stays
+  untracked. A delete that fails twice keeps the id under its own key,
+  `discard:<dedup key>:<file id>` in `FILES_KV` — a record only app-ai writes —
+  and the next upload of the same bytes on the same route lists those keys,
+  deletes each file, and then its key. Each key is written alone, never read and
+  rewritten, so concurrent failures and a failed read cannot lose an id. It has no
+  expiry: it is the only proof of ownership of a file that may never expire, so a
+  TTL would forget the file while the file stays.
+- **Only files app-ai recorded are its to delete.** Files uploaded before uploads
+  expired carry no expiry and stay until deleted. The Anthropic workspace is
+  shared by every key with access to it, and an upload carries no owner mark, so
+  a file's age proves nothing about who uploaded it; only an id `FILES_KV`
+  recorded, or a `discard:` record, is proven app-ai's. Deleting those files is a
+  one-off operator step, kept out of the repository, and safe only once no
+  reference can name one: 15 days after the deploy, since no hit reuses a file
+  with no expiry.
 - **Best-effort optimization only.** Missing or unavailable KV reads/writes fall
   back to a direct provider upload. Prompt-aware public references are sealed,
   self-contained metadata and never depend on KV visibility for resolution.
 - **Expiry-bounded record TTL.** `KV_RECORD_TTL_SECONDS` caps retention at 30
-  days; when the provider supplies an earlier expiry, both dedup and opaque
-  metadata expire first. A transient metadata failure propagates instead of
-  fabricating a non-expiring object.
+  days, and the provider's expiry shortens it, so a dedup record and the opaque
+  metadata never outlive their file. A transient metadata failure propagates
+  instead of fabricating a non-expiring object.
 - **Route-scoped keys.** Identical bytes uploaded for another tenant, provider
   account, file policy, or compatible prompt group have a separate mapping, so
   multi-route upload cannot overwrite or reuse an incompatible opaque vendor
@@ -129,8 +172,7 @@ ID.'`, Brain's exact analog).
 - **`AnthropicApiException`, upstream status kept** — a non-ok Anthropic
   response (`/messages`, `/files` upload/delete, the `/chat` agent loop).
   `Message` is Anthropic's `error.message`; the raw upstream body rides in
-  `MessageDetail`. A 500 upload failure also appends the Files-API-beta-access
-  hint to `Message`.
+  `MessageDetail`.
 - **500 `Exception`** — everything else (the router's catch-all via
   `errorResponseFrom`).
 

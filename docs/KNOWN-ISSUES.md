@@ -62,6 +62,22 @@ mint fresh `file_id`s and the placement file-block cache entry won't be shared
 across calls (each upload is a distinct cache key). Not a failure mode — a
 degradation that the code handles silently.
 
+### Files uploaded before uploads expired stay until an operator deletes them
+
+Anthropic deletes every file app-ai uploads 30 days after the upload. A file uploaded before
+uploads carried an expiry has none and stays in the workspace until it is deleted. Only an id
+`FILES_KV` still records is proven app-ai's — a record lives at most 30 days and a later upload of
+the same bytes replaces it — so an older legacy file has no safe removal: the workspace is shared
+by every key with access to it, and nothing on a file names its uploader.
+
+### A `discard:` record waits for the same bytes to be uploaded again
+
+An upload Anthropic answered without a usable expiry is deleted at once; when that delete fails
+twice, its id waits under its own non-expiring `discard:` key in `FILES_KV` until the next upload of
+the same bytes on the same route deletes it. If those bytes never come again, the key and the file
+stay until an operator deletes them. If writing that key to `FILES_KV` fails twice as well, the id is
+lost, and an error-level log records that it happened.
+
 ### Rotating `TOKEN_ENCRYPTION_SECRET` is a hard cutover
 
 Neither sealed envelope carries a key identifier: a file reference

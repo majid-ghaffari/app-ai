@@ -49,6 +49,7 @@ const POLICY: FilePolicy = {
   inputMode: 'provider-file',
   lifecycle: 'provider-managed',
   purpose: 'image',
+  requestedLifetimeSeconds: null,
 };
 
 const SCHEMA = {

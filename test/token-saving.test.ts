@@ -34,6 +34,7 @@ import {
   sentBody,
   kvMock,
   opaqueFileEnv,
+  DISTANT_FILE_EXPIRY,
 } from './helpers';
 
 const FILE_ROUTE = {
@@ -176,7 +177,16 @@ describe('LEVER 3 — file-dedup', () => {
     // rewrite KV.
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: 'file_cached', type: 'file', mime_type: 'text/plain', size_bytes: 3 }, 200),
+      jsonOk(
+        {
+          id: 'file_cached',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 3,
+          expires_at: DISTANT_FILE_EXPIRY,
+        },
+        200,
+      ),
     );
     const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_cached', createdAt: 1 }));
     const out = await dedupUpload(
@@ -205,7 +215,16 @@ describe('LEVER 3 — file-dedup', () => {
     fetchMock
       .mockResolvedValueOnce(jsonOk({ error: { message: 'File not found' } }, 404))
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_fresh', type: 'file', mime_type: 'text/plain', size_bytes: 3 }, 200),
+        jsonOk(
+          {
+            id: 'file_fresh',
+            type: 'file',
+            mime_type: 'text/plain',
+            size_bytes: 3,
+            expires_at: DISTANT_FILE_EXPIRY,
+          },
+          200,
+        ),
       );
     const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_stale', createdAt: 1 }));
     const out = await dedupUpload(
@@ -237,7 +256,13 @@ describe('LEVER 3 — file-dedup', () => {
     const fetchMock = stubFetch()
       .mockResolvedValueOnce(new Response('null'))
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_recovered', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+        jsonOk({
+          id: 'file_recovered',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 3,
+          expires_at: DISTANT_FILE_EXPIRY,
+        }),
       );
     const { kv, env } = kvMock(JSON.stringify({ fileId: 'file_malformed', createdAt: 1 }));
     await expect(
@@ -253,7 +278,13 @@ describe('LEVER 3 — file-dedup', () => {
   it('KV miss uploads, stores hash→fileId, returns deduped:false', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: 'file_new', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      jsonOk({
+        id: 'file_new',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 3,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { kv, env } = kvMock();
 
@@ -278,7 +309,13 @@ describe('LEVER 3 — file-dedup', () => {
     // out of storage as if it carried validated route metadata.
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: 'file_fresh', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+      jsonOk({
+        id: 'file_fresh',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 3,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { kv, env } = kvMock('file_bare_record');
 
@@ -301,6 +338,7 @@ describe('LEVER 3 — file-dedup', () => {
         type: 'file',
         mime_type: 'text/plain',
         size_bytes: 3,
+        expires_at: DISTANT_FILE_EXPIRY,
       }),
     );
     const readOutage = kvMock();
@@ -324,6 +362,7 @@ describe('LEVER 3 — file-dedup', () => {
         type: 'file',
         mime_type: 'text/plain',
         size_bytes: 3,
+        expires_at: DISTANT_FILE_EXPIRY,
       }),
     );
     const writeOutage = kvMock();
@@ -346,13 +385,31 @@ describe('LEVER 3 — file-dedup', () => {
     const fetchMock = stubFetch();
     fetchMock
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_policy_a', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+        jsonOk({
+          id: 'file_policy_a',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 3,
+          expires_at: DISTANT_FILE_EXPIRY,
+        }),
       )
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_policy_b', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+        jsonOk({
+          id: 'file_policy_b',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 3,
+          expires_at: DISTANT_FILE_EXPIRY,
+        }),
       )
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_tenant_b', type: 'file', mime_type: 'text/plain', size_bytes: 3 }),
+        jsonOk({
+          id: 'file_tenant_b',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 3,
+          expires_at: DISTANT_FILE_EXPIRY,
+        }),
       );
     const { kv, env } = kvMock();
     const alternateRoute = {
@@ -445,7 +502,13 @@ describe('LEVER 3 — file-dedup', () => {
   it('no KV binding → plain upload, never touches KV, deduped:false', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: 'file_plain', type: 'file', mime_type: 'image/png', size_bytes: 4 }),
+      jsonOk({
+        id: 'file_plain',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 4,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const out = await dedupUpload(
       { content: 'data', mimeType: 'image/png', filename: 'c.png' },
@@ -464,9 +527,7 @@ describe('LEVER 3 — file-dedup', () => {
       inferenceError: {
         backend: 'anthropic',
         status: 500,
-        // The provider's message leads; the adapter appends the Files API
-        // beta-access hint to a 500 upload.
-        message: expect.stringMatching(/^boom[\s\S]*Files API[\s\S]*beta/),
+        message: 'boom',
       },
     });
   });
@@ -773,6 +834,7 @@ describe('LEVER 6 — fileIds document-block caching (placement file prefix)', (
             type: 'file',
             mime_type: mimeByFileId[match[1]] || 'text/plain',
             size_bytes: 1,
+            expires_at: DISTANT_FILE_EXPIRY,
           }),
         );
       }

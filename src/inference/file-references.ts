@@ -29,8 +29,10 @@ const PUBLIC_REFERENCE_PATTERN = /^file_ref_v1_[A-Za-z0-9_-]+$/;
  * The longest a sealed reference stays openable. Studio's client-side tile cache
  * gives up after 14 days, so it always forgets a reference before the worker
  * refuses it; a provider expiry earlier than this bounds the reference first.
+ * Dedup reuses an object under a policy with a requested lifetime only while it
+ * has this long left, so such a reference always runs its full length.
  */
-const MAX_REFERENCE_TTL_SECONDS = 15 * 24 * 60 * 60;
+export const MAX_REFERENCE_TTL_SECONDS = 15 * 24 * 60 * 60;
 /** The reference envelope's own key, and the tenant pseudonym's — one salt, two infos, two keys. */
 const REFERENCE_SEALING_PURPOSE: SealingPurpose = {
   salt: 'app-ai:file-references:v1',

@@ -16,8 +16,7 @@
  * did not create: delete reads the route and owning tenant out of the sealed
  * reference it is given, and there is no verb that enumerates a provider
  * account, because the account holds every tenant's uploads. Failures use the
- * Brain-shaped envelope; an Anthropic 500 upload keeps the Files-API-beta-access
- * hint.
+ * Brain-shaped envelope.
  */
 
 import { dedupUpload } from '../lib/file-dedup';

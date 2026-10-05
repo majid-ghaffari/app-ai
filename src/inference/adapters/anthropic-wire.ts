@@ -13,8 +13,10 @@
  *   - streamMessage                        → Messages API, streaming (returns the raw Response)
  *   - countTokens                          → free pre-flight estimate
  *
- * Beta flags live here: Files API calls send `files-api-2025-04-14`; Messages
- * API calls send `prompt-caching-2024-07-31,files-api-2025-04-14`.
+ * Beta flags live here: Messages API calls send
+ * `prompt-caching-2024-07-31,files-api-2025-04-14`. Files API calls send no
+ * beta flag, because the Files API is generally available and the beta flag
+ * hides each file's `expires_at`.
  *
  * Every client function is async, so a config failure (e.g. a missing
  * CLAUDE_API_KEY) surfaces as a rejected promise — one failure channel for
@@ -28,8 +30,10 @@ import { anthropicApiBase, claudeApiKey, type Env } from '../../config';
 import type { CanonicalToolDefinition } from '../../lib/inference-types';
 
 const ANTHROPIC_VERSION = '2023-06-01';
-const FILES_BETA = 'files-api-2025-04-14';
 const MESSAGES_BETA = 'prompt-caching-2024-07-31,files-api-2025-04-14';
+
+/** The shortest and longest `expires_in_seconds` the Files API accepts on an upload. */
+export const FILE_LIFETIME_BOUNDS_SECONDS = { minimum: 3600, maximum: 7776000 } as const;
 
 // ── Messages wire types ──────────────────────────────────────────────────────
 
@@ -240,7 +244,6 @@ function filesHeaders(env: Env): Record<string, string> {
   return {
     'x-api-key': claudeApiKey(env),
     'anthropic-version': ANTHROPIC_VERSION,
-    'anthropic-beta': FILES_BETA,
   };
 }
 
@@ -263,7 +266,10 @@ export async function fileAccountScope(env: Env): Promise<string> {
   return `anthropic:${prefix}`;
 }
 
-/** Upload a file to the Anthropic Files API (`formData` must contain `file`). */
+/**
+ * Upload a file to the Anthropic Files API. `formData` carries the `file` part
+ * and the `expires_in_seconds` field that schedules its deletion.
+ */
 export async function uploadFile(
   formData: FormData,
   env: Env,
@@ -279,9 +285,10 @@ export async function uploadFile(
 
 /**
  * Fetch a file's metadata from the Anthropic Files API (GET /v1/files/{id}).
- * Returns 200 when the file still exists, 404 when it has been deleted or is
- * otherwise gone. Used by the dedup layer to verify a cached file_id before
- * reuse so a stale id is never vended downstream.
+ * Returns 404 once the file is deleted, and 200 otherwise — including for up to
+ * 30 days after its `expires_at`, when its content is already gone. Used by the
+ * dedup layer to verify a cached file_id before reuse so a stale id is never
+ * vended downstream.
  */
 export async function getFileMetadata(
   fileId: string,

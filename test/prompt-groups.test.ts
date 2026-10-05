@@ -29,7 +29,7 @@ import type {
   PromptAwareFileUploadIntent,
   PromptAwareFileUploadResponse,
 } from '../src/lib/inference-types';
-import { CORS, ENV, kvMock, stubFetch } from './helpers';
+import { CORS, ENV, kvMock, stubFetch, DISTANT_FILE_EXPIRY } from './helpers';
 
 const promptDocs = import.meta.glob('../docs/prompts/*.md', {
   eager: true,
@@ -184,6 +184,7 @@ describe('prompt registry groups and routes', () => {
           inputMode: 'provider-file',
           lifecycle: 'provider-managed',
           purpose: null,
+          requestedLifetimeSeconds: 30 * 24 * 60 * 60,
         });
       }
       for (const requirement of group.requirements) {
@@ -258,6 +259,7 @@ describe('prompt registry groups and routes', () => {
       inputMode: 'provider-file' as const,
       lifecycle: 'provider-managed' as const,
       purpose: 'user_data',
+      requestedLifetimeSeconds: null,
     };
     expect(() =>
       validateResolvedGroupRoute('candidate', candidate, openAIFilePolicy, [
@@ -305,6 +307,7 @@ describe('prompt registry groups and routes', () => {
       inputMode: 'provider-file' as const,
       lifecycle: 'provider-managed' as const,
       purpose: 'image',
+      requestedLifetimeSeconds: null,
     };
     expect(() =>
       validateResolvedGroupRoute('candidate', candidate, moonshotFilePolicy, [
@@ -484,9 +487,18 @@ describe('prompt-aware /files contract fixture', () => {
     const fetchMock = stubFetch();
     for (const id of uploadedIds) {
       fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ id, type: 'file', mime_type: 'image/png', size_bytes: 1 }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            id,
+            type: 'file',
+            mime_type: 'image/png',
+            size_bytes: 1,
+            expires_at: DISTANT_FILE_EXPIRY,
+          }),
+          {
+            status: 200,
+          },
+        ),
       );
     }
     const { env } = kvMock();

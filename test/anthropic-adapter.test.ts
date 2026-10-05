@@ -21,6 +21,7 @@ import {
   fetchCall,
   sentBody,
   stubFetch,
+  DISTANT_FILE_EXPIRY,
 } from './helpers';
 
 function canonicalRequest(): InferenceRequest {
@@ -582,6 +583,7 @@ describe('Anthropic file adapter', () => {
             type: 'file',
             mime_type: 'text/plain',
             size_bytes: 3,
+            expires_at: DISTANT_FILE_EXPIRY,
           }),
         ),
       )
@@ -592,6 +594,7 @@ describe('Anthropic file adapter', () => {
             type: 'file',
             mime_type: 'text/plain',
             size_bytes: 3,
+            expires_at: DISTANT_FILE_EXPIRY,
           }),
         ),
       )
@@ -636,6 +639,7 @@ describe('Anthropic file adapter', () => {
             type: 'file',
             mime_type: 'text/plain',
             size_bytes: 3,
+            expires_at: DISTANT_FILE_EXPIRY,
           }),
         ),
       );
@@ -1249,7 +1253,7 @@ function fakeAdapter(
 }
 
 describe('Anthropic Files API upload failures', () => {
-  it('appends the beta-access hint to a 500 and to nothing else', async () => {
+  it('answers a failed upload with the provider status and message alone', async () => {
     const files = createInferenceFileService(ENV);
     const profile = getModelProfile('placement', ENV);
     const policy = getFilePolicy('anthropic-provider-files');
@@ -1262,7 +1266,7 @@ describe('Anthropic Files API upload failures', () => {
       inferenceError: {
         backend: 'anthropic',
         status: 500,
-        message: expect.stringMatching(/^server error[\s\S]*Files API[\s\S]*beta/),
+        message: 'server error',
       },
     });
 

@@ -55,6 +55,7 @@ import {
   headerOf,
   sentBody,
   kvMock,
+  DISTANT_FILE_EXPIRY,
 } from './helpers';
 
 function jsonOk(data: unknown, status = 200): Response {
@@ -363,7 +364,7 @@ describe('router error contract (Brain wire shape per status)', () => {
 });
 
 describe('anthropic client', () => {
-  it('uploadFile posts to /v1/files with the key + files beta header', async () => {
+  it('uploadFile posts to /v1/files with the key and no beta header', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(jsonOk({ id: 'file_1' }));
 
@@ -373,7 +374,7 @@ describe('anthropic client', () => {
     expect(url).toBe('https://api.anthropic.com/v1/files');
     expect(init.method).toBe('POST');
     expect(headerOf(init, 'x-api-key')).toBe('test-key');
-    expect(headerOf(init, 'anthropic-beta')).toBe('files-api-2025-04-14');
+    expect(headerOf(init, 'anthropic-beta')).toBeUndefined();
     expect(init.body).toBe(fd);
   });
 
@@ -859,7 +860,13 @@ describe('files handlers', () => {
   it('returns an immediately usable sealed reference without a KV binding', async () => {
     const fetchMock = stubFetch()
       .mockResolvedValueOnce(
-        jsonOk({ id: 'file_no_kv', type: 'file', mime_type: 'text/plain', size_bytes: 1 }),
+        jsonOk({
+          id: 'file_no_kv',
+          type: 'file',
+          mime_type: 'text/plain',
+          size_bytes: 1,
+          expires_at: DISTANT_FILE_EXPIRY,
+        }),
       )
       .mockResolvedValueOnce(jsonOk(anthropicMessage([{ type: 'text', text: '{}' }])));
     const fd = new FormData();
@@ -947,7 +954,13 @@ describe('files handlers', () => {
   it('upload proxies the file and returns Anthropic body on success', async () => {
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: 'file_99', type: 'file', mime_type: 'text/plain', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_99',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
 
     const fd = new FormData();
@@ -982,7 +995,16 @@ describe('files handlers', () => {
     const cachedId = 'file_dedup';
     const fetchMock = stubFetch();
     fetchMock.mockResolvedValue(
-      jsonOk({ id: cachedId, type: 'file', mime_type: 'image/jpeg', size_bytes: 16 }, 200),
+      jsonOk(
+        {
+          id: cachedId,
+          type: 'file',
+          mime_type: 'image/jpeg',
+          size_bytes: 16,
+          expires_at: DISTANT_FILE_EXPIRY,
+        },
+        200,
+      ),
     );
     const { env } = kvMock(JSON.stringify({ fileId: cachedId, createdAt: 1 }));
 
@@ -1010,7 +1032,13 @@ describe('files handlers', () => {
 
   it('collapses same-group destinations to one direct upload and one opaque reference', async () => {
     const fetchMock = stubFetch().mockResolvedValue(
-      jsonOk({ id: 'file_same_group', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_same_group',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env } = kvMock();
     const fd = new FormData();
@@ -1040,7 +1068,13 @@ describe('files handlers', () => {
 
   it('collapses a shared file route across the QC cascade to one upload and reference', async () => {
     const fetchMock = stubFetch().mockResolvedValue(
-      jsonOk({ id: 'file_cascade', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_cascade',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env } = kvMock();
     const fd = new FormData();
@@ -1066,7 +1100,13 @@ describe('files handlers', () => {
 
   it('accepts the map reference for every prompt sharing one file route', async () => {
     const uploadMock = stubFetch().mockResolvedValue(
-      jsonOk({ id: 'file_cascade_shared', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_cascade_shared',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env } = kvMock();
     const fd = new FormData();
@@ -1134,10 +1174,22 @@ describe('files handlers', () => {
     const pending = handleFileUpload(promptUploadRequest(fd), env, CORS);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     releases[0]?.(
-      jsonOk({ id: 'file_onboarding', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_onboarding',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     releases[1]?.(
-      jsonOk({ id: 'file_verify', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_verify',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const response = await pending;
     expect(response.status).toBe(200);
@@ -1169,7 +1221,15 @@ describe('files handlers', () => {
     fd.append('prompt', 'visual-verify');
     const pending = handleFileUpload(promptUploadRequest(fd), env, CORS);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    releases[0]?.(jsonOk({ id: 'file_kept', type: 'file', mime_type: 'image/png', size_bytes: 1 }));
+    releases[0]?.(
+      jsonOk({
+        id: 'file_kept',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
+    );
     releases[1]?.(jsonOk({ error: { message: 'server error' } }, 500));
     // The caller is answered with the failure and no reference at all, so the
     // object the surviving route created is unreachable — the handler deletes it
@@ -1201,7 +1261,13 @@ describe('files handlers', () => {
     const pending = handleFileUpload(promptUploadRequest(fd), env, CORS);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     releases[0]?.(
-      jsonOk({ id: 'file_unreleasable', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_unreleasable',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     releases[1]?.(jsonOk({ error: { message: 'server error' } }, 500));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
@@ -1232,7 +1298,13 @@ describe('files handlers', () => {
     // Both routes hit the dedup cache, so both calls are metadata existence
     // checks; one resolves and the other fails the whole upload.
     releases[0]?.(
-      jsonOk({ id: 'file_shared', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_shared',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     releases[1]?.(jsonOk({ error: { message: 'server error' } }, 500));
     const response = await pending;
@@ -1247,7 +1319,13 @@ describe('files handlers', () => {
   it('stores dedup metadata only and seals route metadata without uploaded bytes', async () => {
     const sentinel = 'PRODUCTION_BYTE_SENTINEL_5519';
     stubFetch().mockResolvedValue(
-      jsonOk({ id: 'file_metadata_only', type: 'file', mime_type: 'text/plain', size_bytes: 29 }),
+      jsonOk({
+        id: 'file_metadata_only',
+        type: 'file',
+        mime_type: 'text/plain',
+        size_bytes: 29,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env, kv } = kvMock();
     const fd = new FormData();
@@ -1267,7 +1345,13 @@ describe('files handlers', () => {
 
   it('reuses an opaque reference inside its group and rejects cross-group use before provider I/O', async () => {
     const fetchMock = stubFetch().mockResolvedValueOnce(
-      jsonOk({ id: 'file_group_bound', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_group_bound',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env } = kvMock();
     const fd = new FormData();
@@ -1532,7 +1616,13 @@ describe('files handlers', () => {
 
   it('rejects an opaque reference from another tenant before provider I/O', async () => {
     const fetchMock = stubFetch().mockResolvedValueOnce(
-      jsonOk({ id: 'file_tenant_bound', type: 'file', mime_type: 'image/png', size_bytes: 1 }),
+      jsonOk({
+        id: 'file_tenant_bound',
+        type: 'file',
+        mime_type: 'image/png',
+        size_bytes: 1,
+        expires_at: DISTANT_FILE_EXPIRY,
+      }),
     );
     const { env } = kvMock();
     const fd = new FormData();
@@ -1678,7 +1768,7 @@ describe('files handlers', () => {
     ).rejects.toThrow('A registry-attachment reference is never minted as a public reference');
   });
 
-  it('upload augments the message with the beta-access hint on a 500', async () => {
+  it('upload answers a provider 500 with the provider message and no added hint', async () => {
     stubFetch().mockResolvedValue(jsonOk({ error: { message: 'server error' } }, 500));
 
     const fd = new FormData();
@@ -1690,7 +1780,7 @@ describe('files handlers', () => {
     const res = await handleFileUpload(req, env, CORS);
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.Message).toMatch(/beta/i);
+    expect(body.Message).toBe('server error');
     expect(body.ExceptionType).toBe('AnthropicApiException');
   });
 
@@ -1997,6 +2087,7 @@ describe('handleMessages', () => {
           type: 'file',
           mime_type: 'text/markdown',
           size_bytes: 1,
+          expires_at: DISTANT_FILE_EXPIRY,
         }),
       )
       .mockResolvedValueOnce(jsonOk({ input_tokens: 10 }))

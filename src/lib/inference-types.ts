@@ -74,6 +74,12 @@ export interface FilePolicy {
    */
   readonly lifecycle: 'provider-managed' | 'worker-managed' | 'request-scoped';
   readonly purpose: string | null;
+  /**
+   * The lifetime app-ai asks the provider to give every object uploaded under
+   * this policy, after which the provider deletes it; `null` leaves retention
+   * to the provider.
+   */
+  readonly requestedLifetimeSeconds: number | null;
 }
 
 /** Public file reference whose identifier does not reveal provider routing. */

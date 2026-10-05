@@ -31,7 +31,20 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   provider owns a complete file lifecycle.
 - `FilePolicy.inputMode` distinguishes provider objects, encrypted worker-managed
   objects, and request-scoped inline bytes. Its lifecycle and compatible API
-  families are validated before upload or inference.
+  families are validated before upload or inference. `requestedLifetimeSeconds`
+  names the lifetime app-ai asks the provider to give each upload, or `null`
+  when the provider's own retention applies.
+- `file-dedup.ts` keeps a record no longer than its file: its TTL is the file's
+  remaining life, capped at `KV_RECORD_TTL_SECONDS` (30 days). A hit backs a new
+  reference only while its file can outlive it: never once expired, and under a
+  policy with a requested lifetime only while the file has at least a full
+  reference lifetime (15 days) left and an expiry at all. Otherwise the bytes are
+  uploaded afresh and the record replaced, and the old object is left to expire,
+  because references minted from it may still be read. A fresh upload that could
+  not back a reference by the same rule is deleted and refused; a delete that
+  fails twice keeps the id under its own key, `DISCARD_KEY_PREFIX` + the dedup key + the
+  file id, written alone and with no expiry, so concurrent failures and a failed read never lose
+  one; the next upload on that dedup key lists those keys, deletes each file, then its key.
 - Client-correctable canonical validation uses `WorkerError` with the Brain
   `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
   provider-protocol failures after a route reaches its adapter.

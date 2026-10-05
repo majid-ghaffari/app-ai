@@ -32,6 +32,7 @@ import {
   fetchedUrls,
   headerOf,
   sentBody,
+  DISTANT_FILE_EXPIRY,
 } from './helpers';
 
 beforeEach(() => resetDefaultsCacheForTests());
@@ -452,6 +453,7 @@ describe('injection — the propose /messages path adds a second cacheable syste
             type: 'file',
             mime_type: 'text/markdown',
             size_bytes: 1,
+            expires_at: DISTANT_FILE_EXPIRY,
           }),
         );
       }

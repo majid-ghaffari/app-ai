@@ -155,7 +155,7 @@ function assertDevAiChannel(env) {
 // Keyed by generated file_id. Remembers mime (image vs document) so the /messages
 // translation can rehydrate the file into the query() user turn as the right block.
 
-/** @type {Map<string, { id: string, mime_type: string, filename: string, data: Buffer, created_at: string }>} */
+/** @type {Map<string, { id: string, mime_type: string, filename: string, data: Buffer, created_at: string, expires_at?: string | null }>} */
 const files = new Map();
 
 function isImageMime(mime) {
@@ -1223,25 +1223,52 @@ async function handleFileUpload(req, res) {
   }
 
   const id = `file_dev_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  const createdAt = new Date();
+  const lifetime = extractFormField(raw, boundary, 'expires_in_seconds');
   const record = {
     id,
     mime_type: part.mimeType || 'application/octet-stream',
     filename: part.filename || 'upload.bin',
     data: part.data,
-    created_at: new Date().toISOString(),
+    created_at: createdAt.toISOString(),
+    expires_at:
+      lifetime === null
+        ? null
+        : new Date(createdAt.getTime() + Number(lifetime) * 1000).toISOString(),
   };
   files.set(id, record);
   debug(`stored file ${id} (${record.mime_type}, ${record.data.length} bytes)`);
 
-  sendJson(res, 200, {
-    id,
+  sendJson(res, 200, fileObject(record));
+}
+
+function fileObject(record) {
+  return {
+    id: record.id,
     type: 'file',
     filename: record.filename,
     mime_type: record.mime_type,
     size_bytes: record.data.length,
     created_at: record.created_at,
     downloadable: false,
-  });
+    expires_at: record.expires_at ?? null,
+  };
+}
+
+function extractFormField(buffer, boundary, name) {
+  for (const part of splitBuffer(buffer, Buffer.from(`--${boundary}`))) {
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const header = part.slice(0, headerEnd).toString('utf8');
+    if (/filename="/i.test(header)) continue;
+    const nameMatch = /content-disposition:[^\r\n]*;\s*name="([^"]*)"/i.exec(header);
+    if (nameMatch?.[1] !== name) continue;
+    return part
+      .slice(headerEnd + 4)
+      .toString('utf8')
+      .replace(/\r\n$/, '');
+  }
+  return null;
 }
 
 /**
@@ -1294,15 +1321,7 @@ function handleFileMetadata(id, res) {
   if (!record) {
     return sendAnthropicError(res, 404, 'not_found_error', `File ${id} not found`);
   }
-  sendJson(res, 200, {
-    id: record.id,
-    type: 'file',
-    filename: record.filename,
-    mime_type: record.mime_type,
-    size_bytes: record.data.length,
-    created_at: record.created_at,
-    downloadable: false,
-  });
+  sendJson(res, 200, fileObject(record));
 }
 
 /** DELETE /v1/files/{id}. */
@@ -1462,6 +1481,7 @@ export {
   stripCodeFence,
   usageFrom,
   extractFilePart,
+  extractFormField,
   assertDevAiChannel,
   files as _filesStore,
 };

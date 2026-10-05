@@ -56,6 +56,7 @@ const POLICY: FilePolicy = {
   inputMode: 'provider-file',
   lifecycle: 'provider-managed',
   purpose: null,
+  requestedLifetimeSeconds: null,
 };
 
 const SCHEMA = {

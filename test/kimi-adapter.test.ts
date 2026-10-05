@@ -55,6 +55,7 @@ const POLICY: FilePolicy = {
   inputMode: 'worker-file',
   lifecycle: 'worker-managed',
   purpose: null,
+  requestedLifetimeSeconds: null,
 };
 
 function evidenceBucket(): R2Bucket {

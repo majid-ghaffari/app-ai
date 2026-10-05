@@ -375,28 +375,26 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
 
   async uploadFile(request: ProviderUploadRequest): Promise<ProviderUploadResult> {
     validateFilePolicy(request.policy);
+    const lifetimeSeconds = uploadLifetimeSeconds(request.policy);
     const formData = new FormData();
     formData.append(
       'file',
       new Blob([request.bytes], { type: request.mediaType }),
       request.filename,
     );
+    formData.append('expires_in_seconds', String(lifetimeSeconds));
     const response = await callAnthropic(
       () => anthropic.uploadFile(formData, this.env, request.abortSignal),
       request.abortSignal,
     );
-    const data = await readAnthropicJson<{
-      id?: string;
-      mime_type?: string;
-      size_bytes?: number;
-    }>(response);
-    if (!response.ok) throw anthropicUploadFailure(response.status, data);
+    const data = await readAnthropicJson<unknown>(response);
+    if (!response.ok) throw anthropicFailure(response.status, data);
     validateAnthropicFileRecord(data);
     return {
       id: data.id,
       mediaType: data.mime_type,
       sizeBytes: data.size_bytes,
-      expiresAt: null,
+      expiresAt: reportedExpiry(data.expires_at),
     };
   }
 
@@ -409,18 +407,14 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
       abortSignal,
     );
     if (response.status === 404) return null;
-    const data = await readAnthropicJson<{
-      id?: string;
-      mime_type?: string;
-      size_bytes?: number;
-    }>(response);
+    const data = await readAnthropicJson<unknown>(response);
     if (!response.ok) throw anthropicFailure(response.status, data);
     validateAnthropicFileRecord(data, id);
     return {
       id: data.id,
       mediaType: data.mime_type,
       sizeBytes: data.size_bytes,
-      expiresAt: null,
+      expiresAt: reportedExpiry(data.expires_at),
     };
   }
 
@@ -826,6 +820,7 @@ function validateAnthropicFileRecord(
   type: 'file';
   mime_type: string;
   size_bytes: number;
+  expires_at?: unknown;
 } {
   if (
     !isJsonObject(data) ||
@@ -841,6 +836,23 @@ function validateAnthropicFileRecord(
   ) {
     throw invalidAnthropicResponse('Anthropic file response was invalid');
   }
+}
+
+function reportedExpiry(value: unknown): string | null {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function uploadLifetimeSeconds(policy: FilePolicy): number {
+  const lifetime = policy.requestedLifetimeSeconds;
+  if (
+    lifetime === null ||
+    !Number.isSafeInteger(lifetime) ||
+    lifetime < anthropic.FILE_LIFETIME_BOUNDS_SECONDS.minimum ||
+    lifetime > anthropic.FILE_LIFETIME_BOUNDS_SECONDS.maximum
+  ) {
+    throw new Error(`File policy ${policy.name} requests no lifetime the Files API accepts`);
+  }
+  return lifetime;
 }
 
 function normalizeStopReason(reason: string | null | undefined): InferenceStopReason {
@@ -988,23 +1000,6 @@ function anthropicFailure(
     ...(detail || data !== undefined ? { detail: detail || JSON.stringify(data) } : {}),
     retryable: status === 429 || status === 529 || (status !== null && status >= 500),
     failureClass: status === null ? 'invalid-response' : 'http',
-  });
-}
-
-/**
- * What a Files API 500 most often means for an account. The provider's own
- * message stays first; this rides after it so a caller reads the likely cause
- * without app-ai's handlers knowing which provider spoke.
- */
-const FILES_API_BETA_HINT =
-  '\n\nThe Files API may not be available for your account yet. It is currently in beta and requires special access.';
-
-function anthropicUploadFailure(status: number, data?: unknown): InferenceFailure {
-  const failure = anthropicFailure(status, data);
-  if (status !== 500) return failure;
-  return new InferenceFailure({
-    ...failure.inferenceError,
-    message: `${failure.inferenceError.message}${FILES_API_BETA_HINT}`,
   });
 }
 

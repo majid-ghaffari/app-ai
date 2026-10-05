@@ -36,6 +36,18 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   for a model; `providerFiles` means the provider itself owns a complete Files
   lifecycle. Kimi has reusable files through encrypted R2 but its provider
   Files metadata and delete endpoints do not work.
+- A file policy's `requestedLifetimeSeconds` is the lifetime app-ai asks the
+  provider to give every upload under it; `null` leaves retention to the
+  provider. `anthropic-provider-files` requests 30 days, and the Anthropic
+  adapter sends it as `expires_in_seconds` on every upload, refusing a policy
+  outside the Files API's accepted range before provider I/O. Its Files API
+  calls send no beta flag, so every file reply carries `expires_at`; the adapter
+  reports that expiry as the file's, and a missing or unreadable one as no
+  expiry, which the dedup layer refuses for an upload under such a policy.
+- `file-references.ts` exports `MAX_REFERENCE_TTL_SECONDS`, the 15 days a
+  reference lasts at most; a provider expiry earlier than that bounds the
+  reference first, and dedup reuses a file under a policy with a requested
+  lifetime only while it has that long left.
 - `textConversation` means the family's adapter accepts a multi-turn
   conversation of plain-text user and assistant turns: any number of turns, no
   image required. Every chat family — Anthropic, OpenAI, Moonshot, Kimi Code,

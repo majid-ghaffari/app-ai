@@ -25,6 +25,7 @@ interface ShimStoredFile {
   readonly filename: string;
   readonly data: { toString(encoding?: string): string };
   readonly created_at: string;
+  readonly expires_at?: string | null;
 }
 /** What the message handlers write a fulfilment onto. */
 interface ShimWritableResponse {
@@ -89,6 +90,7 @@ export function usageFrom(value: unknown): {
   cache_read_input_tokens: number;
 };
 export function extractFilePart(value: unknown, boundary: string): ShimFilePart;
+export function extractFormField(value: unknown, boundary: string, name: string): string | null;
 export function assertDevAiChannel(env: Readonly<Record<string, string | undefined>>): void;
 export function handleMessagesNonStream(
   body: unknown,

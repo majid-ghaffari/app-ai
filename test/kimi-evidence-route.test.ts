@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import type { Env } from '../src/config';
 import { getSystemPrompt, ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
-import { ENV, stubFetch } from './helpers';
+import { ENV, stubFetch, DISTANT_FILE_EXPIRY } from './helpers';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -60,6 +60,7 @@ describe('Kimi prompt-aware evidence route', () => {
             filename: 'page.png',
             mime_type: 'image/png',
             size_bytes: 3,
+            expires_at: DISTANT_FILE_EXPIRY,
             created_at: '2026-01-01T00:00:00Z',
             downloadable: false,
           }),

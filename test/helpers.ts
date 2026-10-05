@@ -130,6 +130,9 @@ export function anthropicMessageStart(
 
 export type FetchMock = Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
 
+/** An Anthropic `expires_at` far enough ahead that dedup reuses the file at any test clock. */
+export const DISTANT_FILE_EXPIRY = '2099-01-01T00:00:00.000Z';
+
 /** Complete Anthropic Files API record; the adapter validates every member. */
 export function anthropicFileRecord(
   id: string,
@@ -143,6 +146,7 @@ export function anthropicFileRecord(
     size_bytes: 32,
     created_at: '2026-01-01T00:00:00Z',
     downloadable: false,
+    expires_at: DISTANT_FILE_EXPIRY,
     ...overrides,
   };
 }
@@ -388,11 +392,21 @@ export interface KvMock {
   get: Mock<(key: string) => Promise<string | null>>;
   put: Mock<(key: string, value: string, options?: { expirationTtl?: number }) => Promise<void>>;
   delete: Mock<(key: string) => Promise<void>>;
+  list: Mock<
+    (options: {
+      prefix: string;
+      limit?: number;
+      cursor?: string;
+    }) => Promise<
+      | { keys: { name: string }[]; list_complete: true }
+      | { keys: { name: string }[]; list_complete: false; cursor: string }
+    >
+  >;
 }
 
 /**
- * Build a KV mock (get resolves `storedValue`, put/delete resolve) and an Env
- * carrying it as FILES_KV.
+ * Build a KV mock (get resolves `storedValue`, put/delete/list act on the keys it stores) and an
+ * Env carrying it as FILES_KV.
  */
 export function kvMock(storedValue: string | null = null): { kv: KvMock; env: Env } {
   const stored = new Map<string, string>();
@@ -403,6 +417,14 @@ export function kvMock(storedValue: string | null = null): { kv: KvMock; env: En
     }),
     delete: vi.fn(async (key) => {
       stored.delete(key);
+    }),
+    list: vi.fn(async ({ prefix, limit = 1000, cursor }) => {
+      const matching = [...stored.keys()].filter((key) => key.startsWith(prefix)).sort();
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const keys = matching.slice(start, start + limit).map((name) => ({ name }));
+      return start + limit < matching.length
+        ? { keys, list_complete: false as const, cursor: String(start + limit) }
+        : { keys, list_complete: true as const };
     }),
   };
   return { kv, env: { ...ENV, FILES_KV: kv as unknown as KVNamespace } };

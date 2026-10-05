@@ -14,11 +14,11 @@
  * self-contained metadata and do not use this eventually-consistent cache as
  * correctness authority.
  *
- * STALE-ID ROBUSTNESS: Files persist until explicitly deleted (no Anthropic-side
- * expiry), but a cached file_id can still outlive its file — explicit deletion,
- * an API-key/workspace rotation, or eventual data-retention cleanup. Two guards:
- *   1. The KV record carries a conservative cap (`KV_RECORD_TTL_SECONDS`) and an
- *      earlier provider expiry shortens it, so mappings never outlive the file.
+ * STALE-ID ROBUSTNESS: a provider deletes an object at its expiry, and a cached
+ * file_id can also outlive its file through explicit deletion or an
+ * API-key/workspace rotation. Two guards:
+ *   1. The KV record carries a cap (`KV_RECORD_TTL_SECONDS`) and the provider's
+ *      expiry shortens it, so a mapping never outlives its file.
  *   2. On a KV hit, the cached id is verified against the Files API metadata
  *      endpoint before reuse (`existingFileMetadata`). A 404 drops the stale
  *      record and falls through to a fresh upload — dedup never returns a dead
@@ -34,19 +34,28 @@ import type { Env } from '../config';
 import type { FilePolicy, ModelProfile, ProviderFileReference } from './inference-types';
 import { InferenceFailure } from '../inference/adapter';
 import { createInferenceFileService } from '../inference/factory';
+import { MAX_REFERENCE_TTL_SECONDS } from '../inference/file-references';
 import { silentLogger, type Logger } from './logger';
 
 /**
- * TTL on the route+hash→file_id KV record, in seconds (30 days). Files themselves
- * persist until explicitly deleted, so this is conservatively SHORTER than the
- * file's effective lifetime: a record that survives past common churn (key
- * rotation, manual cleanup) ages out rather than risking a stale-id hit, while
- * still covering the real reuse window (a placement session's repeated calls on
- * the same page — seconds to hours). The `fileExists` check is the hard guard;
- * the TTL is belt-and-suspenders that also bounds KV growth. An internal
- * robustness constant paired with that guard — not a deploy-time tunable.
+ * The longest a route+hash→file_id KV record lives, in seconds (30 days). A
+ * record's TTL is its file's remaining life when the provider reports an
+ * expiry, never more than this cap, so a record never outlives its file and KV
+ * growth stays bounded. The live metadata check is the hard guard; this is an
+ * internal robustness constant, not a deploy-time tunable.
  */
 export const KV_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * Prefix of the `FILES_KV` keys, one per provider file id and with no expiry, that keep each upload
+ * the provider stored without an expiry a reference can rely on and app-ai could not delete. A key is
+ * `discard:<dedup key>:<file id>`, and the next upload of the same bytes on the same route deletes
+ * the file and then its key.
+ */
+export const DISCARD_KEY_PREFIX = 'discard:';
+const DISCARD_DELETE_ATTEMPTS = 2;
+const DISCARD_WRITE_ATTEMPTS = 2;
+const DISCARD_LIST_PAGE_SIZE = 100;
 
 /** The content forms `dedupUpload` accepts for hashing + upload. */
 export type UploadContent = string | ArrayBuffer | Uint8Array | Blob;
@@ -71,11 +80,6 @@ export interface DedupFileRoute {
   readonly compatibleGroups: readonly [string, ...string[]];
 }
 
-/**
- * An upload failure carrying the upstream Files API status, so the /files
- * handler can preserve its status-specific UX (e.g. the beta-access hint on a
- * 500) while non-upstream failures stay generic.
- */
 /**
  * Normalize arbitrary content to a `Uint8Array` of its bytes.
  * Accepts a string (UTF-8 encoded), ArrayBuffer, ArrayBufferView (Uint8Array),
@@ -135,17 +139,25 @@ export async function dedupUpload(
   const hash = await sha256Hex(content);
   const compatibleGroupKey = route.compatibleGroups.join(',');
   const storageKey = `${route.tenantScope}:${route.accountScope}:${route.policy.name}:${compatibleGroupKey}:${encodeURIComponent(mimeType)}:${hash}`;
+  const discardPrefix = `${DISCARD_KEY_PREFIX}${storageKey}:`;
   const filesKv = env.FILES_KV;
 
   if (filesKv) {
-    let cached: string | null = null;
-    try {
-      cached = await filesKv.get(storageKey);
-    } catch (error) {
-      log.warn('File dedup KV read failed; uploading directly', {
-        error: error instanceof Error ? error.name : 'UnknownError',
-      });
+    const [cachedRead, discardsRead] = await Promise.allSettled([
+      filesKv.get(storageKey),
+      listDiscardKeys(filesKv, discardPrefix),
+    ]);
+    for (const read of [cachedRead, discardsRead]) {
+      if (read.status === 'rejected') {
+        log.warn('File dedup KV read failed; uploading directly', {
+          error: read.reason instanceof Error ? read.reason.name : 'UnknownError',
+        });
+      }
     }
+    if (discardsRead.status === 'fulfilled') {
+      await retryDiscards(discardsRead.value, discardPrefix, route, env);
+    }
+    const cached = cachedRead.status === 'fulfilled' ? cachedRead.value : null;
     if (cached) {
       const stored = parseStoredFileMetadata(cached);
       // Verify the cached file still exists before reusing it — a stale id
@@ -155,7 +167,7 @@ export async function dedupUpload(
       const metadata = stored
         ? await existingFileMetadata(stored.fileId, route, env, abortSignal)
         : null;
-      if (stored && metadata) {
+      if (stored && metadata && canBackNewReference(metadata, route.policy)) {
         log.info(`Dedup hit for ${filename} (hash ${hash.slice(0, 12)}…)`);
         return {
           reference: providerReference(
@@ -167,7 +179,9 @@ export async function dedupUpload(
           deduped: true,
         };
       }
-      if (stored) {
+      if (stored && metadata) {
+        log.info(`Dedup entry for ${filename} expires too soon to reuse — re-uploading`);
+      } else if (stored) {
         log.info(`Stale dedup entry for ${filename} — re-uploading`);
         await filesKv.delete(storageKey).catch(() => {});
       }
@@ -175,6 +189,19 @@ export async function dedupUpload(
   }
 
   const metadata = await upload({ content, mimeType, filename }, route, env, abortSignal);
+  if (!canBackNewReference(metadata, route.policy)) {
+    if (!(await deleteUpload(metadata.id, route, env))) {
+      await recordDiscard(metadata.id, discardPrefix, env, log);
+    }
+    throw new InferenceFailure({
+      backend: route.profile.provider,
+      status: null,
+      code: 'invalid_response',
+      message: 'The provider stored the upload without an expiry a reference can rely on',
+      retryable: true,
+      failureClass: 'invalid-response',
+    });
+  }
 
   if (filesKv) {
     try {
@@ -223,6 +250,85 @@ async function existingFileMetadata(
     }
     throw error;
   }
+}
+
+function canBackNewReference(
+  metadata: import('../inference/adapter').ProviderFileMetadata,
+  policy: FilePolicy,
+): boolean {
+  if (metadata.expiresAt === null) return policy.requestedLifetimeSeconds === null;
+  const remaining = Math.floor((Date.parse(metadata.expiresAt) - Date.now()) / 1000);
+  if (!Number.isFinite(remaining)) return false;
+  return policy.requestedLifetimeSeconds === null
+    ? remaining > 0
+    : remaining >= MAX_REFERENCE_TTL_SECONDS;
+}
+
+async function deleteUpload(fileId: string, route: DedupFileRoute, env: Env): Promise<boolean> {
+  const files = createInferenceFileService(env);
+  for (let attempt = 0; attempt < DISCARD_DELETE_ATTEMPTS; attempt += 1) {
+    try {
+      await files.delete(route.profile, fileId);
+      return true;
+    } catch (error) {
+      if (error instanceof InferenceFailure && error.inferenceError.status === 404) return true;
+    }
+  }
+  return false;
+}
+
+async function listDiscardKeys(filesKv: KVNamespace, prefix: string): Promise<string[]> {
+  const names: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await filesKv.list({
+      prefix,
+      limit: DISCARD_LIST_PAGE_SIZE,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    names.push(...page.keys.map((key) => key.name));
+    if (page.list_complete) return names;
+    cursor = page.cursor;
+  }
+}
+
+async function retryDiscards(
+  keys: readonly string[],
+  discardPrefix: string,
+  route: DedupFileRoute,
+  env: Env,
+): Promise<void> {
+  for (const key of keys) {
+    const fileId = key.slice(discardPrefix.length);
+    if (!key.startsWith(discardPrefix) || fileId === '') continue;
+    if (await deleteUpload(fileId, route, env)) {
+      await env.FILES_KV?.delete(key).catch(() => undefined);
+    }
+  }
+}
+
+async function recordDiscard(
+  fileId: string,
+  discardPrefix: string,
+  env: Env,
+  log: Logger,
+): Promise<void> {
+  const filesKv = env.FILES_KV;
+  for (let attempt = 0; filesKv && attempt < DISCARD_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      await filesKv.put(
+        `${discardPrefix}${fileId}`,
+        JSON.stringify({ fileId, recordedAt: Date.now() }),
+      );
+      log.warn('An upload without a usable expiry could not be deleted; it is kept for retry');
+      return;
+    } catch (error) {
+      log.warn('File discard KV write failed', {
+        error: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+  }
+  log.error('An upload without a usable expiry could neither be deleted nor kept for retry');
 }
 
 interface StoredFileMetadata {

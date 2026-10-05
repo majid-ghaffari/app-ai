@@ -838,9 +838,9 @@ only refuses, with 403 `AuditScopeException` and before any reservation, a propo
 stored as digests; the retry's fresh uploads are stored as references there and admitted.
 
 Clearing an owned file identifier removes audit authorization to reference it; it does not promise
-immediate deletion of the underlying provider evidence. Anthropic's content-hash dedup layer may
-retain a provider reference in `FILES_KV` for up to 30 days and can share an identical object across
-requests, so a session alarm cannot safely delete it unilaterally. An audit route configured onto Kimi
+immediate deletion of the underlying provider evidence. Anthropic deletes every audit upload 30 days
+after it was made; until then the content-hash dedup layer can share the object with a later upload
+of the same bytes during its first 15 days, so a session alarm cannot safely delete it unilaterally. An audit route configured onto Kimi
 stores encrypted evidence in R2; session expiry removes authorization immediately and the bucket's
 16-day rule removes the object and hosted-id sidecar, while an image already accepted upstream
 follows Kimi's retention policy because its delete operation is unavailable. Public privacy copy and

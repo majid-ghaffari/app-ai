@@ -138,6 +138,9 @@ reference, so an upload resolving to a single route names them all against the
 same value. Callers must treat every ID as opaque and send the reference the map
 holds for the inference prompt that will consume it.
 
+Anthropic deletes every uploaded object 30 days after the upload. A reference
+stays openable for at most 15 days and always ends before its object does.
+
 ### `DELETE /files/{id}` — one reference at a time
 
 The reference IS the route. `DELETE /files/{id}` takes an opaque reference
@@ -444,10 +447,13 @@ Cost-reduction is additive and never changes external request/response shapes.
   Registered/canonical inference rejects raw provider IDs; the bounded unregistered-selector
   `/messages` passthrough refuses raw file blocks and resolves its own model route from the registry. `src/lib/file-dedup.ts` hashes bytes so a route
   can reuse its upstream object and retains validated MIME because OpenAI metadata omits it.
-  `FILES_KV` stores only expiring best-effort dedup metadata, never
-  file bytes, and can no-op without affecting reference correctness. Sealed route metadata is
+  `FILES_KV` stores metadata, never file bytes: expiring dedup records, and a non-expiring
+  `discard:` key for each upload app-ai could not delete, removed once a later upload of the same
+  bytes deletes that file. It can no-op without affecting reference correctness. Sealed route metadata is
   self-contained under `TOKEN_ENCRYPTION_SECRET`, avoiding eventually-consistent read-after-write.
-  Metadata lifetime is capped at 30 days and never outlives upstream expiry.
+  A dedup record's lifetime is capped at 30 days and never outlives upstream expiry. Every Anthropic
+  upload asks for a 30-day expiry, and a hit is reused only while its file has at least 15 days
+  left, so each reference runs its full 15 days and ends before its file.
 - **`count_tokens` pre-flight.** Large `/messages` payloads log a free token estimate (warn-only;
   never gates the request).
 - **Opt-in output effort (model-gated).** A registry entry may set semantic

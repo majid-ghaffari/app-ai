@@ -48,6 +48,7 @@ const POLICY: FilePolicy = {
   inputMode: 'provider-file',
   lifecycle: 'provider-managed',
   purpose: 'user_data',
+  requestedLifetimeSeconds: null,
 };
 
 const LOOKUP_SCHEMA = {

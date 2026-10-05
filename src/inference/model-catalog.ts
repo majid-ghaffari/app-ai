@@ -35,6 +35,8 @@ import type {
 
 export const BOUNDED_FREE_VISUAL_MODEL = '@cf/qwen/qwen3.8-27b';
 
+const ANTHROPIC_FILE_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
+
 /**
  * Direct-provider file policies. Each states how one provider takes uploaded
  * evidence and which API families can address a file uploaded under it.
@@ -47,6 +49,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: null,
+    requestedLifetimeSeconds: ANTHROPIC_FILE_LIFETIME_SECONDS,
   },
   'openai-user-data-files': {
     name: 'openai-user-data-files',
@@ -55,6 +58,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: 'user_data',
+    requestedLifetimeSeconds: null,
   },
   'moonshot-image-files': {
     name: 'moonshot-image-files',
@@ -63,6 +67,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: 'image',
+    requestedLifetimeSeconds: null,
   },
   'kimi-stored-evidence': {
     name: 'kimi-stored-evidence',
@@ -71,6 +76,7 @@ const FILE_POLICIES = {
     inputMode: 'worker-file',
     lifecycle: 'worker-managed',
     purpose: null,
+    requestedLifetimeSeconds: null,
   },
   'gemini-provider-files': {
     name: 'gemini-provider-files',
@@ -79,6 +85,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: null,
+    requestedLifetimeSeconds: null,
   },
   'cloudflare-inline': {
     name: 'cloudflare-inline',
@@ -87,6 +94,7 @@ const FILE_POLICIES = {
     inputMode: 'inline',
     lifecycle: 'request-scoped',
     purpose: null,
+    requestedLifetimeSeconds: null,
   },
 } as const satisfies Record<string, FilePolicy>;
 

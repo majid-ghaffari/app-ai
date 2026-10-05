@@ -43,7 +43,9 @@ import {
   stripCodeFence,
   usageFrom,
   extractFilePart,
+  extractFormField,
   assertDevAiChannel,
+  handleHttp,
   handleMessagesNonStream,
   handleMessagesStream,
   _filesStore,
@@ -443,7 +445,94 @@ describe('shim translation: extractFilePart (multipart)', () => {
     expect(part.mimeType).toBe('text/html');
     expect(part.data.toString('utf8')).toBe('<h1>hi</h1>');
   });
+
+  it('reads a named text field beside the file part, and nothing for an absent one', () => {
+    const boundary = 'BOUND';
+    const body = NodeBuffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="page.html"\r\n` +
+        `Content-Type: text/html\r\n\r\n` +
+        `<h1>hi</h1>\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="expires_in_seconds"\r\n\r\n` +
+        `2592000\r\n` +
+        `--${boundary}--\r\n`,
+    );
+    expect(extractFormField(body, boundary, 'expires_in_seconds')).toBe('2592000');
+    expect(extractFormField(body, boundary, 'purpose')).toBeNull();
+  });
+
+  it('answers an upload with the expiry its expires_in_seconds asked for, and repeats it on metadata', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-10-04T12:00:00.000Z') });
+    try {
+      const form = new FormData();
+      form.append('file', new Blob(['<h1>hi</h1>'], { type: 'text/html' }), 'page.html');
+      form.append('expires_in_seconds', '3600');
+      const encoded = new Response(form);
+      const contentType = encoded.headers.get('content-type') ?? '';
+      const bytes = new Uint8Array(await encoded.arrayBuffer());
+      const upload = await routed('POST', '/v1/files', bytes, { 'content-type': contentType });
+      const uploaded = JSON.parse(upload.body) as { id: string; expires_at: string | null };
+      expect(upload.status).toBe(200);
+      expect(uploaded.expires_at).toBe('2026-10-04T13:00:00.000Z');
+
+      const metadata = await routed('GET', `/v1/files/${uploaded.id}`, new Uint8Array(), {});
+      expect(JSON.parse(metadata.body)).toMatchObject({
+        id: uploaded.id,
+        expires_at: '2026-10-04T13:00:00.000Z',
+      });
+      _filesStore.delete(uploaded.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+async function routed(
+  method: string,
+  url: string,
+  body: Uint8Array,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  let status = 0;
+  let written = '';
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    once() {
+      return response;
+    },
+    setHeader() {},
+    writeHead(nextStatus: number) {
+      status = nextStatus;
+      response.headersSent = true;
+    },
+    write(chunk: string) {
+      written += String(chunk);
+      return true;
+    },
+    end(chunk?: string) {
+      if (chunk !== undefined) written += String(chunk);
+      response.writableEnded = true;
+    },
+  };
+  await handleHttp(
+    {
+      method,
+      url,
+      headers,
+      aborted: false,
+      once() {
+        return this;
+      },
+      async *[Symbol.asyncIterator]() {
+        yield NodeBuffer.from(Array.from(body));
+      },
+    },
+    response,
+  );
+  return { status, body: written };
+}
 
 describe('shim GUARD: assertDevAiChannel (no accidental credit-burn)', () => {
   it('allows the free local shim base (127.0.0.1)', () => {
