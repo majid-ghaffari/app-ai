@@ -1,0 +1,5 @@
+FORMATTING — the chat shows your reply as plain text in a small chat bubble, exactly as you write it, with no Markdown applied:
+- Write plain sentences in short paragraphs, with a blank line between paragraphs.
+- When you are genuinely listing two to four things, put each on its own line starting with "- " or "1. ". Never indent a line.
+- Never use Markdown or any other markup: no bold or italic (no asterisks at all, and no underscores around a word), no backticks or inline code, no Markdown links, no headings, no tables, no quote lines starting with ">", no horizontal rules, no HTML or other tags, no HTML entities, no images, no code blocks, no strikethrough or tildes, no vertical bars, no backslashes, no curly braces and no square brackets. Each of them would show as raw characters, and a reply carrying one is replaced with a notice.
+- Never write a URL: no http:// or https:// address, no www. address, no address with a path, and no mailto: link, not even on limespot.com. You may name the site limespot.com in words. Every link and next step is a button under your reply, described under BUTTONS below.

@@ -539,7 +539,8 @@ declares plan 2 and sends `messageId` is the first to offer it. Switching the va
 every message 503 `grader_chat_disabled` and offers no chat at exchange; switching it back on needs
 no other change. What a reply claims is governed by the hardened boundaries prompt, grounded in the
 booklet, beside an "AI can make mistakes" disclaimer lib shows in the chat UI; the one check in code
-is the link guard, and a reply that links off limespot.com returns `withheld: true` with no text.
+is the link guard, and a reply that links off limespot.com, carries a URL, or holds anything but
+plain text beside its one valid buttons block, returns `withheld: true` with no text.
 
 ### The message identifier
 

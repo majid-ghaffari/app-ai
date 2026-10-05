@@ -141,7 +141,8 @@ language understanding a deterministic filter does not have. The boundaries bloc
 or predicted results, guarantees, timelines, and any price or plan detail the booklet does not word,
 and lib shows an "AI can make mistakes" disclaimer beside the chat; the model can still say
 something the booklet does not support. The link guard is the only deterministic check on a reply,
-and it withholds any link off limespot.com.
+and it withholds any link off limespot.com and any URL, and anything but plain text beside a reply's
+one valid buttons block.
 
 ### An unsettled daily hold is charged until the end of the following day plus an hour
 

@@ -375,8 +375,8 @@ entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE
 - **Composed** → a folder of `_`-prefixed BLOCK files assembled by `composePrompt(...)` in the
   folder's own `index.ts`, mixing that prompt's fragments with SHARED blocks from
   `src/prompts/onboarding-shared/` (the onboarding / cart-drawer / optimize propose + review
-  prompts), or the chat-formatting block in `src/prompts/assistant-shared/` (`chat` and
-  `grader-chat`). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
+  prompts), or the Markdown chat-formatting block in `src/prompts/assistant-shared/` (`chat`;
+  `grader-chat` composes its own plain-text formatting block). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
   text; elsewhere a `_*.md` is the co-located exclusion convention (never imported).
 - **Shared-text alias** → an explicit barrel export reuses another registered prompt's final text
   when the semantic contract is identical but routing or access is intentionally different.

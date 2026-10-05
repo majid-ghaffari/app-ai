@@ -42,7 +42,7 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
    `assistant-shared/_shared-*.md`) →** it changes EVERY prompt that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
    composed text changes on purpose, regenerate that prompt's byte baseline in `test/__snapshots__/` — the
    byte-equivalence gate [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts)
-   fails otherwise. An `assistant-shared/` block reaches `chat` and `grader-chat`; their byte gate is
+   fails otherwise. An `assistant-shared/` block reaches `chat`; its byte gate is
    [`test/assistant-prompt-blocks.test.ts`](../../test/assistant-prompt-blocks.test.ts) against
    `test/__snapshots__/chat.baseline.md` and `test/__snapshots__/grader-chat.baseline.md`.
 
@@ -68,8 +68,10 @@ each entry's `prompt:` references `prompts.<name>`).
   `onboarding-shared/` or `assistant-shared/`, in a STABLE order (the cacheable prefix). The barrel
   re-exports that folder's default. `chat` composes the shared chat formatting around its
   Studio-only fragments, its identity among them, which names the platforms Studio serves;
-  `grader-chat` composes the same formatting block around its own platform-neutral identity, its
-  one boundaries block and a booklet — the only part of its text that names a platform — and
+  `grader-chat`, whose replies lib shows as plain text, composes its own plain-text formatting block
+  instead, around its platform-neutral identity, its one boundaries block, its buttons block and a
+  booklet — the only part of its text that names a
+  platform — and
   exports its composition function and booklet map instead of a default, because the booklet is
   chosen by configuration. Both are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
   name you can select via the header.
@@ -89,9 +91,10 @@ folder; a block shared across prompts is hoisted to `onboarding-shared/` so a si
 composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
 **`assistant-shared/` is the second shared block library**, for the conversational assistant
-prompts: `_shared-chat-formatting.md` (the chat-bubble formatting rules), composed by `chat` and
-`grader-chat`. Each of the two keeps its identity in its own folder, because Studio names the
-platforms it serves and the Grader leaves platforms to the booklet. Like `onboarding-shared/`, it is
+prompts: `_shared-chat-formatting.md` (the Markdown chat-bubble formatting rules), composed by
+`chat`. `grader-chat` keeps its own `_formatting.md`, the plain-text rules, because lib shows a
+Grader reply as plain text with no Markdown applied, and each keeps its identity in its own folder,
+because Studio names the platforms it serves and the Grader leaves platforms to the booklet. Like `onboarding-shared/`, it is
 never a registered prompt.
 
 ## Grader chat booklets
@@ -104,12 +107,22 @@ editor notes, stripped before the model sees the text. The boundaries block name
 price is stated only by quoting Prices we may state word for word, so a price carries its currency
 and, when recurring, its period, and a trial or fee fact only as Claims we may make states it. No
 check in code holds the model to the booklet; the prompt does. A reply that repeats a booklet line
-still goes through the link guard, so every non-blank line of every booklet passes it, which
-`test/assistant-prompt-blocks.test.ts` pins; a brand whose name is shaped like a hostname joins the
-guard's brand list in `src/lib/grader-chat-output.ts` before a booklet names it. New wording is a
-new version file, never an edit to a published one, so the `bookletVersion` a reply reports names
-the text it was grounded in; the change updates `docs/prompts/grader-chat.md`. The repository has
-no CODEOWNERS file, so marketing's ownership is a review convention, not an enforced rule.
+still goes through the link guard, so every non-blank prose line of every booklet passes it, and
+every booklet example passes as the block ending a reply, which
+`test/assistant-prompt-blocks.test.ts` pins; a booklet therefore writes no address and no markup in
+its prose, and offers each page as a button; a brand whose name is shaped like a hostname joins the
+guard's brand list in `src/lib/grader-chat-output.ts` before a booklet names it. A booklet that
+offers buttons shapes its envelope examples as `grader-chat/_choices.md`, the engineering-owned
+buttons block, teaches, and the test holds every example in that block and in the selected booklet
+to the shape lib parses and to the link guard. The buttons block names exactly the actions the
+guard's `GRADER_CHAT_CHOICE_ACTIONS` lists, so a new action joins both, and lib, together. lib owns
+the two default buttons' labels and links and every other piece of UI copy; the wording the model
+is told lives here. New wording is a new version file, never an edit to a published one, so the
+`bookletVersion` a reply reports names the text it was grounded in; the change updates
+`docs/prompts/grader-chat.md`. Only booklets the current guard and formatting block deliver stay
+registered — today v3 alone — so a booklet they no longer fit is deleted rather than kept
+selectable, and rolling back is a revert of the deploy. The repository has no CODEOWNERS file, so marketing's ownership is a
+review convention, not an enforced rule.
 
 ## Registered-prompt inventory
 

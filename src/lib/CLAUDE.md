@@ -238,19 +238,37 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   authority's log sites hand each Seq delivery to its state's `waitUntil`, so a log-only alert is
   attached to the alarm event before its outbox entry settles. Every chat refusal is built by
   `graderChatRefusal`, so its `MessageDetail` vocabulary has one owner.
-- `grader-chat-output.ts` is the Grader chat's link guard, the one deterministic check on a reply,
-  read after NFKC folding, invisible-character removal and mapping WHATWG dot equivalents to `.`.
-  Three paths decide every link-like target: any URI-shaped token — a letter-first scheme, a colon
-  and then any non-whitespace character — is withheld by structure, never by a scheme list, unless it is an
-  `http`/`https` URL the WHATWG `URL` parser reads with no credentials, no backslash in its authority
-  and a limespot.com host (bare hostnames, Markdown targets and bracketed IPv6 literals go through
-  the same `URL` rule), or a `mailto:` link to exactly one recipient at limespot.com with no query
-  and no `%` (plain email addresses follow that exact-recipient rule). Any four dot-separated octets
-  withhold the reply, and so does an unfinished or empty one. A brand on its list of names shaped
-  like a hostname (`Judge.me`) passes only as a plain whitespace-bounded word, in any letter case,
-  with nothing but opening or closing punctuation, emphasis or a possessive around it; with a
-  scheme, path, port, query, fragment, subdomain or `@`, or as a Markdown link target, it is read as
-  a hostname like any other. Markdown targets are read before brands are set aside, and brands are
-  recognized only after folding. It judges no claim: what the chat may claim is the boundaries
-  prompt's to govern, grounded in the booklet, beside the "AI can make mistakes" disclaimer lib
-  shows in the chat UI.
+- `grader-chat-output.ts` is the Grader chat's link guard, the one deterministic check on a reply.
+  It first finds the buttons block exactly as lib's `parseChatEnvelope` does — the whole reply as
+  JSON, else the first fenced block that parses as an object carrying an envelope key, else the span
+  from the first `{` to the last `}` — and holds it to the one shape the prompt's buttons block
+  teaches: only a non-empty `choices` array of objects with a non-empty string `label`, an optional
+  `action` that is exactly one of its exported `GRADER_CHAT_CHOICE_ACTIONS` as `JSON.parse` decodes
+  it — the closed list held in step with the buttons block by `test/assistant-prompt-blocks.test.ts`
+  — and `args` holding only a string `href` for `grader.open-link` alone. lib shows a Grader reply
+  as plain text, so beside that one block a reply may hold only sentences, paragraphs and list lines
+  opening with `- ` or a number: the prose around the block, the whole reply when none parsed, and
+  every label withhold the reply as `malformed-choices` when they hold a backtick, an asterisk, a
+  tilde, a vertical bar, a square bracket, a brace, a backslash before ASCII punctuation or at a
+  line's end, an underscore not between two letters or digits, an HTML or XML tag shape or an
+  entity or numeric reference, or a line holding text indented four spaces or a tab, holding only
+  `-`, `=` and spaces, or opening with a heading, quote or `+` bullet — every GitHub Flavored
+  Markdown construct and JSON form lib would show as raw characters. A whole reply that `JSON.parse` reads as any value but the block is withheld too. The
+  guard then reads the prose outside the block and every decoded label and `href`, never an action
+  name, after NFKC folding, invisible-character removal and mapping WHATWG dot equivalents to `.`,
+  so neither a JSON escape nor a folded character hides a link. Every link is a button, so prose and
+  labels carry no URL: any URI-shaped token — a letter-first scheme, a colon and then any
+  non-whitespace character, `https://limespot.com` and `mailto:` included — is withheld by
+  structure, never by a scheme list, and so is a hostname opening with `www.` or followed by a path,
+  port, query or fragment. A bare hostname names a site and passes only when the WHATWG `URL` parser
+  reads it with no credentials, no backslash in its authority and a limespot.com host; a plain email
+  address passes only as exactly one recipient at limespot.com with no `%`. Any four dot-separated
+  octets withhold the reply, and so does an unfinished or empty one. A brand on its list of names
+  shaped like a hostname (`Judge.me`) passes only as a plain whitespace-bounded word, in any letter
+  case, with nothing but opening or closing punctuation or a possessive around it; with a scheme,
+  path, port, query, fragment, subdomain or `@` it is read as a hostname like any other, and brands
+  are recognized only after folding. A button's `href` must be a whole `https` URL with no
+  credentials, no backslash in its authority and a limespot.com host, and an action name written
+  anywhere but a valid block's `action` is read as a hostname. The withhold reason is logged and
+  never sent. It judges no claim: what the chat may claim is the boundaries prompt's to govern,
+  grounded in the booklet, beside the "AI can make mistakes" disclaimer lib shows in the chat UI.

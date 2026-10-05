@@ -83,7 +83,8 @@ export function graderChatRoute(env: Env): GraderChatRoute {
  * model is called; it counts only once the model answered. The audit's count, reply fingerprint and
  * outcome are committed before the reply is returned, together with a settlement record the
  * audit's alarm drains into the daily counters if this request does not. A reply that links off
- * limespot.com is withheld; the prompt alone governs its claims. Message text is never logged.
+ * limespot.com, carries a URL, or holds anything but plain text beside its one valid buttons block,
+ * is withheld; the prompt alone governs its claims. Message text is never logged.
  */
 export async function handleGraderChat(
   request: Request,

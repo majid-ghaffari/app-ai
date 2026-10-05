@@ -15,6 +15,7 @@ import {
 } from '../src/lib/grader-chat-quota';
 import { handleHealth } from '../src/handlers/health';
 import { graderChatRoute } from '../src/handlers/grader-chat';
+import type { GraderChatWithholdReason } from '../src/lib/grader-chat-output';
 import { silentLoggingRuntime } from '../src/lib/logger';
 import {
   CORS,
@@ -396,7 +397,7 @@ describe('grader chat plan gating', () => {
     expect(body.graderChat).toEqual({
       remainingInAudit: 24,
       sessionExpiresAt: session.expiresAt,
-      bookletVersion: 2,
+      bookletVersion: 3,
       withheld: false,
       runsValidFrom: '2026-01-01T00:00:00.000Z',
     });
@@ -1212,6 +1213,205 @@ describe('the link guard withholds an off-site link end to end', () => {
   }, 30_000);
 });
 
+describe('a reply may end with the buttons block, judged end to end', () => {
+  function buttonsReply(choices: string): string {
+    return [
+      'Our team can walk you through what your report found.',
+      '',
+      '```json',
+      choices,
+      '```',
+    ].join('\n');
+  }
+
+  function answeredReasons(info: {
+    readonly mock: { readonly calls: readonly unknown[][] };
+  }): unknown[] {
+    return info.mock.calls
+      .filter((call) => call[1] === 'Grader chat answered')
+      .map(
+        (call) => (call[2] as { readonly withheldReason?: unknown } | undefined)?.withheldReason,
+      );
+  }
+
+  function linkButton(href: string): string {
+    return `{ "choices": [ { "label": "See the page", "action": "grader.open-link", "args": { "href": "${href}" } } ] }`;
+  }
+
+  it('withholds a block lib cannot read, an unknown action and any raw code, JSON or markup as malformed, and a URL or a decoded off-site label or href as a link, storing none', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const env = durableEnv({ GRADER_CHAT_MESSAGES_PER_AUDIT: '50', LOG_TARGETS_INFO: 'console' });
+    const model = upstream();
+    const session = await completedRun(env);
+    const valid = buttonsReply(
+      '{ "choices": [ { "label": "Install LimeSpot", "action": "grader.install" } ] }',
+    );
+    const unquoted = '{ note: "next", choices: [ { label: "Install LimeSpot" } ] }';
+    const cases: readonly (readonly [string, GraderChatWithholdReason])[] = [
+      [
+        buttonsReply('{ "choices": [ { "label": "Install", "action": "grader.install", } ] }'),
+        'malformed-choices',
+      ],
+      [buttonsReply(unquoted), 'malformed-choices'],
+      [`${valid}\n\n\`\`\`json\n${unquoted}\n\`\`\``, 'malformed-choices'],
+      [
+        'Run this first:\n\n```\nnpm install limespot\n```\n\nThen open your store.',
+        'malformed-choices',
+      ],
+      ['Pick a layout {grid or carousel and LimeSpot fills it.', 'malformed-choices'],
+      [`Pick a layout {grid or carousel\n\n${valid}`, 'malformed-choices'],
+      [
+        buttonsReply('{ "choices": [ { "label": "Go", "action": "grader.fly" } ] }'),
+        'malformed-choices',
+      ],
+      [
+        buttonsReply('{ "choices": [ { "label": "Go", "action": "evil.com" } ] }'),
+        'malformed-choices',
+      ],
+      ['["Install LimeSpot", "What should I do next?"]', 'malformed-choices'],
+      ['"Install LimeSpot"', 'malformed-choices'],
+      ['42', 'malformed-choices'],
+      ['true', 'malformed-choices'],
+      ['null', 'malformed-choices'],
+      ['["Install LimeSpot",]', 'malformed-choices'],
+      [
+        'Our team can help.\n\n~~~json\n{ "choices": [ { "label": "What does it cost?" } ] }\n~~~',
+        'malformed-choices',
+      ],
+      ['Our team can help. Your options are ["Install", "Call"].', 'malformed-choices'],
+      ['Our team can help.\n\n<div class="limespot-box">Bundles</div>', 'malformed-choices'],
+      ['# Next steps\n\nOur team can help.', 'malformed-choices'],
+      ['| Page | Gap |\n| --- | --- |\n| Home | Recommendations |', 'malformed-choices'],
+      [buttonsReply('{ "choices": [ { "label": "What is {store}?" } ] }'), 'malformed-choices'],
+      [`${valid}\n\n~~~\nnpm install limespot\n~~~`, 'malformed-choices'],
+      ['Our team can help. Use ［"Install"］ now.', 'malformed-choices'],
+      ['See [our pricing](https://limespot.com/pricing) for the plans.', 'malformed-choices'],
+      ['LimeSpot adds **bundles** to your product pages.', 'malformed-choices'],
+      ['Turn on `Bundles` once LimeSpot is installed.', 'malformed-choices'],
+      ['See https://limespot.com/pricing for every plan.', 'external-link'],
+      ['The ~old~ price is gone.', 'malformed-choices'],
+      ['The ~~old~~ price is gone.', 'malformed-choices'],
+      ['| Plan | Price |\n| --- | --- |\n| Studio | $50 |', 'malformed-choices'],
+      ['Plan | Price\n--- | ---\nStudio | $50', 'malformed-choices'],
+      ['Plan | Price\n:--- | ---:\nStudio | $50', 'malformed-choices'],
+      ['Our plans\n---------\nStudio covers it.', 'malformed-choices'],
+      ['Our team can help.\n\n- - -\n\nMore below.', 'malformed-choices'],
+      ['Price \\$50, not \\*bold\\*.', 'malformed-choices'],
+      ['Line one\\\nline two', 'malformed-choices'],
+      ['It&#X27;s ready.', 'malformed-choices'],
+      ['As noted[^1].', 'malformed-choices'],
+      ['<![CDATA[Install]]>', 'malformed-choices'],
+      ['- [ ] Install LimeSpot', 'malformed-choices'],
+      [buttonsReply('{ "choices": [ { "label": "evil\\u002eexample" } ] }'), 'external-link'],
+      [buttonsReply(linkButton('https://evil\\u002eexample/offer')), 'external-link'],
+      [buttonsReply(linkButton('https://evil.example/offer')), 'external-link'],
+    ];
+    for (const [reply] of cases) {
+      model.reply = reply;
+      const response = await chat(env, session.accessToken, ask('What should I do next?'));
+      expect(response.status, reply).toBe(200);
+      const body = (await response.json()) as ChatBody;
+      expect(body.content, reply).toEqual([]);
+      expect(body.graderChat.withheld, reply).toBe(true);
+    }
+    expect(answeredReasons(info)).toEqual(cases.map(([, reason]) => reason));
+    const record = await sessionRecord(env, session.auditIdentifier);
+    expect(record.chatMessages).toBe(cases.length);
+    expect(record.chatReplies).toEqual([]);
+
+    for (const reply of [
+      valid,
+      'LimeSpot adds:\n\n- Recommendations on your home page\n- Bundles on product pages',
+      `LimeSpot adds:\n\n- Recommendations on your home page\n- Bundles on product pages\n\n1. Install LimeSpot\n2. Let it set up what the report found\n\n${valid}`,
+      'The LimeSpot team at limespot.com can walk you through it.',
+    ]) {
+      model.reply = reply;
+      const delivered = (await (
+        await chat(env, session.accessToken, ask('What should I do next?'))
+      ).json()) as ChatBody;
+      expect(delivered.graderChat.withheld, reply).toBe(false);
+      expect(delivered.content, reply).toEqual([{ type: 'text', text: reply }]);
+    }
+  }, 30_000);
+
+  it('delivers a valid block naming the default actions and a suggested question, escaped or not', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const env = durableEnv({ LOG_TARGETS_INFO: 'console' });
+    const model = upstream();
+    const session = await completedRun(env);
+    const replies = [
+      buttonsReply(
+        '{ "choices": [ { "label": "Install LimeSpot", "action": "grader.install" }, { "label": "Talk to our team", "action": "grader.book-call" }, { "label": "What does LimeSpot cost for my store?" } ] }',
+      ),
+      buttonsReply(
+        '{"choices":[{"label":"Install LimeSpot","action":"grader\\u002einstall"},{"label":"Open the help center","action":"grader.open-link","args":{"href":"https://support\\u002elimespot.com"}}]}',
+      ),
+    ];
+    for (const reply of replies) {
+      model.reply = reply;
+      const response = await chat(env, session.accessToken, ask('What should I do next?'));
+      expect(response.status, reply).toBe(200);
+      const body = (await response.json()) as ChatBody;
+      expect(body.graderChat.withheld, reply).toBe(false);
+      expect(body.content, reply).toEqual([{ type: 'text', text: reply }]);
+    }
+    expect(answeredReasons(info)).toEqual(replies.map(() => undefined));
+  }, 30_000);
+
+  it('withholds a reply whose link button leaves limespot.com, and keeps none of its text', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    model.reply = buttonsReply(
+      '{ "choices": [ { "label": "Talk to our team", "action": "grader.book-call" }, { "label": "See the offer", "action": "grader.open-link", "args": { "href": "https://evil.example/offer" } } ] }',
+    );
+    const response = await chat(env, session.accessToken, ask('Can someone help me?'));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ChatBody;
+    expect(body.content).toEqual([]);
+    expect(body.graderChat).toMatchObject({ withheld: true, remainingInAudit: 24 });
+    expect((await sessionRecord(env, session.auditIdentifier)).chatReplies).toEqual([]);
+  });
+
+  it('delivers a reply carrying only listed actions and a limespot.com link byte for byte, and accepts it back as history', async () => {
+    const env = durableEnv();
+    const model = upstream();
+    const session = await completedRun(env);
+    const reply = buttonsReply(
+      '{ "choices": [ { "label": "Install LimeSpot", "action": "grader.install" }, { "label": "Talk to our team", "action": "grader.book-call" }, { "label": "Open the help center", "action": "grader.open-link", "args": { "href": "https://support.limespot.com" } } ] }',
+    );
+    model.reply = reply;
+    const response = await chat(env, session.accessToken, ask('What should I do next?'));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ChatBody;
+    expect(body.graderChat.withheld).toBe(false);
+    expect(body.content).toEqual([{ type: 'text', text: reply }]);
+
+    model.reply = buttonsReply(
+      '{ "choices": [ { "label": "Pricing", "action": "grader.open-link", "args": { "href": "https://limespot.com/pricing" } }, { "label": "What does LimeSpot cost for my store?" } ] }',
+    );
+    const followUp = await chat(env, session.accessToken, [
+      { role: 'user', content: 'What should I do next?' },
+      { role: 'assistant', content: reply },
+      { role: 'user', content: 'What does LimeSpot cost for my store?' },
+    ]);
+    expect(followUp.status).toBe(200);
+    expect(((await followUp.json()) as ChatBody).content).toEqual([
+      { type: 'text', text: model.reply },
+    ]);
+    await expectRefusal(
+      await chat(env, session.accessToken, [
+        { role: 'user', content: 'What should I do next?' },
+        { role: 'assistant', content: reply.slice(0, reply.indexOf('```json')).trim() },
+        { role: 'user', content: 'And then?' },
+      ]),
+      403,
+      'grader_chat_history_unverified',
+      'the reply without its buttons block',
+    );
+  });
+});
+
 describe('daily chat volume alerts', () => {
   async function runAlarms(env: Env, advanceMilliseconds = 0): Promise<void> {
     vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
@@ -1753,6 +1953,8 @@ describe('production readiness of the Grader chat', () => {
     ['a model route every chat request would reject', geminiBalanced],
     ['an allowance past the plan ceiling', { GRADER_CHAT_MESSAGES_PER_AUDIT: '51' }],
     ['a booklet version with no booklet', { GRADER_CHAT_BOOKLET_VERSION: '9' }],
+    ['the removed booklet v1', { GRADER_CHAT_BOOKLET_VERSION: '1' }],
+    ['the removed booklet v2', { GRADER_CHAT_BOOKLET_VERSION: '2' }],
     ['an unknown effort', { GRADER_CHAT_EFFORT: 'max' }],
     ['a plain-HTTP alert webhook', { GRADER_CHAT_ALERT_SLACK_WEBHOOK_URL: 'http://hooks.test/x' }],
   ] as const;
@@ -2379,11 +2581,14 @@ describe('the link guard is the only deterministic output check on the real rout
     return (await response.json()) as ChatBody;
   }
 
-  it('withholds every off-site link form, a listed brand written as a link included, and counts each', async () => {
+  it('withholds every URL and every off-site link form, a listed brand written as a link included, and counts each', async () => {
     const env = durableEnv({ GRADER_CHAT_MESSAGES_PER_AUDIT: '50' });
     const model = upstream();
     const session = await completedRun(env);
     const withheld = [
+      'See [our site](https://limespot.com/demo-request).',
+      'Open https://limespot.com./demo now.',
+      'Write to mailto:hello@limespot.com today.',
       'Visit competitor.com.',
       'See example.org.',
       'Visit www.example.com for details.',
@@ -2436,17 +2641,15 @@ describe('the link guard is the only deterministic output check on the real rout
     expect((await sessionRecord(env, session.auditIdentifier)).chatReplies).toEqual([]);
   }, 30_000);
 
-  it('delivers limespot.com links and a listed brand named as a plain word, and leaves wording to the prompt', async () => {
+  it('delivers limespot.com named as a bare site and a listed brand named as a plain word, and leaves wording to the prompt', async () => {
     const env = durableEnv();
     const model = upstream();
     const session = await completedRun(env);
     for (const reply of [
       'Learn more at limespot.com.',
-      'See [our site](https://limespot.com/demo-request).',
-      'Open https://limespot.com./demo now.',
       'Note: LimeSpot adds recommendations below your hero.',
       'Widget v1.2.3 shows bundles.',
-      '**Tip**: LimeSpot places widgets on product pages.',
+      'Tip: LimeSpot places widgets on product pages.',
       'At 10:30 the report ran, and the ratio was 3:1.',
       'Write to hello@limespot.com.',
       'LimeSpot works with Judge.me.',
