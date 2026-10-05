@@ -134,13 +134,11 @@ start and do not refuse a superseded or `GRADER_RUNS_VALID_FROM`-revoked session
 reuses one audit identifier per store, while app-ai keys the completion ledger and the chat
 allowance by it, so a store runs again after 30 days only once the website issues a new identifier.
 
-### The Grader chat runs over a draft booklet
+### The Grader chat withholds a reply that names the Judge.me integration
 
-`GRADER_CHAT_ENABLED` is `true` in production, and `false` switches the chat off. Only a client that
-declares plan version 2 is offered it, so a published extension that sends plan 1 or no plan never
-sees it. The only booklet, `src/prompts/grader-chat/booklets/v1.md`, is engineering's draft from
-limespot.com copy and has not been approved by marketing; it states no price, no performance figure,
-and no count of customers, reviews or integrations.
+Booklet v2 lists Judge.me among LimeSpot's integrations. The link guard reads `Judge.me` as a
+hostname off limespot.com, so a reply that repeats the name, such as one listing the integrations,
+is withheld and the visitor sees lib's notice instead.
 
 ### The Grader chat's claims rest on its prompt
 

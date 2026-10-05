@@ -343,7 +343,7 @@ describe('config accessors — missing config = error (no fallback defaults)', (
     expect(() => graderChatEffort({ ...ENV, GRADER_CHAT_EFFORT: 'max' })).toThrow(
       /GRADER_CHAT_EFFORT must be one of low, medium, high, xhigh/,
     );
-    expect(graderChatBookletVersion(ENV)).toBe(1);
+    expect(graderChatBookletVersion(ENV)).toBe(2);
     expect(graderChatAlertEvery(ENV)).toBe(500);
     for (const [name, accessor] of [
       ['GRADER_CHAT_MESSAGES_PER_AUDIT', graderChatMessagesPerAudit],
@@ -745,7 +745,7 @@ describe('production [vars] — the deployed configuration values', () => {
     expect(vars.get('GRADER_CHAT_MAX_INPUT_CHARACTERS')).toBe('500');
     expect(vars.get('GRADER_CHAT_MAX_REPLY_TOKENS')).toBe('600');
     expect(vars.get('GRADER_CHAT_EFFORT')).toBe('low');
-    expect(vars.get('GRADER_CHAT_BOOKLET_VERSION')).toBe('1');
+    expect(vars.get('GRADER_CHAT_BOOKLET_VERSION')).toBe('2');
     expect(vars.get('GRADER_CHAT_ALERT_EVERY')).toBe('500');
   });
 

@@ -63,8 +63,9 @@ The registry entry carries the composition with the newest booklet; the handler 
 configured one through `getGraderChatPrompt`, which refuses a version with no booklet file.
 Production readiness (`GET /health`) checks that resolution while the chat is enabled. The booklet is
 the only part of the system text that names a platform. `test/assistant-prompt-blocks.test.ts` pins
-the composition with booklet v1 byte for byte against `test/__snapshots__/grader-chat.baseline.md`,
-so a change to any block regenerates that baseline on purpose.
+the composition with booklet v2, the one production selects, byte for byte against
+`test/__snapshots__/grader-chat.baseline.md`, so a change to any block or a change of the selected
+booklet regenerates that baseline on purpose.
 
 ## The booklet
 
@@ -76,9 +77,10 @@ its draft status that way. A booklet stays under 12,000 characters.
 The boundaries block points the model at the booklet's sections by name: a price may be stated only
 by quoting Prices we may state word for word, and a trial or fee fact only as Claims we may make
 states it. Marketing writes each price with its currency and, for a recurring one, its period —
-`The Essential plan is $49/month.`; v1 leaves Prices we may state empty, so the chat states no price
-until marketing approves one. Never say and Objections guide the model's wording and never license
-a claim the other sections do not make.
+`The Essential plan is $49/month.`; v1, engineering's draft, leaves Prices we may state empty and
+states no price. Never say and Objections guide the model's wording and never license a claim the
+other sections do not make. A reply that repeats booklet wording still passes the link guard, so a
+name the guard reads as a host withholds every reply that repeats it.
 
 v2 makes the chat a product sales consultant for LimeSpot Growth Agents: it opens on the store's
 report, keeps to business needs and product coverage, answers only from the booklet, LimeSpot's own
@@ -94,6 +96,11 @@ limespot.com/max-challenge states. Every line keeps to the boundaries block: v2 
 are designed to minimize impact on page load speed and SEO and never bounds that impact, and states
 no duration beyond the challenge's own length and the plan's 30-day revenue window. The booklet's editor note records the plan identifier
 and the check date; a plan change in Chargebee is a new booklet version.
+
+Production selects v2, which marketing approved: `GRADER_CHAT_BOOKLET_VERSION = "2"` in
+`wrangler.toml`. v1 stays registered, so a deployment returns to it by setting the variable back,
+and a stored outcome answered under v1 still reports `bookletVersion` 1 when its message is
+replayed.
 
 A published booklet is not edited in place: new wording is a new file and a new
 `GRADER_CHAT_BOOKLET_VERSION`, so the version a reply reports names the text it was grounded in.

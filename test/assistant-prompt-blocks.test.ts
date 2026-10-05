@@ -66,13 +66,13 @@ describe('Studio chat is unchanged by the shared blocks', () => {
 });
 
 describe('grader-chat composition', () => {
-  it('composes the committed Grader text byte for byte, with booklet v1', () => {
+  it('composes the committed Grader text byte for byte, with booklet v2', () => {
     expect(`${getGraderChatPrompt(ENV).prompt}\n`).toBe(graderChatBaseline);
   });
 
   it('is the Grader identity, the Grader boundaries, the shared formatting, and the booklet', () => {
     const { prompt, booklet, bookletVersion } = getGraderChatPrompt(ENV);
-    expect(bookletVersion).toBe(1);
+    expect(bookletVersion).toBe(2);
     expect(prompt).toBe(
       composePrompt(graderIdentity, graderBoundaries, sharedChatFormatting, booklet),
     );
@@ -189,10 +189,11 @@ describe('marketing booklets', () => {
   });
 
   it('keeps the draft v1 marked as a draft for editors and states no price', () => {
+    const draft = getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: '1' });
     expect(bookletV1).toMatch(/^<!--\s*DRAFT v1, not approved by marketing\./u);
-    const sections = graderChatBookletSections(getGraderChatPrompt(ENV).booklet);
+    const sections = graderChatBookletSections(draft.booklet);
     expect(sections.get('Prices we may state')).toBe('');
-    expect(getGraderChatPrompt(ENV).prompt).not.toMatch(/DRAFT|marketing has not/iu);
+    expect(draft.prompt).not.toMatch(/DRAFT|marketing has not/iu);
   });
 });
 

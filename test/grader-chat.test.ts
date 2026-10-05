@@ -396,7 +396,7 @@ describe('grader chat plan gating', () => {
     expect(body.graderChat).toEqual({
       remainingInAudit: 24,
       sessionExpiresAt: session.expiresAt,
-      bookletVersion: 1,
+      bookletVersion: 2,
       withheld: false,
       runsValidFrom: '2026-01-01T00:00:00.000Z',
     });
