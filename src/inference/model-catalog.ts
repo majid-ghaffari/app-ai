@@ -106,6 +106,17 @@ export function getFilePolicy(name: FilePolicyName): FilePolicy {
   return FILE_POLICIES[name];
 }
 
+/**
+ * Whether the provider itself deletes an object stored under the named policy at the expiry it
+ * reports. Under a worker-managed policy that expiry only ends the reference: the object stays in
+ * app-ai's own storage until it is deleted, so an unknown or worker-managed policy answers `false`.
+ */
+export function providerDeletesAtExpiry(filePolicyName: string): boolean {
+  return listFilePolicies().some(
+    (name) => name === filePolicyName && FILE_POLICIES[name].lifecycle === 'provider-managed',
+  );
+}
+
 /** Every declared file-policy name, in declaration order. */
 export function listFilePolicies(): readonly FilePolicyName[] {
   return Object.keys(FILE_POLICIES) as FilePolicyName[];

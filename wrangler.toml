@@ -146,7 +146,8 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 # of hosts app-ai will deliver a status event to.
 AUDIT_STATUS_ORIGINS = "https://limespot.com"
 # A session, and the Grader chat with it, lasts 30 days. A new activation for the same audit
-# supersedes the active session, so a visitor who lost theirs reopens from a fresh link.
+# supersedes the active session, so a visitor who lost theirs reopens from a fresh link. A session's
+# uploads are deleted once it ends, and the audit's record this long after its latest session expired.
 AUDIT_SESSION_TTL_SECONDS = "2592000"
 # A session runs the Grader at most AUDIT_MAX_RUNS times: its first run and the
 # retries Studio offers. One abuse ceiling is derived from the grader plan

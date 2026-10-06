@@ -34,7 +34,11 @@ import type { Env } from '../config';
 import type { FilePolicy, ModelProfile, ProviderFileReference } from './inference-types';
 import { InferenceFailure } from '../inference/adapter';
 import { createInferenceFileService } from '../inference/factory';
-import { MAX_REFERENCE_TTL_SECONDS } from '../inference/file-references';
+import {
+  MAX_REFERENCE_TTL_SECONDS,
+  storedFileRoute,
+  type StoredFileLocation,
+} from '../inference/file-references';
 import { silentLogger, type Logger } from './logger';
 
 /**
@@ -56,6 +60,9 @@ export const DISCARD_KEY_PREFIX = 'discard:';
 const DISCARD_DELETE_ATTEMPTS = 2;
 const DISCARD_WRITE_ATTEMPTS = 2;
 const DISCARD_LIST_PAGE_SIZE = 100;
+
+/** How long one stored-object delete may stay unsettled before it is abandoned as failed. */
+export const STORED_FILE_DELETE_TIMEOUT_MILLISECONDS = 10_000;
 
 /** The content forms `dedupUpload` accepts for hashing + upload. */
 export type UploadContent = string | ArrayBuffer | Uint8Array | Blob;
@@ -137,8 +144,7 @@ export async function dedupUpload(
   log: Logger = silentLogger,
 ): Promise<DedupUploadResult> {
   const hash = await sha256Hex(content);
-  const compatibleGroupKey = route.compatibleGroups.join(',');
-  const storageKey = `${route.tenantScope}:${route.accountScope}:${route.policy.name}:${compatibleGroupKey}:${encodeURIComponent(mimeType)}:${hash}`;
+  const storageKey = dedupStorageKey(route, mimeType, hash);
   const discardPrefix = `${DISCARD_KEY_PREFIX}${storageKey}:`;
   const filesKv = env.FILES_KV;
 
@@ -228,6 +234,131 @@ export async function dedupUpload(
     reference: providerReference(metadata.id, hash, metadata, route),
     deduped: false,
   };
+}
+
+/** What one pass over a tenant's `FILES_KV` records left behind. */
+export type TenantFileRelease = 'released' | 'more' | 'kept';
+
+/**
+ * Release the `FILES_KV` records one tenant owns — its dedup records and its `discard:` keys — and
+ * the provider object each names, reading at most `limit` keys of each kind a call and starting no
+ * delete once the clock reaches `deadline`, in epoch milliseconds. A record is removed once its
+ * object is deleted or the provider reports it gone, and kept for the next call when that delete
+ * fails. Answers `released` once the tenant has none left, `more` when the page limit or the
+ * deadline left some unread, and `kept` when a delete failed. Only a tenant none of whose
+ * references can be read again is released this way, because each object may still back one.
+ */
+export async function releaseTenantFiles(
+  tenantScope: string,
+  env: Env,
+  limit: number,
+  deadline: number,
+): Promise<TenantFileRelease> {
+  const filesKv = env.FILES_KV;
+  if (!filesKv) return 'released';
+  const recordPrefix = `${tenantScope}:`;
+  const discardPrefix = `${DISCARD_KEY_PREFIX}${tenantScope}:`;
+  const [records, discards] = await Promise.all([
+    filesKv.list({ prefix: recordPrefix, limit }),
+    filesKv.list({ prefix: discardPrefix, limit }),
+  ]);
+  let kept = false;
+  for (const { name } of records.keys) {
+    if (Date.now() >= deadline) return kept ? 'kept' : 'more';
+    const stored = parseStoredFileMetadata((await filesKv.get(name)) ?? '');
+    const location = parseDedupStorageKey(name.slice(recordPrefix.length));
+    if (stored && location && !(await deleteStoredFile(location, stored.fileId, env))) {
+      kept = true;
+      continue;
+    }
+    await filesKv.delete(name);
+  }
+  for (const { name } of discards.keys) {
+    if (Date.now() >= deadline) return kept ? 'kept' : 'more';
+    const discarded = parseDiscardKey(name.slice(discardPrefix.length));
+    if (discarded && !(await deleteStoredFile(discarded.location, discarded.fileId, env))) {
+      kept = true;
+      continue;
+    }
+    await filesKv.delete(name);
+  }
+  if (kept) return 'kept';
+  return records.list_complete && discards.list_complete ? 'released' : 'more';
+}
+
+/**
+ * Delete one stored provider object through the configured route that still reaches it. Answers
+ * whether the object is gone, deleted now or reported missing; a route that no longer reaches it
+ * or a failed delete answers `false`, so the caller keeps it for another attempt. A delete still
+ * unsettled after `STORED_FILE_DELETE_TIMEOUT_MILLISECONDS` is aborted and answers `false` as
+ * well, whether or not its transport honours the abort, so no caller waits on one indefinitely.
+ */
+export async function deleteStoredFile(
+  location: StoredFileLocation,
+  fileId: string,
+  env: Env,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timedOut = new Promise<false>((resolve) => {
+    controller.signal.addEventListener('abort', () => resolve(false), { once: true });
+  });
+  const timeout = setTimeout(() => controller.abort(), STORED_FILE_DELETE_TIMEOUT_MILLISECONDS);
+  try {
+    return await Promise.race([
+      deleteThroughRoute(location, fileId, env, controller.signal),
+      timedOut,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deleteThroughRoute(
+  location: StoredFileLocation,
+  fileId: string,
+  env: Env,
+  abortSignal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const files = createInferenceFileService(env);
+    const route = await storedFileRoute(location, env, files);
+    if (!route) return false;
+    await files.delete(route.profile, fileId, abortSignal);
+    return true;
+  } catch (error) {
+    return error instanceof InferenceFailure && error.inferenceError.status === 404;
+  }
+}
+
+function dedupStorageKey(route: DedupFileRoute, mimeType: string, hash: string): string {
+  return [
+    route.tenantScope,
+    route.accountScope,
+    route.policy.name,
+    route.compatibleGroups.join(','),
+    encodeURIComponent(mimeType),
+    hash,
+  ].join(':');
+}
+
+function parseDedupStorageKey(key: string): StoredFileLocation | null {
+  const parts = key.split(':');
+  const hash = parts.pop();
+  const mediaType = parts.pop();
+  const groups = parts.pop();
+  const filePolicy = parts.pop();
+  const accountScope = parts.join(':');
+  if (!hash || !mediaType || !groups || !filePolicy || !accountScope) return null;
+  return { accountScope, filePolicy, compatibleGroups: groups.split(',') };
+}
+
+function parseDiscardKey(
+  key: string,
+): { readonly location: StoredFileLocation; readonly fileId: string } | null {
+  const separator = key.lastIndexOf(':');
+  const fileId = key.slice(separator + 1);
+  const location = separator > 0 ? parseDedupStorageKey(key.slice(0, separator)) : null;
+  return location && fileId ? { location, fileId } : null;
 }
 
 /**

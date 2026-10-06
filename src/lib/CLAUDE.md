@@ -45,6 +45,13 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   fails twice keeps the id under its own key, `DISCARD_KEY_PREFIX` + the dedup key + the
   file id, written alone and with no expiry, so concurrent failures and a failed read never lose
   one; the next upload on that dedup key lists those keys, deletes each file, then its key.
+  `releaseTenantFiles` releases every record one tenant owns, dedup and `discard:` alike, deleting
+  the object each names through `deleteStoredFile` and keeping a record whose delete fails; only a
+  tenant none of whose references can be read again is released, which is a Grader session once it
+  has ended. `deleteStoredFile` deletes through the configured route that still reaches the object
+  (`storedFileRoute`), counts a provider's 404 as deleted, and abandons a delete still unsettled
+  after `STORED_FILE_DELETE_TIMEOUT_MILLISECONDS` as failed, racing the abort so a transport that
+  ignores it, an R2 binding call included, cannot hold its caller.
 - Client-correctable canonical validation uses `WorkerError` with the Brain
   `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
   provider-protocol failures after a route reaches its adapter.
@@ -122,7 +129,9 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   session that admitted it and when, and stays open for a lease of the upstream
   inference deadline plus a finalization grace, released on the alarm whichever
   session is current, so paid work admitted before expiry is still
-  finalized and delivered. Only an inference that returned a usable proposal —
+  finalized and delivered. A session's uploads are recorded, by `audit-capture-files.ts`, under the
+  session that admitted them, and deleted one lease after that session ends, by expiry or
+  superseding; the audit's whole record goes a session lifetime after its latest session expired. Only an inference that returned a usable proposal —
   complete, parseable as its prompt's proposal contract, covering every page the
   request's manifest names, with every box a vocabulary box type at a valid
   position and candidate number (at most 500), and never for a request whose
@@ -196,8 +205,9 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   once, and a commit for a reservation no longer in flight answers 410, which the handler returns as
   504 `InferenceTimeoutException`, so each reservation is either committed or released, never both.
 - `AUDIT_SESSION_TTL_SECONDS` is the one bound on a session's life: `audit-auth.ts` signs it into the
-  bearer's `expiresAt` claim, the authority stores and alarms on that expiry, and chat outcomes and
-  the fingerprints of the messages they answer are kept for it. Shorter lifetimes beside it — a file reference's 15 days, a continuation's 24 hours,
+  bearer's `expiresAt` claim, the authority stores and alarms on that expiry, chat outcomes and
+  the fingerprints of the messages they answer are kept for it, and the audit's record is deleted
+  that long after its latest session expired. Shorter lifetimes beside it — a file reference's 15 days, a continuation's 24 hours,
   the chat's UTC-day counters — are owned elsewhere and no audit session depends on them outliving it.
 - The authority keeps the current run's `runTimes`, named by session and run number because a worker
   without them carries the member onto its next run. `runRevoked` compares the completion, or the
@@ -218,6 +228,28 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   session exactly as expiry does — run, files and totals go; completed attempts, leased
   reservations, the outbox, consumed activations and chat state stay — and the record then names
   only the new session, so the old bearer's next reservation answers 401 `audit_session_expired`.
+  The old session's uploads fall due for deletion one lease after the exchange.
+- `audit-capture-files.ts` turns a successful upload's public references into the provider objects
+  behind them, opened under the uploading session's own tenant, and `finalizeAuditUsage` hands them
+  to the authority with the session the upload was admitted under. The authority keeps each as a
+  `capture-file:<sessionIdentifier>:<digest>` key apart from the session record and names each
+  session that admitted an upload in `captureReleases`, whose `dueAt` it sets one reservation lease
+  after the session ends: at expiry, at a superseding exchange, or at once plus a lease for an
+  upload that finished after its session ended. The alarm deletes at most 50 objects a pass, then
+  the session's `FILES_KV` records through `releaseTenantFiles`, and runs again at once while more
+  remain. An object its provider reports gone counts as deleted, and so does one past its expiry
+  under a provider-managed file policy, where the provider deleted it then
+  (`providerDeletesAtExpiry`); worker-managed evidence is always deleted explicitly, because its
+  expiry ends the reference while the object stays in app-ai's own storage. A failed delete is kept
+  and retried a minute later, then at doubling intervals of at most an hour, until it succeeds or
+  that provider expiry passes. An alarm starts no delete once its release pass has run
+  a minute, and every delete is bounded, so the alarm always reaches the transaction that records
+  the retry: an alarm that never returned would exhaust the runtime's finite alarm retries and
+  leave the uploads and the record unscheduled. The record and every key of the audit's object are
+  deleted `AUDIT_SESSION_TTL_SECONDS` after its latest session expired, once no reservation lease,
+  chat message in flight or capture release is outstanding; a capture file no release names is
+  scheduled for deletion first, and undelivered status events are dropped with a warning. An
+  instance without a session record, such as a daily counter, is never deleted this way.
 - The chat's daily limits live in `grader-chat-quota.ts`, on separately addressed
   `AuditSessionAuthority` instances: `grader-chat-daily` and a `grader-chat-visitor:` instance named
   by a day-scoped HMAC of `CF-Connecting-IP`, keyed from `TOKEN_ENCRYPTION_SECRET` — the raw address

@@ -70,22 +70,32 @@ uploads carried an expiry has none and stays in the workspace until it is delete
 the same bytes replaces it — so an older legacy file has no safe removal: the workspace is shared
 by every key with access to it, and nothing on a file names its uploader.
 
-### A `discard:` record waits for the same bytes to be uploaded again
+### A merchant's `discard:` record waits for the same bytes to be uploaded again
 
 An upload Anthropic answered without a usable expiry is deleted at once; when that delete fails
 twice, its id waits under its own non-expiring `discard:` key in `FILES_KV` until the next upload of
-the same bytes on the same route deletes it. If those bytes never come again, the key and the file
-stay until an operator deletes them. If writing that key to `FILES_KV` fails twice as well, the id is
+the same bytes on the same route deletes it, or, for a Grader session's upload, until the session
+ends and its uploads are deleted. If a merchant's bytes never come again, the key and the file stay
+until an operator deletes them. If writing that key to `FILES_KV` fails twice as well, the id is
 lost, and an error-level log records that it happened.
 
-### A Grader chat record no alarm wakes keeps its fingerprints until the audit is used again
+### A Grader upload that will not delete keeps its audit's record
+
+A Grader session's upload whose delete keeps failing is retried at most hourly until its provider
+expiry passes, and the audit's record waits for it. An upload no provider expiry deletes — one kept
+under a `discard:` key, or evidence in worker-managed storage — whose delete never succeeds, for
+instance because its route was since configured onto another provider, is retried for as long as
+that lasts and holds the record with it.
+
+### An audit record no alarm wakes stays until the audit is used again
 
 Every answered chat message's identifier, transcript fingerprint and reply fingerprint are deleted
-by the audit's Durable Object alarm 30 days after the answer. A record an earlier worker left with no
-alarm still scheduled — a chat answered while sessions lasted a day, whose outcome and session alarms
-have both fired — is not woken by a deploy, and nothing in app-ai enumerates audit objects, so its
-fingerprints stay until that audit next takes an exchange, an upload, a proposal or an admitted
-chat message, whose alarm then deletes them at once.
+by the audit's Durable Object alarm 30 days after the answer, and the whole record a session
+lifetime after its latest session expired. A record an earlier worker left with no alarm
+scheduled — its session expired and no chat outcome of it still waits to expire — is not woken by a
+deploy, and nothing in app-ai enumerates audit objects, so it stays until that audit next takes an
+exchange, an upload, a proposal or an admitted chat message, whose alarm then deletes what is past
+its time. Uploads an earlier worker did not record follow Anthropic's 30-day expiry alone.
 
 ### Rotating `TOKEN_ENCRYPTION_SECRET` is a hard cutover
 
@@ -131,8 +141,10 @@ it. The extension holds the session in per-tab session storage, which a closed t
 clears, and the embedded lib keeps the report and chat in page memory, so a reload loses them. The
 website's report-email endpoints verify the same bearer with their own 24-hour window from the run's
 start and do not refuse a superseded or `GRADER_RUNS_VALID_FROM`-revoked session. And the website
-reuses one audit identifier per store, while app-ai keys the completion ledger and the chat
-allowance by it, so a store runs again after 30 days only once the website issues a new identifier.
+reuses one audit identifier per store and counts its completed runs, so a store runs again after 30
+days only once the website issues a new identifier, while app-ai keeps its own completion ledger and
+chat allowance for that identifier only until it deletes the audit's record, a session lifetime
+after the latest session expired.
 
 ### The Grader chat's claims rest on its prompt
 

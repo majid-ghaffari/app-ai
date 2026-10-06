@@ -97,7 +97,9 @@ decisions:
   untracked. A delete that fails twice keeps the id under its own key,
   `discard:<dedup key>:<file id>` in `FILES_KV` — a record only app-ai writes —
   and the next upload of the same bytes on the same route lists those keys,
-  deletes each file, and then its key. Each key is written alone, never read and
+  deletes each file, and then its key; a Grader session's own keys go with its
+  uploads when the session ends
+  ([A Grader session's uploads go when it ends](#38-a-grader-sessions-uploads-go-when-it-ends-and-its-audits-record-a-session-lifetime-later)). Each key is written alone, never read and
   rewritten, so concurrent failures and a failed read cannot lose an id. It has no
   expiry: it is the only proof of ownership of a file that may never expire, so a
   TTL would forget the file while the file stays.
@@ -1286,12 +1288,15 @@ reaches a keep-alive caller as the envelope's `result`, identical to the plain a
 
 A store gets its Grader run, and its report and chat stay usable for 30 days: the extension keeps the
 report, the chat and the session for that long, so a visitor who returns days later goes on chatting
-while the run's allowance lasts. After 30 days the store may run the Grader again; app-ai keeps an
-audit's completion ledger and chat allowance for as long as the website reuses its audit identifier,
-so that reset is the website's to make by issuing a new one. `AUDIT_SESSION_TTL_SECONDS` is
-therefore `2592000`, and it stays the one value that bounds a session in app-ai — the bearer's
-`expiresAt` claim, the session record's expiry and its alarm, `graderChat.sessionExpiresAt`, and how
-long an answered chat message's stored outcome and fingerprints are kept for replay. A reissued session still
+while the run's allowance lasts. After 30 days the store may run the Grader again; the website counts an
+audit's completed runs for as long as it reuses the audit identifier, so that reset is the website's
+to make by issuing a new one, and app-ai keeps the audit's own ledger and chat allowance until its
+record is deleted a session lifetime after the latest session expired
+([A Grader session's uploads go when it ends](#38-a-grader-sessions-uploads-go-when-it-ends-and-its-audits-record-a-session-lifetime-later)).
+`AUDIT_SESSION_TTL_SECONDS` is therefore `2592000`, and it stays the one value that bounds a session
+in app-ai — the bearer's `expiresAt` claim, the session record's expiry and its alarm,
+`graderChat.sessionExpiresAt`, how long an answered chat message's stored outcome and fingerprints
+are kept for replay, and how long the audit's record outlives its latest session. A reissued session still
 supersedes the old one at once, so the old bearer answers `audit_session_expired` from then on.
 
 Time is not what holds spending. Every cap is per run or per day — the run ceiling, retries per
@@ -1334,3 +1339,53 @@ bearer's issue time, which errs toward a fresh run without refusing every run re
 it opened with uploads alone, which has no report to revoke, is adopted as opening now. The exchange resolves every setting it answers with
 before it consumes the one-time activation, so a deployment fault never costs the visitor the link or
 the session they still hold.
+
+### 38. A Grader session's uploads go when it ends, and its audit's record a session lifetime later
+
+A Grader session uploads screenshots of a store to Anthropic. Anthropic's 30-day expiry alone would
+let an upload made late in a 30-day session outlive the session by almost a month, and nothing else
+would end the audit's Durable Object record, with its store origin, callback URL and chat state.
+Both end on the session's own clock instead.
+
+Every successful upload records its provider objects under the session it was admitted in, and the
+audit's alarm deletes them one reservation lease after the session ends, by expiry or by a new
+activation superseding it. The lease is the wait because a proposal the session admitted before it
+ended may still be reading its tiles; after it nothing can, since dedup shares an object only under
+one tenant pseudonym and a session's pseudonym is derived from its own identifier. The session's
+`FILES_KV` dedup records and `discard:` keys go in the same pass, with the objects they name, so an
+upload whose success never reached the Durable Object is caught through its dedup record, and the
+same provider-neutral delete removes Kimi's encrypted R2 evidence. A delete that fails is kept and
+retried a minute later and then at doubling intervals of at most an hour, until it succeeds or the
+object's provider expiry deletes it anyway; it is never dropped while the object can still exist.
+An expiry stands in for a delete only where the provider itself deletes at it, which is a
+provider-managed file policy. Evidence in app-ai's own storage carries the expiry of its reference,
+which ends before the bucket rule removes the object, so it is always deleted explicitly.
+A retry only helps if the alarm lives to record it, and a Durable Object alarm that never returns is
+retried a finite number of times and then left unscheduled, which would strand the uploads and the
+record with them. Every delete is therefore abandoned as failed after ten seconds, whether or not
+its transport honours the abort — an R2 binding call cannot be aborted — and an alarm starts no
+delete once its pass has run a minute, so a provider that stops answering costs one pass and the
+retry is always written.
+The deletes run on the Durable Object alarm the session already keeps, because only the audit's own
+object knows which sessions uploaded what and when each ended, and it adds no binding, cron or
+configuration.
+
+The record and every key of the audit's object are deleted `AUDIT_SESSION_TTL_SECONDS` after the
+latest session expired: at most 60 days after the last activation the audit exchanged. That instant
+is the first at which the record holds nothing a rule still needs — every chat outcome and
+fingerprint, kept a session lifetime after its answer, every audit upload, which Anthropic deletes
+30 days after it was made, and every activation, which exchanges within 15 minutes, have all ended
+by then — so the deletion never cuts a documented lifetime short and keeps nothing past it, and it
+reuses the session's own setting rather than adding another. A shorter grace would delete chat
+outcomes and pending upload deletes the documentation still promises; the website's 180-day lead
+retention, the other candidate, would keep a store origin for months after any session needed it.
+
+limespot.com's privacy policy tells visitors when these uploads and records are deleted, so the
+worker that deletes them is live before that copy is published, and a rollback below it takes the
+copy back with it.
+
+Deleting the record ends app-ai's copy of the audit's completed runs and chat allowance. A later
+activation for the same audit identifier starts a fresh record, whose chat offers the full allowance
+again once a run in it completes. Completed runs stay capped, because the website refuses an
+activation once it has mirrored two completions for the audit and keeps that count for as long as it
+reuses the identifier.

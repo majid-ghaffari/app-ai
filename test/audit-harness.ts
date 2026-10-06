@@ -62,6 +62,19 @@ export class MemoryDurableStorage {
     this.values.clear();
   }
 
+  async list<T>(options: { prefix?: string; limit?: number } = {}): Promise<Map<string, T>> {
+    const keys = [...this.values.keys()]
+      .filter((key) => key.startsWith(options.prefix ?? ''))
+      .sort();
+    return new Map(
+      keys.slice(0, options.limit ?? keys.length).map((key) => [key, this.values.get(key) as T]),
+    );
+  }
+
+  keys(): string[] {
+    return [...this.values.keys()];
+  }
+
   private alarmAt: number | null = null;
 
   async setAlarm(scheduledTime: number): Promise<void> {

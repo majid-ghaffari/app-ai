@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import worker from '../src/index';
 import type { Env } from '../src/config';
@@ -359,6 +359,14 @@ function counterStorages(env: Env, prefix: string): MemoryDurableStorage[] {
     .filter(([name]) => name.startsWith(prefix))
     .map(([, storage]) => storage);
 }
+
+const CLOCK_START = Date.parse('2026-10-01T12:00:00Z');
+
+function startClock(): void {
+  vi.useFakeTimers({ now: CLOCK_START, toFake: ['Date'] });
+}
+
+beforeEach(startClock);
 
 afterEach(() => {
   vi.useRealTimers();
@@ -1624,7 +1632,7 @@ describe('daily chat volume alerts', () => {
       await runAlarms(env, 61_000);
       expect(model.webhookTexts, String(webhookStatus)).toHaveLength(2);
       expect(await dailyOutbox(env), String(webhookStatus)).toEqual([]);
-      vi.useRealTimers();
+      startClock();
     }
 
     const refusedEnv = durableEnv({
@@ -1639,7 +1647,7 @@ describe('daily chat volume alerts', () => {
     await runAlarms(refusedEnv, 61_000);
     expect(refusing.webhookTexts).toHaveLength(1);
     expect(await dailyOutbox(refusedEnv)).toEqual([]);
-    vi.useRealTimers();
+    startClock();
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const env = durableEnv({ GRADER_CHAT_ALERT_EVERY: '1', LOG_TARGETS_WARN: 'console' });

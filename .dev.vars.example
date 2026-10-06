@@ -193,7 +193,8 @@ AUDIT_STATUS_SIGNING_SECRET=
 AUDIT_STATUS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 
 # REQUIRED. Scoped audit limits. Production values are declared in wrangler.toml.
-# A session, and its Grader chat, lasts 30 days.
+# A session, and its Grader chat, lasts 30 days; the audit's record is deleted this long after its
+# latest session expired.
 AUDIT_SESSION_TTL_SECONDS=2592000
 AUDIT_MAX_RUNS=4
 AUDIT_RUN_HEADROOM=2

@@ -30,7 +30,14 @@ import {
   UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS,
 } from '../inference/deadline';
 import { base64UrlEncode } from '../inference/token-sealing';
+import {
+  auditCaptureFileName,
+  releaseAuditCaptureFile,
+  releaseAuditSessionDedupRecords,
+  type AuditCaptureFile,
+} from './audit-capture-files';
 import { deliverAuditStatusEvent, type AuditStatus, type AuditStatusEvent } from './audit-status';
+import type { TenantFileRelease } from './file-dedup';
 import { createLoggingRuntime, type Logger } from './logger';
 import { WorkerError } from './responses';
 import { isSameStoreOrigin } from './store-origin';
@@ -60,6 +67,10 @@ const RETAINED_ACTIVATION_IDENTIFIERS = 1_024;
 const CHAT_COMMIT_ATTEMPTS = 3;
 const CHAT_SETTLEMENT_HORIZON_MILLISECONDS = 86_400_000;
 const CHAT_OUTCOME_KEY_PREFIX = 'chat-outcome:';
+const CAPTURE_FILE_KEY_PREFIX = 'capture-file:';
+const CAPTURE_RELEASE_BATCH = 50;
+const CAPTURE_RELEASE_PASS_MILLISECONDS = 60_000;
+const CAPTURE_RELEASE_MAX_RETRY_MILLISECONDS = 3_600_000;
 
 /**
  * How long past its inference deadline a reservation stays open, so a result the model returned
@@ -136,6 +147,15 @@ interface ChatAnsweredMessage {
   readonly replyFingerprint?: string | null;
 }
 
+/** A session whose capture files are deleted once it has ended and its last lease has run out. */
+interface CaptureRelease {
+  readonly sessionIdentifier: string;
+  /** When the alarm next deletes the session's capture files; absent while the session is live. */
+  readonly dueAt?: number;
+  /** Consecutive passes that left a capture file undeleted, which space out the next attempt. */
+  readonly failures: number;
+}
+
 /** A chat message whose visitor and deployment daily counters are still to be committed or released. */
 interface ChatSettlement {
   readonly reservationIdentifier: string;
@@ -208,6 +228,11 @@ interface SessionRecord {
   readonly chatAnswered?: readonly ChatAnsweredMessage[];
   /** Chat messages whose daily counters the alarm settles until each succeeds. */
   readonly chatSettlements?: readonly ChatSettlement[];
+  /**
+   * Every session of the audit whose uploads left capture files still to delete. Absent when none
+   * has, and on a record written before capture files were deleted.
+   */
+  readonly captureReleases?: readonly CaptureRelease[];
 }
 
 const FRESH_RUN = {
@@ -252,6 +277,9 @@ interface FinalizeInput {
   readonly succeeded: boolean;
   readonly fileIdentifier?: string;
   readonly completed?: boolean;
+  /** The session an upload was admitted under, which owns whatever objects it created. */
+  readonly uploadSession?: string;
+  readonly captures?: readonly AuditCaptureFile[];
 }
 
 interface ChatReserveInput {
@@ -403,23 +431,31 @@ export async function reserveAuditAuthorityRequest(
   };
 }
 
-/**
- * Commit a successful paid operation or release its reservation after failure. `completed` says
- * whether an inference returned a usable proposal; only such an inference completes a public run.
- */
+/** What a finalized operation produced beyond its success. */
+export interface AuditAuthorityOutcome {
+  /** Whether an inference returned a usable proposal; only such an inference completes a run. */
+  readonly completed?: boolean;
+  /** The provider objects a successful upload created, deleted once its session ends. */
+  readonly captures?: readonly AuditCaptureFile[];
+}
+
+/** Commit a successful paid operation or release its reservation after failure. */
 export async function finalizeAuditAuthorityRequest(
   authorization: AuditAuthorityReservation,
   storeOrigin: string,
   succeeded: boolean,
   fileIdentifier: string | undefined,
   env: Env,
-  completed = false,
+  outcome: AuditAuthorityOutcome = {},
 ): Promise<void> {
+  const captures = outcome.captures ?? [];
   const input: FinalizeInput = {
     reservationIdentifier: authorization.reservationIdentifier,
     succeeded,
     ...(fileIdentifier === undefined ? {} : { fileIdentifier }),
-    ...(completed ? { completed } : {}),
+    ...(outcome.completed === true ? { completed: true } : {}),
+    ...(authorization.kind === 'upload' ? { uploadSession: authorization.sessionIdentifier } : {}),
+    ...(captures.length === 0 ? {} : { captures }),
   };
   const response = await authorityStub(authorization.auditIdentifier, env).fetch(
     internalRequest(storeOrigin, '/finalize', input),
@@ -666,6 +702,8 @@ export class AuditSessionAuthority implements DurableObject {
       await this.drainChatSettlements();
       await this.deleteExpiredChatRecords();
       await this.flushStatusOutbox();
+      await this.releaseCaptureFiles();
+      await this.deleteExpiredRecord();
     } finally {
       await this.scheduleAlarm();
     }
@@ -699,7 +737,13 @@ export class AuditSessionAuthority implements DurableObject {
       }
       if (existing && publicAttemptsExhausted(existing)) return { status: 429 } as const;
 
-      const superseded = existing ? releaseSession(existing) : undefined;
+      const superseded = existing
+        ? withEndedCaptureRelease(
+            releaseSession(existing),
+            existing.sessionIdentifier,
+            leaseEnd(Date.now()),
+          )
+        : undefined;
       const session: SessionRecord = {
         auditIdentifier: input.auditIdentifier,
         attemptLimit: input.attemptLimit,
@@ -719,6 +763,7 @@ export class AuditSessionAuthority implements DurableObject {
         ...(superseded?.chatInFlight ? { chatInFlight: superseded.chatInFlight } : {}),
         ...(superseded?.chatAnswered ? { chatAnswered: superseded.chatAnswered } : {}),
         ...(superseded?.chatSettlements ? { chatSettlements: superseded.chatSettlements } : {}),
+        ...(superseded?.captureReleases ? { captureReleases: superseded.captureReleases } : {}),
         run: 1,
         ...FRESH_RUN,
         runTimes: { sessionIdentifier: input.sessionIdentifier, run: 1, startedAt: Date.now() },
@@ -769,7 +814,7 @@ export class AuditSessionAuthority implements DurableObject {
         const sessionUploads = ceiling.uploads * auditMaxRuns(this.env);
         if (session.uploadCount + pendingUploads.length >= sessionUploads) return 429;
         await this.writeSession(storage, {
-          ...session,
+          ...withCaptureRelease(session, session.sessionIdentifier, Date.now()),
           pending: {
             ...session.pending,
             [input.reservationIdentifier]: {
@@ -1101,9 +1146,21 @@ export class AuditSessionAuthority implements DurableObject {
       typeof input.fileIdentifier === 'string' && input.fileIdentifier.length > 0
         ? await fileReferenceDigest(input.fileIdentifier)
         : undefined;
+    const captures = input.succeeded
+      ? await Promise.all(
+          (input.captures ?? []).map(async (file) => ({
+            name: await auditCaptureFileName(file),
+            file,
+          })),
+        )
+      : [];
     const status = await this.state.storage.transaction(async (storage) => {
-      const session = await readSession(storage);
-      if (!session) return 401;
+      const stored = await readSession(storage);
+      if (!stored) return 401;
+      const session =
+        input.uploadSession === undefined
+          ? stored
+          : await this.recordUpload(storage, stored, input.uploadSession, captures);
       if (session.completedReservations.includes(input.reservationIdentifier)) return 204;
       if (session.abandonedReservations.includes(input.reservationIdentifier)) return 204;
       const reservation = session.pending[input.reservationIdentifier];
@@ -1174,6 +1231,20 @@ export class AuditSessionAuthority implements DurableObject {
     return internalResponse(status);
   }
 
+  private async recordUpload(
+    storage: DurableObjectStorage | DurableObjectTransaction,
+    session: SessionRecord,
+    uploadSession: string,
+    captures: readonly { readonly name: string; readonly file: AuditCaptureFile }[],
+  ): Promise<SessionRecord> {
+    for (const { name, file } of captures) {
+      await storage.put(captureFileKey(uploadSession, name), file);
+    }
+    const tracked = withCaptureRelease(session, uploadSession, Date.now());
+    if (tracked !== session) await this.writeSession(storage, tracked);
+    return tracked;
+  }
+
   private async expirePendingSession(): Promise<void> {
     const now = epochSeconds();
     await this.state.storage.transaction(async (storage) => {
@@ -1183,7 +1254,15 @@ export class AuditSessionAuthority implements DurableObject {
         releaseLapsedReservations(releaseExpiredSession(session, now), Date.now()),
         Date.now(),
       );
-      if (released !== session) await this.writeSession(storage, released);
+      const ended =
+        session.expiresAt > now
+          ? released
+          : withEndedCaptureRelease(
+              released,
+              session.sessionIdentifier,
+              leaseEnd(session.expiresAt * 1000),
+            );
+      if (ended !== session) await this.writeSession(storage, ended);
     });
   }
 
@@ -1223,6 +1302,114 @@ export class AuditSessionAuthority implements DurableObject {
     }
   }
 
+  private async releaseCaptureFiles(): Promise<void> {
+    const session = await readSession(this.state.storage);
+    const now = Date.now();
+    const due = (session?.captureReleases ?? []).filter(
+      (release) => release.dueAt !== undefined && release.dueAt <= now,
+    );
+    const deadline = now + CAPTURE_RELEASE_PASS_MILLISECONDS;
+    for (const release of due) {
+      if (Date.now() >= deadline) return;
+      const pass = await this.releaseCapturePass(release.sessionIdentifier, deadline);
+      const retried = await this.state.storage.transaction(async (storage) => {
+        for (const key of pass.released) await storage.delete(key);
+        const current = await readSession(storage);
+        const releases = current?.captureReleases ?? [];
+        const entry = releases.find((item) => item.sessionIdentifier === release.sessionIdentifier);
+        if (!current || !entry) return null;
+        const remaining = await storage.list({
+          prefix: captureFilePrefix(release.sessionIdentifier),
+          limit: 1,
+        });
+        const finishedAt = Date.now();
+        let next: CaptureRelease | null = null;
+        if (pass.outcome === 'kept') {
+          const failures = entry.failures + 1;
+          next = { ...entry, failures, dueAt: captureRetryAt(failures, finishedAt) };
+        } else if (pass.outcome === 'more' || remaining.size > 0) {
+          next = { ...entry, failures: 0, dueAt: finishedAt };
+        }
+        await this.writeSession(
+          storage,
+          withCaptureReleases(
+            current,
+            next
+              ? releases.map((item) => (item === entry ? next : item))
+              : releases.filter((item) => item !== entry),
+          ),
+        );
+        return pass.outcome === 'kept' ? { auditIdentifier: current.auditIdentifier, next } : null;
+      });
+      if (retried) {
+        this.logger().warn('Grader capture files could not all be deleted; they are retried', {
+          auditIdentifier: retried.auditIdentifier,
+          failures: retried.next?.failures,
+        });
+      }
+    }
+  }
+
+  private async releaseCapturePass(
+    sessionIdentifier: string,
+    deadline: number,
+  ): Promise<{ readonly released: readonly string[]; readonly outcome: TenantFileRelease }> {
+    const listed = await this.state.storage.list<AuditCaptureFile>({
+      prefix: captureFilePrefix(sessionIdentifier),
+      limit: CAPTURE_RELEASE_BATCH,
+    });
+    const released: string[] = [];
+    let kept = false;
+    let unreached = listed.size >= CAPTURE_RELEASE_BATCH;
+    for (const [key, file] of listed) {
+      if (Date.now() >= deadline) {
+        unreached = true;
+        break;
+      }
+      if (await releaseAuditCaptureFile(file, this.env)) released.push(key);
+      else kept = true;
+    }
+    if (kept) return { released, outcome: 'kept' };
+    if (unreached) return { released, outcome: 'more' };
+    return {
+      released,
+      outcome: await releaseAuditSessionDedupRecords(
+        sessionIdentifier,
+        this.env,
+        CAPTURE_RELEASE_BATCH,
+        deadline,
+      ),
+    };
+  }
+
+  private async deleteExpiredRecord(): Promise<void> {
+    const retentionMilliseconds = auditSessionTtlSeconds(this.env) * 1000;
+    const deleted = await this.state.storage.transaction(async (storage) => {
+      const session = await readSession(storage);
+      const now = Date.now();
+      if (!session || !recordDeletable(session, retentionMilliseconds, now)) return null;
+      const [orphan] = await storage.list({ prefix: CAPTURE_FILE_KEY_PREFIX, limit: 1 });
+      if (orphan) {
+        const [orphanSession = ''] = orphan[0].slice(CAPTURE_FILE_KEY_PREFIX.length).split(':');
+        await this.writeSession(storage, withCaptureRelease(session, orphanSession, now));
+        return null;
+      }
+      const outcomes = await storage.list({ prefix: CHAT_OUTCOME_KEY_PREFIX });
+      for (const key of outcomes.keys()) await storage.delete(key);
+      await storage.delete(SESSION_STORAGE_KEY);
+      return {
+        auditIdentifier: session.auditIdentifier,
+        statusEvents: session.statusOutbox.length,
+      };
+    });
+    if (deleted && deleted.statusEvents > 0) {
+      this.logger().warn(
+        'An audit record was deleted with status events still undelivered',
+        deleted,
+      );
+    }
+  }
+
   private async writeSession(
     storage: DurableObjectStorage | DurableObjectTransaction,
     session: SessionRecord,
@@ -1250,12 +1437,14 @@ export class AuditSessionAuthority implements DurableObject {
     const counterAlarmAt = await dailyChatCounterAlarmAt(this.state.storage);
     if (counterAlarmAt !== null) candidates.push(counterAlarmAt);
     const session = await readSession(this.state.storage);
-    if (session) candidates.push(...sessionAlarmCandidates(session));
+    if (session) {
+      candidates.push(...sessionAlarmCandidates(session, auditSessionTtlSeconds(this.env) * 1000));
+    }
     if (candidates.length > 0) await this.state.storage.setAlarm(Math.min(...candidates));
   }
 }
 
-function sessionAlarmCandidates(session: SessionRecord): number[] {
+function sessionAlarmCandidates(session: SessionRecord, retentionMilliseconds: number): number[] {
   const now = Date.now();
   const candidates: number[] = [];
   if (session.statusOutbox.length > 0) {
@@ -1277,7 +1466,87 @@ function sessionAlarmCandidates(session: SessionRecord): number[] {
   const chatExpiries = (session.chatAnswered ?? []).map(chatAnsweredExpiry);
   if (chatExpiries.length > 0) candidates.push(Math.max(now, Math.min(...chatExpiries)));
   if (withoutExpiredChat(session, now) !== session) candidates.push(now);
+  for (const release of session.captureReleases ?? []) {
+    if (release.dueAt !== undefined) candidates.push(Math.max(now, release.dueAt));
+  }
+  const deletionAt = recordDeletionAt(session, retentionMilliseconds);
+  if (deletionAt > now || recordSettled(session)) candidates.push(Math.max(now, deletionAt));
   return candidates;
+}
+
+function recordDeletionAt(session: SessionRecord, retentionMilliseconds: number): number {
+  return session.expiresAt * 1000 + retentionMilliseconds;
+}
+
+function recordSettled(session: SessionRecord): boolean {
+  return (
+    Object.keys(session.pending).length === 0 &&
+    session.chatInFlight === undefined &&
+    (session.captureReleases ?? []).length === 0
+  );
+}
+
+function recordDeletable(
+  session: SessionRecord,
+  retentionMilliseconds: number,
+  now: number,
+): boolean {
+  return recordDeletionAt(session, retentionMilliseconds) <= now && recordSettled(session);
+}
+
+function captureFilePrefix(sessionIdentifier: string): string {
+  return `${CAPTURE_FILE_KEY_PREFIX}${sessionIdentifier}:`;
+}
+
+function captureFileKey(sessionIdentifier: string, name: string): string {
+  return `${captureFilePrefix(sessionIdentifier)}${name}`;
+}
+
+function captureRetryAt(failures: number, now: number): number {
+  return (
+    now +
+    Math.min(
+      CAPTURE_RELEASE_MAX_RETRY_MILLISECONDS,
+      CALLBACK_RETRY_MILLISECONDS * 2 ** (failures - 1),
+    )
+  );
+}
+
+function withCaptureReleases(
+  session: SessionRecord,
+  releases: readonly CaptureRelease[],
+): SessionRecord {
+  const { captureReleases: _previous, ...rest } = session;
+  return releases.length === 0 ? rest : { ...rest, captureReleases: releases };
+}
+
+function withCaptureRelease(
+  session: SessionRecord,
+  sessionIdentifier: string,
+  now: number,
+): SessionRecord {
+  const releases = session.captureReleases ?? [];
+  if (releases.some((release) => release.sessionIdentifier === sessionIdentifier)) return session;
+  const live = sessionIdentifier === session.sessionIdentifier && session.expiresAt * 1000 > now;
+  return withCaptureReleases(session, [
+    ...releases,
+    { sessionIdentifier, failures: 0, ...(live ? {} : { dueAt: leaseEnd(now) }) },
+  ]);
+}
+
+function withEndedCaptureRelease(
+  session: SessionRecord,
+  sessionIdentifier: string,
+  dueAt: number,
+): SessionRecord {
+  const releases = session.captureReleases ?? [];
+  const ending = (release: CaptureRelease): boolean =>
+    release.sessionIdentifier === sessionIdentifier && release.dueAt === undefined;
+  if (!releases.some(ending)) return session;
+  return withCaptureReleases(
+    session,
+    releases.map((release) => (ending(release) ? { ...release, dueAt } : release)),
+  );
 }
 
 function chatAnsweredExpiry(message: ChatAnsweredMessage): number {

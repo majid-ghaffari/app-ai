@@ -40,6 +40,7 @@ import {
   isSupportedAuditPlanVersion,
   planIncludesGraderChat,
 } from './audit-plan';
+import { auditCaptureFiles, type AuditCaptureFile } from './audit-capture-files';
 import { graderChatRefusal } from './grader-chat-quota';
 import type { PromptName } from '../prompt-registry';
 import { WorkerError } from './responses';
@@ -788,8 +789,9 @@ export async function finalizeAuditUsage(
   env: Env,
 ): Promise<void> {
   let fileIdentifier: string | undefined;
+  let captures: readonly AuditCaptureFile[] = [];
   if (response.ok && authorization.reservation.kind === 'upload') {
-    const result = (await response.clone().json()) as { id?: unknown };
+    const result = (await response.clone().json()) as { id?: unknown; references?: unknown };
     if (typeof result.id !== 'string' || result.id.length === 0) {
       await finalizeAuditAuthorityRequest(
         authorization.reservation,
@@ -804,6 +806,16 @@ export async function finalizeAuditUsage(
       });
     }
     fileIdentifier = result.id;
+    try {
+      captures = await auditCaptureFiles(
+        [result.id, ...referenceIdentifiers(result.references)],
+        authorization.sessionIdentifier,
+        env,
+      );
+    } catch (error) {
+      await releaseAuditUsage(authorization, env);
+      throw error;
+    }
   }
   const completed =
     response.ok &&
@@ -820,7 +832,19 @@ export async function finalizeAuditUsage(
     response.ok,
     fileIdentifier,
     env,
-    completed,
+    { completed, captures },
+  );
+}
+
+function referenceIdentifiers(references: unknown): string[] {
+  if (!references || typeof references !== 'object') return [];
+  return Object.values(references).flatMap((reference: unknown) =>
+    reference &&
+    typeof reference === 'object' &&
+    'id' in reference &&
+    typeof reference.id === 'string'
+      ? [reference.id]
+      : [],
   );
 }
 

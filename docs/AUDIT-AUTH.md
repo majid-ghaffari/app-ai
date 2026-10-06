@@ -216,7 +216,8 @@ reissued after expiry: completed attempts, every reservation still inside its le
 mirrored under the session that admitted it), the status outbox, the consumed activations, and the
 Grader chat's count, replies, answered message identifiers with their stored outcomes, settlements
 and message in flight. The new session starts a fresh first run that
-owns no files. A replayed activation is still refused 409 `AuditActivationConsumedException`, and
+owns no files, and the superseded session's uploads are deleted once its last lease has run out
+(see [Retention](#retention)). A replayed activation is still refused 409 `AuditActivationConsumedException`, and
 superseding never opens an audit whose public attempts are spent.
 
 ## Scope
@@ -425,8 +426,9 @@ worker that has not learned the version refuses the run at its exchange rather t
 - **Session lifetime.** 30 days (`AUDIT_SESSION_TTL_SECONDS`, `2592000`), and the Grader chat ends
   with it, so a visitor who keeps the session can return days later and go on chatting while the
   audit's message allowance lasts. That one value sets the bearer's `expiresAt` claim, the session
-  record's expiry and alarm, `graderChat.sessionExpiresAt`, and how long a chat message's stored
-  outcome and fingerprints are kept after it was answered; nothing else in app-ai bounds a session. Spending is held
+  record's expiry and alarm, `graderChat.sessionExpiresAt`, how long a chat message's stored
+  outcome and fingerprints are kept after it was answered, and how long the audit's record outlives
+  its latest session ([Retention](#retention)); nothing else in app-ai bounds a session. Spending is held
   per run and per day, not by time: the session lifetime changes no allowance, attempt cap or daily
   limit. A visitor who lost the session — a closed tab or browser — reopens the Grader from a fresh
   link, whose activation supersedes the old session at once (see "Exchange and session contract").
@@ -768,12 +770,13 @@ rename: editing or removing either one detaches every object's storage, includin
 attempt ledger that enforces the public two-run cap, with no way to reattach it. One object is addressed deterministically per `auditIdentifier`, which makes
 cross-link completion counting, activation consumption, run reservations, and concurrent file-ID
 ownership strongly consistent. At expiry, an alarm removes provider file identifiers, per-run
-counters and session totals; the chat's count, replies, answered messages, settlements and message in flight stay with the audit, and each stored chat outcome under its `chat-outcome:<messageId>` key until its own expiry. Work still inside its lease stays pending, carried into a reissued
+counters and session totals, and the session's uploads fall due for deletion (see Retention below); the chat's count, replies, answered messages, settlements and message in flight stay with the audit, and each stored chat outcome under its `chat-outcome:<messageId>` key until its own expiry. Work still inside its lease stays pending, carried into a reissued
 session if one opens; the alarm is always set for the earliest lease end, so a lease lapses on time
 even while a reissued session is active, and the lapsed reservation is released and mirrored
 `failed`. It retains only the stable
 completion ledger, activation replay identifiers and pending callback outbox needed to enforce the
-cross-link contract.
+cross-link contract, until the whole record is deleted a session lifetime after its latest session
+expired.
 
 The Grader chat's members — `chatMessages`, `chatReplies`, `chatInFlight`, `chatAnswered` and
 `chatSettlements` — are optional: a session written before the chat existed reads as having answered
@@ -798,6 +801,11 @@ unaffected.
 A rolled-back worker that refuses a new activation while a session is active, instead of
 superseding it, locks a visitor who lost theirs out until the session expires, which under 30-day
 sessions is up to 30 days; roll `AUDIT_SESSION_TTL_SECONDS` back with such a worker.
+
+`captureReleases` and the `capture-file:` keys are optional state too. A worker without them records
+no capture files, leaves its uploads to their provider expiry, deletes no record, and drops
+`captureReleases` when a new activation supersedes a session; the current worker then finds the
+capture files it recorded under no release and deletes them before it deletes the record.
 
 A session record carries `runTimes: { sessionIdentifier, run, startedAt, completedAt? }`, epoch
 milliseconds for the current run, which `GRADER_RUNS_VALID_FROM` is compared with. A worker without
@@ -843,17 +851,6 @@ accepts a proposal reference that matches either form. An authority that matches
 only refuses, with 403 `AuditScopeException` and before any reservation, a proposal naming files
 stored as digests; the retry's fresh uploads are stored as references there and admitted.
 
-Clearing an owned file identifier removes audit authorization to reference it; it does not promise
-immediate deletion of the underlying provider evidence. Anthropic deletes every audit upload 30 days
-after it was made; until then the content-hash dedup layer can share the object with a later upload
-of the same bytes during its first 15 days, so a session alarm cannot safely delete it unilaterally. An audit route configured onto Kimi
-stores encrypted evidence in R2; session expiry removes authorization immediately and the bucket's
-16-day rule removes the object and hosted-id sidecar, while an image already accepted upstream
-follows Kimi's retention policy because its delete operation is unavailable. Public privacy copy and
-the processor retention policy must describe these provider-specific lifetimes before any audit route
-resolves to Kimi. Provider-side deletion and retention are
-operational production policy, not capabilities claimed by the audit session TTL.
-
 Production provisioning requires all three encrypted secrets plus the HTTPS
 `AUDIT_STATUS_ORIGINS` allowlist before the route is usable. `npm run deploy:dry-run` validates the class
 export, binding, migration, and revision-stamped production launcher without deploying or invoking
@@ -873,3 +870,68 @@ working unchanged. The website's report-email endpoints hold their own 24-hour w
 start, so a report email for an older run is refused there however long the app-ai session lasts. Raising `GRADER_EXTENSION_BUILT_AFTER` past `2026-10-03T00:00:00Z` refuses
 every build that sends no `X-LimeSpot-Extension-Built-At`, so it waits until the build that sends the
 header is the one visitors have.
+
+## Retention
+
+### A session's uploads are deleted when it ends
+
+Every successful upload records the provider objects behind its references under the session it was
+admitted in: the provider account, file policy and prompt groups of the route the object lives on,
+its upstream id and its provider expiry, each under its own
+`capture-file:<sessionIdentifier>:<digest>` key of the audit's object, so they never count toward
+the session record's budget. The record names every session that admitted an upload in
+`captureReleases` until its uploads are deleted. A session ends when it expires or a new activation
+supersedes it, and its uploads fall due one reservation lease after that — the upstream inference
+deadline plus the finalization grace, 11 minutes — because a proposal it admitted before it ended
+may still be reading them. An upload that finishes after its session ended is recorded under that
+session and falls due a lease after it finished.
+
+Nothing else can reach those objects by then. The content-hash dedup layer shares an object only
+among uploads under one tenant pseudonym, and an audit session's pseudonym is derived from its own
+session identifier, so every reference to one of its uploads is that session's, and the session can
+no longer spend. The audit's alarm deletes each object through the configured route that still
+reaches it (`storedFileRoute` in `src/inference/file-references.ts`), then the session's `FILES_KV`
+dedup records and `discard:` keys together with the object each names, at most 50 of each a pass,
+and runs the next pass at once while more remain. An object its provider reports missing counts as
+deleted, and so does one past the expiry at which its provider deleted it, which holds only under a
+provider-managed file policy (`providerDeletesAtExpiry` in `src/inference/model-catalog.ts`). A
+delete that fails — the provider unreachable, or the route since configured onto another provider —
+keeps the object and retries it a minute later, then at doubling intervals of at most an hour, until
+the delete succeeds or that provider expiry passes; an object with no provider expiry, or one in
+worker-managed storage, is retried until it is deleted. Each delete is
+abandoned as failed after ten seconds (`STORED_FILE_DELETE_TIMEOUT_MILLISECONDS`), whether or not
+its transport honours the abort, and a pass starts no delete once it has run a minute, so a provider
+that stops answering cannot keep the alarm from recording the retry. A route configured
+onto Kimi stores its evidence encrypted in R2, which is worker-managed storage: the expiry a
+reference to it carries, 15 days and an hour after the upload, only ends the reference, and the
+object stays until the bucket's 16-day rule removes it. The alarm therefore always deletes such
+evidence explicitly, the object and its hosted-id sidecar, whatever that expiry says, while an image
+Kimi already accepted upstream follows Kimi's retention policy because its delete operation is
+unavailable; public privacy copy and the processor retention policy
+must describe that before any audit route resolves to Kimi.
+
+Anthropic also deletes every audit upload 30 days after it was made. That remains the bound for an
+upload whose success never reached the audit's object.
+
+### The audit record is deleted a session lifetime after its last session
+
+The audit's record and every key of its object — stored chat outcomes and capture files included —
+are deleted `AUDIT_SESSION_TTL_SECONDS` after its latest session expired, so a record outlives the
+last activation exchanged for it by at most twice the session lifetime, 60 days in production. By
+then every chat outcome and fingerprint, kept that long after its answer, and every audit upload,
+which Anthropic deletes 30 days after it was made, has passed its own lifetime, and no activation
+for the audit can still exchange. The alarm waits while a reservation lease, a chat message in
+flight or a session's uploads are still outstanding, and drops status events the website never took
+with a warning that counts them. A daily chat counter and the protected visual route's counter hold
+no session record and are never deleted this way.
+
+A later activation for the same audit identifier starts a fresh record. App-ai then holds no
+completed attempts or chat allowance for it, and the website's own count of mirrored completions
+still refuses that audit a third public run.
+
+### Deletion deploys before the copy that promises it
+
+limespot.com's privacy policy tells visitors when a Grader session's screenshots and its records are
+deleted. That is true only of a worker that carries this section's behaviour, so this worker is
+deployed before that copy is published, and a rollback below it is paired with a rollback of the
+copy.

@@ -47,7 +47,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - `file-references.ts` exports `MAX_REFERENCE_TTL_SECONDS`, the 15 days a
   reference lasts at most; a provider expiry earlier than that bounds the
   reference first, and dedup reuses a file under a policy with a requested
-  lifetime only while it has that long left.
+  lifetime only while it has that long left. `storedFileRoute` resolves the
+  configured route that still reaches a stored object — a sealed reference's or
+  a dedup record's account, file policy and prompt groups — and answers `null`
+  once the owning group's route is configured onto another policy or account,
+  so a delete never lands on an unrelated object.
 - `textConversation` means the family's adapter accepts a multi-turn
   conversation of plain-text user and assistant turns: any number of turns, no
   image required. Every chat family — Anthropic, OpenAI, Moonshot, Kimi Code,
