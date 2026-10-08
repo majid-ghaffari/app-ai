@@ -60,7 +60,11 @@ import {
   resolveModel,
   type Env,
 } from '../src/config';
-import { describePromptRoutes, validateModelRouting } from '../src/prompt-registry';
+import {
+  describePromptRoutes,
+  validateModelRouting,
+  validateProviderConfiguration,
+} from '../src/prompt-registry';
 import { graderChatRoute } from '../src/handlers/grader-chat';
 import { ENV } from './helpers';
 
@@ -675,6 +679,24 @@ describe('production [vars] — the deployed configuration values', () => {
       vi.unstubAllGlobals();
       vi.resetModules();
     }
+  });
+
+  it('serves every production route from the AI provider allow-list, at each provider’s own API base', () => {
+    const deployed: Env = { ...ENV, ...Object.fromEntries(parsedProductionVars()) };
+    expect(deploymentEnvironment(deployed)).toBe('production');
+    expect(() => validateProviderConfiguration(deployed)).not.toThrow();
+    expect(() =>
+      validateProviderConfiguration({
+        ...deployed,
+        MODEL_OVERRIDES: `${deployed.MODEL_OVERRIDES},grader-sales=kimi-for-coding`,
+      }),
+    ).toThrow(/kimi/);
+    expect(() =>
+      validateProviderConfiguration({
+        ...deployed,
+        OPENAI_API_BASE: 'https://openai-proxy.example.test',
+      }),
+    ).toThrow(/OPENAI_API_BASE/);
   });
 
   it('gates the operator diagnostics on a configured master subscriber', () => {

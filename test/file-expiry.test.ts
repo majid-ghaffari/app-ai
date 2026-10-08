@@ -50,6 +50,25 @@ const ANTHROPIC_ROUTE = {
   compatibleGroups: ['image-selection'] as [string, ...string[]],
 };
 
+const GEMINI_PROFILE: ModelProfile = {
+  name: 'gemini',
+  provider: 'gemini',
+  apiFamily: 'gemini-generate-content',
+  model: 'gemini-3-pro',
+  capabilities: {
+    vision: true,
+    reusableFiles: true,
+    providerFiles: true,
+    streaming: true,
+    structuredOutput: true,
+    serverTools: true,
+    clientTools: true,
+    reasoning: true,
+    inlineCacheBreakpoints: false,
+    textConversation: true,
+  },
+};
+
 const OPENAI_PROFILE: ModelProfile = {
   name: 'openai-responses-test',
   provider: 'openai',
@@ -92,8 +111,12 @@ function freshFile(id: string): Record<string, unknown> {
   return anthropicFileRecord(id, { mime_type: 'text/plain', expires_at: isoAt(NOW + 30 * DAY) });
 }
 
-async function discardPrefix(): Promise<string> {
-  const route = ANTHROPIC_ROUTE;
+async function discardPrefix(
+  route: Pick<
+    typeof ANTHROPIC_ROUTE,
+    'tenantScope' | 'accountScope' | 'policy' | 'compatibleGroups'
+  > = ANTHROPIC_ROUTE,
+): Promise<string> {
   return `${DISCARD_KEY_PREFIX}${route.tenantScope}:${route.accountScope}:${route.policy.name}:${route.compatibleGroups.join(',')}:${encodeURIComponent('text/plain')}:${await sha256Hex('tile-bytes')}:`;
 }
 
@@ -252,6 +275,46 @@ describe('Anthropic uploads expire in 30 days', () => {
     });
     expect(kv.delete).toHaveBeenCalledWith(`${prefix}file_forever`);
     expect((await kv.list({ prefix })).keys).toEqual([]);
+  });
+
+  it('refuses an OpenAI upload answered with no size and no expiry, deletes it, and keeps a delete that fails under its own discard key', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: NOW });
+    const route = {
+      ...ANTHROPIC_ROUTE,
+      profile: OPENAI_PROFILE,
+      policy: getFilePolicy('openai-user-data-files'),
+      accountScope: 'openai:test-account',
+    };
+    const prefix = await discardPrefix(route);
+    const failing = stubFetch()
+      .mockResolvedValueOnce(
+        json({
+          id: 'file_openai_unbounded',
+          object: 'file',
+          bytes: null,
+          created_at: Math.floor(NOW / 1000),
+          expires_at: null,
+          filename: 'tile.txt',
+          purpose: 'user_data',
+          status: 'processed',
+        }),
+      )
+      .mockResolvedValue(json({ error: { message: 'busy' } }, 500));
+    const { kv, env } = kvMock();
+
+    await expect(dedupUpload(upload(), route, env)).rejects.toMatchObject({
+      inferenceError: { failureClass: 'invalid-response' },
+    });
+    expect(fetchedUrls(failing)).toEqual([
+      'https://api.openai.com/v1/files',
+      'https://api.openai.com/v1/files/file_openai_unbounded',
+      'https://api.openai.com/v1/files/file_openai_unbounded',
+    ]);
+    expect(fetchCall(failing, 1).init.method).toBe('DELETE');
+    expect(kv.put).toHaveBeenCalledTimes(1);
+    const [key, value] = kv.put.mock.calls[0] ?? [];
+    expect(key).toBe(`${prefix}file_openai_unbounded`);
+    expect(JSON.parse(value ?? '{}')).toEqual({ fileId: 'file_openai_unbounded', recordedAt: NOW });
   });
 
   it('keeps every id when two uploads of the same bytes fail their cleanup at once, and retries each', async () => {
@@ -413,16 +476,47 @@ describe('dedup reuses an Anthropic file only while it outlives a full-length re
 
   it('keeps reusing until expiry on a policy that leaves retention to its provider', async () => {
     vi.useFakeTimers({ toFake: ['Date'], now: NOW });
-    const openAIFile = {
-      id: 'file_openai',
-      object: 'file',
-      bytes: 3,
-      created_at: Math.floor((NOW - 28 * DAY) / 1000),
-      expires_at: Math.floor((NOW + 2 * DAY) / 1000),
-      filename: 'tile.png',
-      purpose: 'user_data',
+    const name = 'files/gemini-cached';
+    const geminiFile = {
+      name,
+      mimeType: 'text/plain',
+      sizeBytes: '10',
+      state: 'ACTIVE',
+      uri: `${ENV.GEMINI_API_BASE}/${name}`,
+      expirationTime: isoAt(NOW + DAY),
     };
-    const fetchMock = stubFetch().mockResolvedValue(json(openAIFile));
+    const fetchMock = stubFetch().mockResolvedValue(json(geminiFile));
+    const { env } = kvMock(cachedRecord(name));
+
+    const result = await dedupUpload(
+      upload(),
+      {
+        ...ANTHROPIC_ROUTE,
+        profile: GEMINI_PROFILE,
+        policy: getFilePolicy('gemini-provider-files'),
+        accountScope: 'gemini:test-account',
+      },
+      env,
+    );
+
+    expect(result).toMatchObject({ deduped: true, reference: { upstreamFileId: name } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads afresh, asking for 30 days, rather than reuse an OpenAI file with less than a reference lifetime left', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: NOW });
+    const openAIFile = (id: string, expiresAt: number): Record<string, unknown> => ({
+      id,
+      object: 'file',
+      bytes: 10,
+      created_at: Math.floor((expiresAt - 30 * DAY) / 1000),
+      expires_at: Math.floor(expiresAt / 1000),
+      filename: 'tile.txt',
+      purpose: 'user_data',
+    });
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(json(openAIFile('file_openai', NOW + 2 * DAY)))
+      .mockResolvedValueOnce(json(openAIFile('file_fresh', NOW + 30 * DAY)));
     const { env } = kvMock(cachedRecord('file_openai'));
 
     const result = await dedupUpload(
@@ -436,8 +530,10 @@ describe('dedup reuses an Anthropic file only while it outlives a full-length re
       env,
     );
 
-    expect(result).toMatchObject({ deduped: true, reference: { upstreamFileId: 'file_openai' } });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ deduped: false, reference: { upstreamFileId: 'file_fresh' } });
+    const form = fetchCall(fetchMock, 1).init.body as FormData;
+    expect(form.get('expires_after[anchor]')).toBe('created_at');
+    expect(form.get('expires_after[seconds]')).toBe(String(THIRTY_DAYS_SECONDS));
   });
 });
 

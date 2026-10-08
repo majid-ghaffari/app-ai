@@ -49,6 +49,14 @@ export interface InferenceProviderAdapter {
   readonly requiresOrdinaryTurnContinuation?: boolean;
   /** Whether continuation state carries the complete internal agent transcript. */
   readonly continuationOwnsAgentHistory?: boolean;
+  /**
+   * `false` for an adapter that keeps no conversation state between requests, so its route serves
+   * one turn: a request carrying a continuation, any earlier assistant turn (text or tool call), a
+   * tool result, or caller tools is refused. Its family therefore declares `textConversation:
+   * false`, and `clientTools: false`, so no route whose conversation carries earlier turns or
+   * browser-owned tools can select it.
+   */
+  readonly offersContinuation?: boolean;
   /** Aggregate provider usage across a shared agent loop without losing its public envelope. */
   aggregateAgentUsage?(usages: readonly InferenceUsage[]): InferenceUsage;
   /** Seal server-executed terminal tool results when the shared loop reaches its cap. */

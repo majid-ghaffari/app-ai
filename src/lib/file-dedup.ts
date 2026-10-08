@@ -34,11 +34,7 @@ import type { Env } from '../config';
 import type { FilePolicy, ModelProfile, ProviderFileReference } from './inference-types';
 import { InferenceFailure } from '../inference/adapter';
 import { createInferenceFileService } from '../inference/factory';
-import {
-  MAX_REFERENCE_TTL_SECONDS,
-  storedFileRoute,
-  type StoredFileLocation,
-} from '../inference/file-references';
+import { MAX_REFERENCE_TTL_SECONDS, type StoredFileLocation } from '../inference/file-references';
 import { silentLogger, type Logger } from './logger';
 
 /**
@@ -287,11 +283,12 @@ export async function releaseTenantFiles(
 }
 
 /**
- * Delete one stored provider object through the configured route that still reaches it. Answers
- * whether the object is gone, deleted now or reported missing; a route that no longer reaches it
- * or a failed delete answers `false`, so the caller keeps it for another attempt. A delete still
- * unsettled after `STORED_FILE_DELETE_TIMEOUT_MILLISECONDS` is aborted and answers `false` as
- * well, whether or not its transport honours the abort, so no caller waits on one indefinitely.
+ * Delete one stored object through the provider that holds it, chosen by its recorded file policy
+ * whatever the current routing. Answers whether the object is gone, deleted now or reported missing
+ * by its provider. It answers `false`, so the caller keeps the object for another attempt, when the
+ * recorded policy is unknown, when the configured key belongs to an account other than the one that
+ * stored it, or when the delete fails or is still unsettled after
+ * `STORED_FILE_DELETE_TIMEOUT_MILLISECONDS`, whether or not its transport honours the abort.
  */
 export async function deleteStoredFile(
   location: StoredFileLocation,
@@ -305,7 +302,7 @@ export async function deleteStoredFile(
   const timeout = setTimeout(() => controller.abort(), STORED_FILE_DELETE_TIMEOUT_MILLISECONDS);
   try {
     return await Promise.race([
-      deleteThroughRoute(location, fileId, env, controller.signal),
+      deleteThroughHoldingProvider(location, fileId, env, controller.signal),
       timedOut,
     ]);
   } finally {
@@ -313,18 +310,14 @@ export async function deleteStoredFile(
   }
 }
 
-async function deleteThroughRoute(
+async function deleteThroughHoldingProvider(
   location: StoredFileLocation,
   fileId: string,
   env: Env,
   abortSignal: AbortSignal,
 ): Promise<boolean> {
   try {
-    const files = createInferenceFileService(env);
-    const route = await storedFileRoute(location, env, files);
-    if (!route) return false;
-    await files.delete(route.profile, fileId, abortSignal);
-    return true;
+    return await createInferenceFileService(env).deleteStored(location, fileId, abortSignal);
   } catch (error) {
     return error instanceof InferenceFailure && error.inferenceError.status === 404;
   }

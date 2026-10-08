@@ -319,6 +319,20 @@ describe('fitness: prompt-grouped provider authority', () => {
     }
   });
 
+  it('every provider transport goes through the non-following provider fetch', () => {
+    const adapters = Object.entries(sourceModules).filter(([path]) =>
+      path.includes('/inference/adapters/'),
+    );
+    expect(adapters.length).toBeGreaterThan(5);
+    for (const [path, source] of adapters) {
+      if (path.endsWith('/inference/adapters/provider-fetch.ts')) continue;
+      expect(
+        stripComments(source),
+        `${path}: call fetchProvider, which follows no redirect`,
+      ).not.toMatch(/(?<![\w.])fetch\(/);
+    }
+  });
+
   it('the inference factory is the only provider-neutral module selecting an adapter', () => {
     for (const [path, source] of Object.entries(sourceModules)) {
       if (!path.includes('/inference/')) continue;

@@ -1,3 +1,4 @@
+import { fetchProvider } from './provider-fetch';
 import { moonshotApiBase, moonshotApiKey, type Env } from '../../config';
 
 function jsonHeaders(env: Env): Record<string, string> {
@@ -27,7 +28,7 @@ export function createChatCompletion(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${moonshotApiBase(env)}/v1/chat/completions`, {
+  return fetchProvider('Moonshot', `${moonshotApiBase(env)}/v1/chat/completions`, {
     method: 'POST',
     headers: jsonHeaders(env),
     body: JSON.stringify(payload),
@@ -36,7 +37,7 @@ export function createChatCompletion(
 }
 
 export function uploadFile(body: FormData, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${moonshotApiBase(env)}/v1/files`, {
+  return fetchProvider('Moonshot', `${moonshotApiBase(env)}/v1/files`, {
     method: 'POST',
     headers: fileHeaders(env),
     body,
@@ -49,14 +50,14 @@ export function getFileMetadata(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${moonshotApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
+  return fetchProvider('Moonshot', `${moonshotApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
     headers: fileHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),
   });
 }
 
 export function deleteFile(id: string, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${moonshotApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
+  return fetchProvider('Moonshot', `${moonshotApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: fileHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),

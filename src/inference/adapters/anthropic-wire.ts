@@ -26,6 +26,7 @@
  * blocks, payloads) consumed by the handlers and the cache modules.
  */
 
+import { fetchProvider } from './provider-fetch';
 import { anthropicApiBase, claudeApiKey, type Env } from '../../config';
 import type { CanonicalToolDefinition } from '../../lib/inference-types';
 
@@ -275,7 +276,7 @@ export async function uploadFile(
   env: Env,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/files`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/files`, {
     method: 'POST',
     headers: filesHeaders(env),
     body: formData,
@@ -295,7 +296,7 @@ export async function getFileMetadata(
   env: Env,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/files/${fileId}`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/files/${fileId}`, {
     headers: filesHeaders(env),
     ...(signal ? { signal } : {}),
   });
@@ -307,7 +308,7 @@ export async function deleteFile(
   env: Env,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/files/${fileId}`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/files/${fileId}`, {
     method: 'DELETE',
     headers: filesHeaders(env),
     ...(signal ? { signal } : {}),
@@ -320,7 +321,7 @@ export async function createMessage(
   env: Env,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/messages`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/messages`, {
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify(payload),
@@ -344,7 +345,7 @@ export async function countTokens(
   const body: Record<string, unknown> = { model: payload.model, messages: payload.messages };
   if (payload.system) body.system = payload.system;
   if (payload.tools) body.tools = payload.tools;
-  return fetch(`${anthropicApiBase(env)}/v1/messages/count_tokens`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/messages/count_tokens`, {
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify(body),
@@ -361,7 +362,7 @@ export async function streamMessage(
   env: Env,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${anthropicApiBase(env)}/v1/messages`, {
+  return fetchProvider('Anthropic', `${anthropicApiBase(env)}/v1/messages`, {
     method: 'POST',
     headers: messagesHeaders(env),
     body: JSON.stringify({ ...payload, stream: true }),

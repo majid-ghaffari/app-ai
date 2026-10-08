@@ -67,6 +67,7 @@ import {
   createInferenceService,
   isRequiredContinuationMissing,
   requiresOrdinaryTurnContinuation,
+  statelessRouteRefusal,
 } from '../inference/factory';
 import { InferenceFailure, inferenceFailureTrace } from '../inference/adapter';
 import {
@@ -95,6 +96,11 @@ interface ChatRequestBody {
   fileIds?: unknown;
   /** Opaque token returned with a browser-owned tool call and echoed on continuation. */
   continuation?: unknown;
+  /**
+   * Caller-supplied tools. The registry owns a prompt's tool surface, so these are never sent; a
+   * route that serves one turn refuses a request naming any.
+   */
+  tools?: unknown;
 }
 
 /** The grounding context the client may send (lib CONTRACTS.md §1). */
@@ -226,6 +232,12 @@ export async function handleChat(
       return earlyError(error, corsHeaders, wantsStream);
     }
   }
+  const refusal = statelessRouteRefusal(profile, env, {
+    continuation: body.continuation,
+    messages: body.messages,
+    tools: body.tools,
+  });
+  if (refusal) return badRequest(refusal, corsHeaders, wantsStream);
   let continuation: Awaited<ReturnType<typeof decodeOpaqueContinuation>> | undefined;
   if (body.continuation !== undefined) {
     if (typeof body.continuation !== 'string') {

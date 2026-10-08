@@ -33,6 +33,7 @@ import type { ProviderName, SemanticEffort } from './lib/inference-types';
 // does not create a runtime import cycle with `prompt-registry.ts` (which
 // imports `resolveModel` and `modelOverrides` from here).
 import type { ModelTier } from './prompt-registry';
+import { isOfficialProviderBase } from './lib/ai-providers';
 
 export interface WorkersAiBinding {
   run(
@@ -254,7 +255,8 @@ export interface Env {
   readonly GRADER_RUNS_VALID_FROM?: string;
   /**
    * ISO-8601 UTC instant an extension build must postdate: an exchange or Grader call declaring an
-   * earlier `X-LimeSpot-Extension-Built-At` is refused `extension_update_required`.
+   * earlier `X-LimeSpot-Extension-Built-At` is refused `extension_update_required`. It applies only
+   * to a build declaring its build time; one declaring none is held to the plan version it declares.
    */
   readonly GRADER_EXTENSION_BUILT_AFTER?: string;
   /**
@@ -447,12 +449,37 @@ export function geminiApiBase(env: Env): string {
   return paidProviderBase(env, 'GEMINI_API_BASE', 'gemini');
 }
 
-function paidProviderBase(
-  env: Env,
-  name: Extract<RequiredVarName, `${string}_API_BASE`>,
-  provider: string,
-): string {
+type ProviderBaseVarName = Extract<RequiredVarName, `${string}_API_BASE`>;
+
+const PROVIDER_BASE_VAR: Readonly<Record<ProviderBaseVarName, ProviderName>> = {
+  ANTHROPIC_API_BASE: 'anthropic',
+  OPENAI_API_BASE: 'openai',
+  MOONSHOT_API_BASE: 'moonshot',
+  KIMI_API_BASE: 'kimi',
+  GEMINI_API_BASE: 'gemini',
+};
+
+/**
+ * Throw unless every provider API base this production deployment sets is that provider's own,
+ * written exactly. Outside production the paid-call guard alone governs the bases.
+ */
+export function validateProviderBases(env: Env): void {
+  if (!isProductionDeployment(env)) return;
+  for (const [name, provider] of Object.entries(PROVIDER_BASE_VAR) as [
+    ProviderBaseVarName,
+    ProviderName,
+  ][]) {
+    if (typeof env[name] === 'string' && env[name].length > 0) {
+      paidProviderBase(env, name, provider);
+    }
+  }
+}
+
+function paidProviderBase(env: Env, name: ProviderBaseVarName, provider: ProviderName): string {
   const value = requireVar(env, name);
+  if (isProductionDeployment(env) && !isOfficialProviderBase(provider, value)) {
+    throw new Error(`${name} must be ${provider}'s own API base in production. ${SET_IN_VARS}`);
+  }
   let url: URL;
   try {
     url = new URL(value);
@@ -472,7 +499,7 @@ function paidProviderBase(
 }
 
 /** The deployed-versus-local distinction every fail-closed configuration rule keys off. */
-function isProductionDeployment(env: Env): boolean {
+export function isProductionDeployment(env: Env): boolean {
   return env.ENVIRONMENT?.trim().toLowerCase() === 'production';
 }
 

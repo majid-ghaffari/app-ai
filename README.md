@@ -119,9 +119,11 @@ read-only `GET /audit/session`, which reserves and writes nothing. They are
 bound to the activated store, atomically quota-controlled
 by an audit-keyed `AuditSessionAuthority`, never call Brain, and cannot delete files or use
 `/chat`. A session lasts 30 days, and two dated kill switches, `GRADER_RUNS_VALID_FROM` and
-`GRADER_EXTENSION_BUILT_AFTER`, end older runs and older extension builds. The authority itself
+`GRADER_EXTENSION_BUILT_AFTER`, end older runs and older extension builds that name their build
+time; a build naming none is held to its plan version. The authority itself
 deletes a session's uploads once the session ends, and the audit's record 30 days after its latest
-session expired. The exact public/staff
+session expired. Every route, the Grader's included, may use only the AI providers LimeSpot's DPA
+lists ([docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md)). The exact public/staff
 entitlement claims, headers, limits, kill switches, and signed website-status callback contract are
 in [docs/AUDIT-AUTH.md](docs/AUDIT-AUTH.md).
 

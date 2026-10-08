@@ -200,35 +200,6 @@ export interface StoredFileLocation {
   readonly compatibleGroups: readonly string[];
 }
 
-/** The configured provider route a stored object is operated on through. */
-export interface StoredFileRoute {
-  readonly profile: ModelProfile;
-  readonly policy: FilePolicy;
-}
-
-/**
- * The configured route that still reaches a stored object: the route of the group in its
- * compatible set that owns the file route, when that route's file policy and provider account are
- * the ones the object was stored under. `null` once no configured route reaches it, so an
- * operation on it never lands on an unrelated object on another account.
- */
-export async function storedFileRoute(
-  location: StoredFileLocation,
-  env: Env,
-  files: FileReferenceScopeService,
-): Promise<StoredFileRoute | null> {
-  const group = location.compatibleGroups.find(
-    (candidate): candidate is PromptGroupName =>
-      isPromptGroupName(candidate) && getFileRouteGroup(candidate) === candidate,
-  );
-  if (group === undefined) return null;
-  const { profile, policy } = getGroupModelRoute(group, env);
-  if (policy.name !== location.filePolicy) return null;
-  return (await files.scope(profile, policy)) === location.accountScope
-    ? { profile, policy }
-    : null;
-}
-
 /** Resolve one public reference and reject route mismatches before adapter/provider I/O. */
 export async function resolveOpaqueFileReference(
   opaque: OpaqueFileReference,

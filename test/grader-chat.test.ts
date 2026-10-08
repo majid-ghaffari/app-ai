@@ -41,6 +41,7 @@ import {
   auditHeaders,
   deliverStatusEvents,
   durableEnv,
+  EXTENSION_BUILD_HEADERS,
   messageRequest,
   storageFor,
   uploadRequest,
@@ -216,6 +217,7 @@ async function exchangeRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...EXTENSION_BUILD_HEADERS,
       ...(planVersion === null ? {} : { 'X-LimeSpot-Audit-Plan-Version': planVersion }),
       ...headers,
     },
@@ -258,12 +260,6 @@ async function openSession(
     graderChat: body.graderChat,
     body,
   };
-}
-
-function withHeader(request: Request, name: string, value: string): Request {
-  const headers = new Headers(request.headers);
-  headers.set(name, value);
-  return new Request(request, { headers });
 }
 
 async function completedRun(
@@ -463,6 +459,7 @@ describe('grader chat plan gating', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...EXTENSION_BUILD_HEADERS,
             ...(planVersion === null ? {} : { 'X-LimeSpot-Audit-Plan-Version': planVersion }),
           },
           body: JSON.stringify({
@@ -3051,7 +3048,7 @@ describe('the Grader kill switches', () => {
 
     Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: '2026-10-04T00:00:00Z' });
     await refusedUncached(
-      statusRequest(session.accessToken),
+      statusRequest(session.accessToken, { [BUILT_AT]: '2026-10-03T23:59:59Z' }),
       409,
       'extension_update_required',
       'an outdated build',
@@ -3306,49 +3303,109 @@ describe('the Grader kill switches', () => {
     expect(await current.json()).toMatchObject({ extensionBuiltAfter: '2026-10-01T00:00:00.000Z' });
   });
 
-  it('answers an outdated build with extension_update_required on every Grader call, a build naming none as made before the header', async () => {
+  function declaring(
+    request: Request,
+    builtAt: string | null,
+    planVersion: string | null,
+  ): Request {
+    const headers = new Headers(request.headers);
+    for (const [name, value] of [
+      [BUILT_AT, builtAt],
+      ['X-LimeSpot-Audit-Plan-Version', planVersion],
+    ] as const) {
+      if (value === null) headers.delete(name);
+      else headers.set(name, value);
+    }
+    return new Request(request, { headers });
+  }
+
+  it('admits a build naming no build time on every Grader call by its plan version, past any cutoff', async () => {
+    const env = durableEnv({ GRADER_EXTENSION_BUILT_AFTER: '2026-10-04T00:00:00Z' });
+    const model = upstream();
+
+    for (const [label, builtAt] of [
+      ['a build naming no build time', null],
+      ['a build made at the cutoff', '2026-10-04T00:00:00Z'],
+    ] as const) {
+      const declared = (request: Request): Request => declaring(request, builtAt, '2');
+      const tokenIdentifier = crypto.randomUUID();
+      const exchanged = await worker.fetch(
+        declared(await exchangeRequest(env, '2', `audit-${tokenIdentifier}`, tokenIdentifier)),
+        env,
+      );
+      expect(exchanged.status, `${label}: exchange`).toBe(201);
+      const { accessToken } = (await exchanged.json()) as { accessToken: string };
+      expect(
+        (await worker.fetch(declared(statusRequest(accessToken)), env)).status,
+        `${label}: status`,
+      ).toBe(200);
+      const upload = await worker.fetch(declared(uploadRequest(accessToken, 'tile.webp')), env);
+      expect(upload.status, `${label}: upload`).toBe(200);
+      const { id } = (await upload.json()) as { id: string };
+      expect(
+        (await worker.fetch(declared(messageRequest(accessToken, [id])), env)).status,
+        `${label}: proposal`,
+      ).toBe(200);
+      expect(
+        (await worker.fetch(declared(chatRequest(accessToken, ask('Hello?'))), env)).status,
+        `${label}: chat`,
+      ).toBe(200);
+    }
+    expect(model.proposals).toBe(2);
+    expect(model.chatBodies).toHaveLength(2);
+  });
+
+  it('refuses a build naming no build time without a supported plan version, whatever the cutoff, and an outdated build on every Grader call', async () => {
     const env = durableEnv();
     const model = upstream();
     const session = await completedRun(env);
-    Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: '2026-10-04T00:00:00Z' });
-    const outdated = (request: Request): Request =>
-      withHeader(request, BUILT_AT, '2026-10-03T23:59:59Z');
-    const current = (request: Request): Request =>
-      withHeader(request, BUILT_AT, '2026-10-04T00:00:00Z');
+    const tokenIdentifier = crypto.randomUUID();
+    const exchangeCall = async (): Promise<Request> =>
+      exchangeRequest(env, '2', `audit-${tokenIdentifier}`, tokenIdentifier);
+    const calls: readonly (readonly [string, () => Promise<Request>])[] = [
+      ['an exchange', exchangeCall],
+      ['a status read', async () => statusRequest(session.accessToken)],
+      ['an upload', async () => uploadRequest(session.accessToken, 'tile.webp')],
+      ['a proposal', async () => messageRequest(session.accessToken, session.tiles)],
+      ['a chat message', async () => chatRequest(session.accessToken, ask('Hello?'))],
+    ];
+    type Refusal = readonly [string, string | null, string | null, string];
+    const undeclared: readonly Refusal[] = [
+      ['no build time and no plan version', null, null, 'audit_plan_version_unsupported'],
+      ['no build time and plan version 3', null, '3', 'audit_plan_version_unsupported'],
+      ['no build time and plan version 01', null, '01', 'audit_plan_version_unsupported'],
+    ];
+    const outdated: Refusal = [
+      'a build made before the cutoff',
+      '2026-10-03T23:59:59Z',
+      '2',
+      'extension_update_required',
+    ];
 
-    for (const [label, request] of [
-      ['an upload', uploadRequest(session.accessToken, 'tile.webp')],
-      ['a proposal', messageRequest(session.accessToken, session.tiles)],
-      ['a chat message', chatRequest(session.accessToken, ask('Hello?'))],
+    for (const [cutoff, refusals] of [
+      ['2026-01-01T00:00:00Z', undeclared],
+      ['2026-10-04T00:00:00Z', [...undeclared, outdated]],
     ] as const) {
-      await expectRefusal(
-        await worker.fetch(outdated(request.clone()), env),
-        409,
-        'extension_update_required',
-        `${label} from an outdated build`,
-      );
-      await expectRefusal(
-        await worker.fetch(request.clone(), env),
-        409,
-        'extension_update_required',
-        `${label} from a build naming no build time`,
-      );
+      Object.assign(env, { GRADER_EXTENSION_BUILT_AFTER: cutoff });
+      for (const [call, request] of calls) {
+        for (const [variant, builtAt, planVersion, detail] of refusals) {
+          await expectRefusal(
+            await worker.fetch(declaring(await request(), builtAt, planVersion), env),
+            409,
+            detail,
+            `${call} with ${variant} under a cutoff of ${cutoff}`,
+          );
+        }
+      }
     }
-    expect(model.chatBodies).toHaveLength(0);
     expect(model.proposals).toBe(1);
+    expect(model.chatBodies).toHaveLength(0);
 
-    const answered = await worker.fetch(
-      current(chatRequest(session.accessToken, ask('Hello?'))),
+    const exchanged = await worker.fetch(
+      declaring(await exchangeCall(), '2026-10-04T00:00:00Z', '2'),
       env,
     );
-    expect(answered.status).toBe(200);
-  });
-
-  it('lets a build naming no build time through while the cutoff predates the header', async () => {
-    const env = durableEnv({ GRADER_EXTENSION_BUILT_AFTER: '2026-10-03T00:00:00Z' });
-    upstream();
-    const session = await completedRun(env);
-    expect((await chat(env, session.accessToken, ask('Hello?'))).status).toBe(200);
+    expect(exchanged.status, 'the refused exchanges left the activation usable').toBe(201);
   });
 });
 

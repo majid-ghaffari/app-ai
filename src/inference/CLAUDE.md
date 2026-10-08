@@ -47,22 +47,37 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - `file-references.ts` exports `MAX_REFERENCE_TTL_SECONDS`, the 15 days a
   reference lasts at most; a provider expiry earlier than that bounds the
   reference first, and dedup reuses a file under a policy with a requested
-  lifetime only while it has that long left. `storedFileRoute` resolves the
-  configured route that still reaches a stored object — a sealed reference's or
-  a dedup record's account, file policy and prompt groups — and answers `null`
-  once the owning group's route is configured onto another policy or account,
-  so a delete never lands on an unrelated object.
+  lifetime only while it has that long left. `StoredFileLocation` names where a
+  stored object lives: a sealed reference's or a dedup record's account, file
+  policy and prompt groups.
+- The file service's `deleteStored` deletes a stored object through the provider
+  that holds it, chosen by its file policy, never by the current routing, so a
+  Grader session's uploads are deleted when it ends even after its routes moved.
+  An object under a worker-managed policy is in LimeSpot's own storage and is
+  deleted there, with no request and no provider key; any other is deleted only
+  when the configured key belongs to the account that stored it, and answers
+  `false` otherwise.
+- Every provider transport call goes through `adapters/provider-fetch.ts`
+  (`fetchProvider`), which asks the runtime not to follow a redirect
+  (`redirect: 'manual'`; workerd implements no `error` mode) and refuses a 3xx
+  answer, so no body, key or file id reaches the origin a redirect names. In
+  production each provider base accessor accepts only that provider's own API
+  base, and route resolution refuses a provider `../lib/ai-providers.ts` does not
+  allow for the route before any adapter reads a credential
+  ([docs/AI-PROVIDERS.md](../../docs/AI-PROVIDERS.md)).
 - `textConversation` means the family's adapter accepts a multi-turn
   conversation of plain-text user and assistant turns: any number of turns, no
-  image required. Every chat family — Anthropic, OpenAI, Moonshot, Kimi Code,
-  Gemini — has it. The Cloudflare Workers AI visual family does not, because its
-  adapter accepts exactly one user turn made of one inline image followed by one
-  text block. A group that requires `textConversation` (the Grader chat's
-  `grader-sales`) therefore cannot be routed there: routing validation refuses
-  the route, so production `/health` answers 503 and `GET /prompts` reports it
-  invalid. Whether a family can continue from plain-text history without
-  provider continuation state is a separate fact, `requiresOrdinaryTurnContinuation`
-  in `factory.ts`, which the Grader chat's route check also enforces.
+  image required. Anthropic, Moonshot, Kimi Code and Gemini have it. OpenAI's
+  family does not, because its route serves one turn, and neither does the
+  Cloudflare Workers AI visual family, whose adapter accepts exactly one user
+  turn made of one inline image followed by one text block. Every group whose
+  public conversation carries earlier turns requires it — `studio-data-agent`,
+  `studio-visual-agent`, `billing-narrative` and `grader-sales` — so routing
+  validation refuses those families there, production validation before
+  serving, production `/health` with 503 and `GET /prompts` as invalid.
+  Whether a family can continue from plain-text history without provider
+  continuation state is a separate fact, `requiresOrdinaryTurnContinuation` in
+  `factory.ts`, which the Grader chat's route check also enforces.
 - Adapters accept only fully resolved `ModelProfile`/`FilePolicy` authority from
   the registry path. They do not infer providers from model names.
 - The runtime never switches on a provider. Adapter selection belongs only in
@@ -95,9 +110,10 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
 - An adapter whose continuation contains the complete internal agent transcript
   declares `continuationOwnsAgentHistory`. The shared loop then rebuilds each
   iteration from the initial public messages plus the latest assistant/tool
-  turn, and the adapter replays its sealed transcript. OpenAI, Gemini, and
-  Moonshot/Kimi own that replay; Anthropic receives the canonically accumulated
-  message history. Adapters that need accumulated agent usage own its
+  turn, and the adapter replays its sealed transcript. Gemini and Moonshot/Kimi
+  own that replay; Anthropic and OpenAI receive the canonically accumulated
+  message history, in which OpenAI replays each of its own tool turns from the
+  output items saved on that turn's tool calls. Adapters that need accumulated agent usage own its
   provider-shaped aggregation; Moonshot/Kimi and Gemini sum their internal
   calls. Anthropic retains its established terminal-turn raw usage envelope, so
   production `/chat` behavior is unchanged.
@@ -127,18 +143,47 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   in the root and `docs/TESTING.md`.
 - OpenAI is factory-selectable for deterministic adapter tests and the explicit
   paid smoke matrix, but no production prompt group selects it before recorded
-  prompt-level evaluations. Responses continuation uses adapter-owned
-  `previous_response_id`; the runtime and public client carry it opaquely.
+  prompt-level evaluations. OpenAI keeps no stored Responses object: every
+  Responses call sends `store: false` and no `previous_response_id`. It still
+  holds its automatic prompt-cache state — in memory for minutes, or up to 24
+  hours of extended caching for an organization without Zero Data Retention —
+  and app-ai requests no explicit cache (below). No stored Responses object, app-ai continuation state or output-item replay crosses a request boundary, while OpenAI's automatic prompt-cache state can persist across calls (in memory for minutes, or up to 24 hours without Zero Data Retention), so an OpenAI route serves one public turn: the adapter declares
+  `offersContinuation: false` and returns no continuation state, and
+  `statelessRouteRefusal` in `factory.ts` refuses with 400, before any provider
+  I/O, a request carrying a continuation, any earlier assistant turn (text or
+  tool call), a tool result, or caller tools. The `gpt` family declares
+  neither `textConversation` nor `clientTools`, so no route whose conversation
+  carries earlier turns or browser-owned tools can select it, and production
+  validation refuses that before serving. Within one
+  request, a reasoning model is asked for
+  `include: ["reasoning.encrypted_content"]`, and every output item of a turn
+  that ends in function calls — encrypted reasoning, function calls, text — is
+  saved untouched on those tool calls, which the next server-tool iteration
+  replays in place of that turn; output items are replayed only within that one
+  request, and the adapter refuses any other assistant turn.
+  A reasoning item without encrypted content fails the turn, because nothing
+  could replay it. The stream's function-argument terminal event names no
+  function, so only its arguments are matched against the streamed call. Two
+  redacted genuine captures of one tool round, each with the two requests
+  app-ai sent, pin the request shape, less the prompt-cache fields app-ai
+  sent then and no longer sends, and the streams the adapter accepts: one on
+  `gpt-5.6-luna`, which returned no reasoning item at low effort, and one on
+  `gpt-5-nano`, whose encrypted reasoning item was replayed untouched beside
+  its call and accepted.
 - OpenAI File metadata does not report MIME. Route-scoped dedup records retain
   validated upload MIME so cached images cannot be reclassified as documents.
-- Canonical OpenAI cache intents become explicit breakpoints only on Responses
-  `input_text`, `input_image`, and `input_file` blocks. The adapter uses explicit
-  `30m` mode, supplies a group/profile-stable cache key, and rejects more than
-  four writable breakpoints before provider I/O. OpenAI currently exposes no
-  distinct extended TTL, so `short` and `extended` preserve the same canonical
-  boundary under that provider policy.
+- OpenAI requests ask for no explicit or extended prompt caching: they carry no
+  `prompt_cache_options`, cache breakpoint, `prompt_cache_retention` or
+  `prompt_cache_key`, and every `gpt-` model resolves to the one `gpt`
+  profile, which declares no `inlineCacheBreakpoints`, so canonical cache
+  intents are dropped. OpenAI's automatic prompt caching still applies — in
+  memory for minutes, or up to 24 hours of extended caching for an
+  organization without Zero Data Retention — as recorded in
+  [docs/AI-PROVIDERS.md](../../docs/AI-PROVIDERS.md). No route depends on
+  caching.
 - Moonshot/Kimi is factory-selectable only for deterministic adapter tests and
-  the double-opt-in paid smoke matrix. No production prompt group selects it.
+  the double-opt-in paid smoke matrix. No production prompt group selects it, and
+  in production none that carries customer content may.
   The candidate uses strict Chat Completions JSON Schema/tools, base64 or
   `ms://` image inputs, an image-purpose direct file policy, and adapter-owned
   assistant `reasoning_content` replay. External image URLs, non-image direct

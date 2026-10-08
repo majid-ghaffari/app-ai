@@ -37,17 +37,29 @@ rules.)
 
 ## Validate before you push
 
-Run the full offline gate locally — it mirrors CI
-(`.github/workflows/ci.yml`), which runs lint → format-check → typecheck →
-`vitest run` → the revision-stamped deploy dry run on every push and PR:
+Before a push, run the format check, the linter and the typecheck:
 
 ```bash
-npm run lint            # ESLint over the whole repo (must be 0)
 npm run format-check    # Prettier check (whole repo; exclusions in .prettierignore)
+npm run lint            # ESLint over the whole repo (must be 0)
 npm run typecheck       # tsc --noEmit (strict; must be 0)
-npx vitest run          # unit + integration + contract + fitness (must be green)
-npm run deploy:dry-run  # build the stamped bundle (verifies imports + the .md Text rule)
 ```
+
+A test runs locally only for an exception `../_standards/testing.md` → Local gates names: a
+reported bug's reproduction, visual evidence for a UI change, a suite CI does not run, reproducing
+a red exact-head CI test, or a vacuity probe.
+
+CI (`.github/workflows/ci.yml`) runs the full Vitest suite and the revision-stamped deploy dry
+run on every push and PR, beside lint, format check and typecheck, as parallel jobs that the one
+`build` check gathers. Its result on the pushed head is the authority: never re-run the suite
+locally to confirm or contradict it.
+
+CI's `test` job reads `ai-providers.json` from a checkout of the workspace repository
+`limespot/root`, first for the published-DPA check, which fails until the live DPA's
+sub-processor list prints every provider the file names
+([docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md)), then for the suite. A local run of `test/ai-providers.test.ts`, under one of those exceptions, reads
+it from the directory `LIMESPOT_ROOT_STANDARDS` names, or from `../_standards`, so keep that
+checkout current ([docs/TESTING.md](docs/TESTING.md) → Running the offline suite).
 
 For changes touching prompt text, tool definitions, or cache-control code, the
 optional deployed-worker diagnostic can provide additional operational evidence;

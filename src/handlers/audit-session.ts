@@ -5,8 +5,7 @@
 
 import type { Env } from '../config';
 import {
-  assertCurrentExtensionBuild,
-  assertSupportedAuditPlan,
+  assertCompatibleAuditClient,
   exchangeAuditActivation,
   readAuditSessionStatus,
 } from '../lib/audit-auth';
@@ -20,8 +19,7 @@ export async function handleAuditSessionExchange(
   env: Env,
   corsHeaders: CorsHeaders,
 ): Promise<Response> {
-  assertCurrentExtensionBuild(request, env);
-  assertSupportedAuditPlan(request);
+  assertCompatibleAuditClient(request, env);
   let body: { activationToken?: unknown; storeUrl?: unknown };
   try {
     body = (await request.json()) as { activationToken?: unknown; storeUrl?: unknown };

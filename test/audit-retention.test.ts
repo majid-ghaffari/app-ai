@@ -4,9 +4,11 @@ import worker from '../src/index';
 import { RESERVATION_FINALIZE_GRACE_MILLISECONDS } from '../src/lib/audit-session-authority';
 import { STORED_FILE_DELETE_TIMEOUT_MILLISECONDS } from '../src/lib/file-dedup';
 import { UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS } from '../src/inference/deadline';
+import { auditFileTenantScope } from '../src/inference/file-references';
 import type { Env } from '../src/config';
 import {
   AUDIT_STATUS_CALLBACK_URL,
+  ENV,
   anthropicFileRecord,
   anthropicMessage,
   kvMock,
@@ -29,6 +31,12 @@ const NOW = Date.parse('2026-10-01T12:00:00.000Z');
 const LEASE = UPSTREAM_INFERENCE_DEADLINE_MILLISECONDS + RESERVATION_FINALIZE_GRACE_MILLISECONDS;
 const SESSION_LIFETIME = 30 * DAY;
 const KIMI_ROUTE = 'onboarding-visual=kimi-for-coding,onboarding-qc-gate=kimi-for-coding';
+const OPENAI_ROUTE = `${ENV.MODEL_OVERRIDES},onboarding-visual=gpt-5.1,onboarding-qc-gate=gpt-5.1`;
+const GEMINI_ROUTE = `${ENV.MODEL_OVERRIDES},onboarding-visual=gemini-3-pro,onboarding-qc-gate=gemini-3-flash`;
+const OPENAI_ORIGIN = 'https://api.openai.com';
+const GEMINI_ORIGIN = 'https://generativelanguage.googleapis.com';
+const GEMINI_FILE_LIFETIME = 48 * 60 * 60 * 1000;
+const ANTHROPIC_PROXY = 'https://anthropic-proxy.example.test';
 
 interface SessionRecordView {
   readonly sessionIdentifier: string;
@@ -43,6 +51,8 @@ interface SessionRecordView {
 }
 
 interface ProviderFiles {
+  readonly requests: string[];
+  readonly uploadForms: FormData[];
   readonly uploads: string[];
   readonly deletes: string[];
   readonly live: Map<string, Record<string, unknown>>;
@@ -97,6 +107,8 @@ function isoAt(milliseconds: number): string {
 
 function providerFiles(): ProviderFiles {
   const files: ProviderFiles = {
+    requests: [],
+    uploadForms: [],
     uploads: [],
     deletes: [],
     live: new Map(),
@@ -110,7 +122,10 @@ function providerFiles(): ProviderFiles {
   stubFetch().mockImplementation(async (input, init) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
+    files.requests.push(url);
     if (url === AUDIT_STATUS_CALLBACK_URL) return new Response(null, { status: 204 });
+    if (url.startsWith(GEMINI_ORIGIN)) return geminiFile(files, url, method, init);
+    if (url.startsWith(OPENAI_ORIGIN)) return openAiFile(files, url, method, init);
     if (url.endsWith('/v1/files') && method === 'POST') {
       const body = init?.body;
       const filename = body instanceof FormData ? (body.get('file') as File | null)?.name : null;
@@ -161,6 +176,75 @@ function providerFiles(): ProviderFiles {
     return json(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }]));
   });
   return files;
+}
+
+function openAiFile(
+  files: ProviderFiles,
+  url: string,
+  method: string,
+  init: RequestInit | undefined,
+): Response {
+  if (url === `${OPENAI_ORIGIN}/v1/files` && method === 'POST') {
+    if (init?.body instanceof FormData) files.uploadForms.push(init.body);
+    const id = `file-openai-${files.uploads.length + 1}`;
+    const record = {
+      id,
+      object: 'file',
+      bytes: 4,
+      created_at: Math.floor(Date.now() / 1000),
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+      filename: 'tile.webp',
+      purpose: 'user_data',
+    };
+    files.uploads.push(id);
+    files.live.set(id, record);
+    return json(record);
+  }
+  const id = decodeURIComponent(url.slice(`${OPENAI_ORIGIN}/v1/files/`.length));
+  if (method === 'DELETE') {
+    files.deletes.push(id);
+    if (!files.live.delete(id)) return json({ error: { message: 'gone' } }, 404);
+    return json({ id, object: 'file', deleted: true });
+  }
+  const record = files.live.get(id);
+  return record ? json(record) : json({ error: { message: 'gone' } }, 404);
+}
+
+function geminiFile(
+  files: ProviderFiles,
+  url: string,
+  method: string,
+  init: RequestInit | undefined,
+): Response {
+  const command = (init?.headers as Record<string, string> | undefined)?.['X-Goog-Upload-Command'];
+  if (url === `${GEMINI_ORIGIN}/upload/v1beta/files` && command === 'start') {
+    return new Response('{}', {
+      status: 200,
+      headers: { 'X-Goog-Upload-URL': `${GEMINI_ORIGIN}/upload/v1beta/files/session` },
+    });
+  }
+  if (url === `${GEMINI_ORIGIN}/upload/v1beta/files/session`) {
+    const id = `files/gemini-${files.uploads.length + 1}`;
+    const record = {
+      name: id,
+      mimeType: 'image/webp',
+      sizeBytes: '4',
+      state: 'ACTIVE',
+      uri: `${GEMINI_ORIGIN}/v1beta/${id}`,
+      expirationTime: isoAt(Date.now() + GEMINI_FILE_LIFETIME),
+    };
+    files.uploads.push(id);
+    files.live.set(id, record);
+    return json({ file: record });
+  }
+  const id = url.slice(`${GEMINI_ORIGIN}/v1beta/`.length);
+  if (method === 'DELETE') {
+    files.deletes.push(id);
+    if (!files.live.delete(id)) return json({ error: { code: 404, message: 'gone' } }, 404);
+    return json({});
+  }
+  const record = files.live.get(id);
+  return record ? json(record) : json({ error: { code: 404, message: 'gone' } }, 404);
 }
 
 interface EvidenceBucket {
@@ -221,6 +305,10 @@ function captureKeys(env: Env, auditIdentifier: string, sessionIdentifier = ''):
   return storageFor(env, auditIdentifier)
     .keys()
     .filter((key) => key.startsWith(`capture-file:${sessionIdentifier}`));
+}
+
+function providerRequests(files: ProviderFiles): string[] {
+  return files.requests.filter((url) => url !== AUDIT_STATUS_CALLBACK_URL);
 }
 
 function deleteCount(files: ProviderFiles, id: string): number {
@@ -450,26 +538,23 @@ describe('a Grader session deletes its capture files when it ends', () => {
     expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
   });
 
-  it('keeps an upload whose route moved to another provider until its provider expiry, never deleting through the new route', async () => {
-    const env = durableEnv();
+  it('deletes an upload through the provider that holds it after its route moved to another provider, never through the new one', async () => {
+    const evidence = evidenceBucket();
+    const env = durableEnv({ INLINE_EVIDENCE_R2: evidence.bucket });
     const files = providerFiles();
     const auditIdentifier = 'audit-capture-moved-route';
     const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
-    files.expiresAt = () => isoAt(NOW + 20 * DAY);
     await upload(env, first.accessToken, 'moved.webp');
+    const [moved] = files.uploads;
+    if (!moved) throw new Error('The upload must have reached the provider');
     await exchange(env, await activationFor(env, auditIdentifier, 'second'));
     Object.assign(env, { MODEL_OVERRIDES: KIMI_ROUTE });
 
     vi.setSystemTime(NOW + LEASE);
     await deliverStatusEvents(env);
-    expect(captureKeys(env, auditIdentifier, first.sessionIdentifier)).toHaveLength(1);
-    expect((await sessionRecord(env, auditIdentifier)).captureReleases).toEqual([
-      { sessionIdentifier: first.sessionIdentifier, failures: 1, dueAt: NOW + LEASE + 60_000 },
-    ]);
-
-    vi.setSystemTime(NOW + 20 * DAY);
-    await deliverStatusEvents(env);
-    expect(files.deletes).toEqual([]);
+    expect(files.deletes).toEqual([moved]);
+    expect(providerRequests(files).filter((url) => url.includes('kimi'))).toEqual([]);
+    expect(evidence.bucket.delete).not.toHaveBeenCalled();
     expect(captureKeys(env, auditIdentifier)).toEqual([]);
     expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
   });
@@ -592,6 +677,154 @@ describe('a Grader session deletes its capture files when it ends', () => {
       expect.arrayContaining([evidenceKey, `${evidenceKey}.hosted`]),
     );
     expect(captureKeys(env, auditIdentifier)).toEqual([]);
+  });
+
+  it('deletes an OpenAI upload, which asks for a 30-day expiry, at its OpenAI API when the session ends', async () => {
+    const env = durableEnv({ MODEL_OVERRIDES: OPENAI_ROUTE });
+    const files = providerFiles();
+    const auditIdentifier = 'audit-capture-openai';
+    const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
+    await upload(env, first.accessToken, 'tile.webp');
+    const [uploaded] = files.uploads;
+    const [form] = files.uploadForms;
+    if (!uploaded || !form) throw new Error('The upload must have reached OpenAI');
+    expect(form.get('purpose')).toBe('user_data');
+    expect(form.get('expires_after[anchor]')).toBe('created_at');
+    expect(form.get('expires_after[seconds]')).toBe(String(30 * 24 * 60 * 60));
+    await exchange(env, await activationFor(env, auditIdentifier, 'second'));
+
+    vi.setSystemTime(NOW + LEASE);
+    await deliverStatusEvents(env);
+    expect(files.deletes).toEqual([uploaded]);
+    expect(files.requests).toContain(`${OPENAI_ORIGIN}/v1/files/${uploaded}`);
+    expect(captureKeys(env, auditIdentifier)).toEqual([]);
+    expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
+  });
+
+  it('deletes a Gemini upload at its Gemini API when the session ends, and counts one past its 48-hour expiry as gone', async () => {
+    const env = durableEnv({ MODEL_OVERRIDES: GEMINI_ROUTE });
+    const files = providerFiles();
+    const auditIdentifier = 'audit-capture-gemini';
+    const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
+    await upload(env, first.accessToken, 'tile.webp');
+    const [ended] = files.uploads;
+    if (!ended) throw new Error('The upload must have reached Gemini');
+    await exchange(env, await activationFor(env, auditIdentifier, 'second'));
+
+    vi.setSystemTime(NOW + LEASE);
+    await deliverStatusEvents(env);
+    expect(files.deletes).toEqual([ended]);
+    expect(files.requests).toContain(`${GEMINI_ORIGIN}/v1beta/${ended}`);
+
+    const late = 'audit-capture-gemini-expired';
+    const session = await exchange(env, await activationFor(env, late, 'first'));
+    await upload(env, session.accessToken, 'late.webp');
+    vi.setSystemTime(NOW + LEASE + GEMINI_FILE_LIFETIME);
+    await exchange(env, await activationFor(env, late, 'second'));
+    vi.setSystemTime(NOW + 2 * LEASE + GEMINI_FILE_LIFETIME);
+    files.deletes.length = 0;
+    await deliverStatusEvents(env);
+    expect(files.deletes).toEqual([]);
+    expect(captureKeys(env, late)).toEqual([]);
+    expect(await sessionRecord(env, late)).not.toHaveProperty('captureReleases');
+  });
+
+  it('deletes an earlier OpenAI upload at OpenAI’s API once routing is back on Anthropic', async () => {
+    const env = durableEnv({ MODEL_OVERRIDES: OPENAI_ROUTE });
+    const files = providerFiles();
+    const auditIdentifier = 'audit-capture-legacy-openai';
+    const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
+    await upload(env, first.accessToken, 'tile.webp');
+    const [legacy] = files.uploads;
+    if (!legacy) throw new Error('The upload must have reached OpenAI');
+    Object.assign(env, { MODEL_OVERRIDES: ENV.MODEL_OVERRIDES });
+    await exchange(env, await activationFor(env, auditIdentifier, 'second'));
+
+    vi.setSystemTime(NOW + LEASE);
+    await deliverStatusEvents(env);
+    expect(files.deletes).toEqual([legacy]);
+    expect(files.requests).toContain(`${OPENAI_ORIGIN}/v1/files/${legacy}`);
+    expect(captureKeys(env, auditIdentifier)).toEqual([]);
+    expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
+  });
+
+  it('deletes what an earlier Kimi Code route stored, its captures, dedup and discard records and their R2 evidence, then the audit record, once routing is back on Anthropic and no Kimi key is set, with no request to any provider', async () => {
+    const evidence = evidenceBucket();
+    const { kv } = kvMock();
+    const env = durableEnv({
+      MODEL_OVERRIDES: KIMI_ROUTE,
+      INLINE_EVIDENCE_R2: evidence.bucket,
+      FILES_KV: kv as unknown as KVNamespace,
+    });
+    const files = providerFiles();
+    const auditIdentifier = 'audit-capture-legacy-kimi';
+    const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
+    await upload(env, first.accessToken, 'captured.webp');
+    await upload(env, first.accessToken, 'discarded.webp');
+    const tenantScope = await auditFileTenantScope(first.sessionIdentifier, env);
+    const records = (await kv.list({ prefix: `${tenantScope}:` })).keys.map(({ name }) => name);
+    expect(records).toHaveLength(2);
+    const [discarded] = records;
+    const discardedFileId = (
+      JSON.parse((await kv.get(discarded ?? '')) ?? '{}') as {
+        fileId?: string;
+      }
+    ).fileId;
+    if (!discarded || !discardedFileId) throw new Error('Each Kimi upload must have a record');
+    await kv.delete(discarded);
+    await kv.put(`discard:${discarded}:${discardedFileId}`, '');
+    const evidenceKeys = [...evidence.stored.keys()];
+    expect(evidenceKeys).toHaveLength(2);
+    Object.assign(env, { MODEL_OVERRIDES: ENV.MODEL_OVERRIDES, KIMI_API_KEY: undefined });
+    await exchange(env, await activationFor(env, auditIdentifier, 'second'));
+    files.requests.length = 0;
+
+    vi.setSystemTime(NOW + LEASE);
+    await deliverStatusEvents(env);
+    expect(evidence.stored.size).toBe(0);
+    expect(vi.mocked(evidence.bucket.delete).mock.calls.map(([key]) => key)).toEqual(
+      expect.arrayContaining(evidenceKeys.flatMap((key) => [key, `${key}.hosted`])),
+    );
+    expect((await kv.list({ prefix: '' })).keys).toEqual([]);
+    expect(captureKeys(env, auditIdentifier)).toEqual([]);
+    expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
+
+    vi.setSystemTime(
+      (await sessionRecord(env, auditIdentifier)).expiresAt * 1000 + SESSION_LIFETIME,
+    );
+    await deliverStatusEvents(env);
+    expect(storageFor(env, auditIdentifier).keys()).toEqual([]);
+    expect(providerRequests(files)).toEqual([]);
+  });
+
+  it('sends no capture delete through a proxy the Anthropic base was moved to in production, and deletes the upload once the base is Anthropic’s own again', async () => {
+    const { kv } = kvMock();
+    const env = durableEnv({ ENVIRONMENT: 'production', FILES_KV: kv as unknown as KVNamespace });
+    const files = providerFiles();
+    const auditIdentifier = 'audit-capture-proxied-base';
+    const first = await exchange(env, await activationFor(env, auditIdentifier, 'first'));
+    await upload(env, first.accessToken, 'tile.webp');
+    const [held] = files.uploads;
+    if (!held) throw new Error('The upload must have reached the provider');
+    await exchange(env, await activationFor(env, auditIdentifier, 'second'));
+    Object.assign(env, { ANTHROPIC_API_BASE: ANTHROPIC_PROXY });
+
+    vi.setSystemTime(NOW + LEASE);
+    await deliverStatusEvents(env);
+    expect(files.requests.filter((url) => url.startsWith(ANTHROPIC_PROXY))).toEqual([]);
+    expect(files.live.has(held)).toBe(true);
+    expect((await sessionRecord(env, auditIdentifier)).captureReleases).toEqual([
+      { sessionIdentifier: first.sessionIdentifier, failures: 1, dueAt: NOW + LEASE + 60_000 },
+    ]);
+
+    Object.assign(env, { ANTHROPIC_API_BASE: ENV.ANTHROPIC_API_BASE });
+    vi.setSystemTime(NOW + LEASE + 60_000);
+    await deliverStatusEvents(env);
+    expect(files.requests.filter((url) => url.startsWith(ANTHROPIC_PROXY))).toEqual([]);
+    expect(files.live.has(held)).toBe(false);
+    expect(captureKeys(env, auditIdentifier)).toEqual([]);
+    expect((await kv.list({ prefix: '' })).keys).toEqual([]);
+    expect(await sessionRecord(env, auditIdentifier)).not.toHaveProperty('captureReleases');
   });
 });
 

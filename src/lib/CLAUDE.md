@@ -48,10 +48,22 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   `releaseTenantFiles` releases every record one tenant owns, dedup and `discard:` alike, deleting
   the object each names through `deleteStoredFile` and keeping a record whose delete fails; only a
   tenant none of whose references can be read again is released, which is a Grader session once it
-  has ended. `deleteStoredFile` deletes through the configured route that still reaches the object
-  (`storedFileRoute`), counts a provider's 404 as deleted, and abandons a delete still unsettled
+  has ended. `deleteStoredFile` deletes through the provider that holds the object, whatever the
+  current routing (the file service's `deleteStored`), counts a provider's 404 as deleted, and abandons a delete still unsettled
   after `STORED_FILE_DELETE_TIMEOUT_MILLISECONDS` as failed, racing the abort so a transport that
   ignores it, an R2 binding call included, cannot hold its caller.
+- `ai-providers.ts` is the AI provider allow-list: `AI_SUBPROCESSORS`, the DPA's AI sub-processors
+  by stable name, each with its name exactly as the DPA prints it and its API origin's host. Its one
+  source is `_standards/ai-providers.json` in the workspace repository `limespot/root`: a provider is
+  added there first, then to the website DPA, then here; `test/ai-providers.test.ts` matches this
+  list to that file exactly; and CI's published-DPA gate runs root's
+  `_enforcement/check-published-dpa.py`, which fails until the live DPA prints every provider the file
+  names. It also holds each catalogued provider's sub-processor (`null` for Moonshot and Kimi Code);
+  whether a provider
+  may serve a route (`mayServeRoute`: a listed provider any route, an unlisted one only a route
+  carrying no customer content); and each provider's own API base (`isOfficialProviderBase`), built
+  on its sub-processor's host where it has one. It imports nothing at runtime, because `config.ts`
+  uses it.
 - Client-correctable canonical validation uses `WorkerError` with the Brain
   `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
   provider-protocol failures after a route reaches its adapter.
@@ -106,10 +118,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   because a person reads it.
 - The grader plan is a versioned contract with lib. `audit-plan.ts` keeps
   `SUPPORTED_AUDIT_PLAN_VERSIONS` beside the plan values, and `audit-auth.ts`
-  refuses an exchange, upload or inference whose `X-LimeSpot-Audit-Plan-Version`
+  refuses an exchange, status read, upload or inference whose `X-LimeSpot-Audit-Plan-Version`
   names any other value with 409 `AuditPlanVersionException` /
   `audit_plan_version_unsupported`, before it consumes an activation or reserves
-  quota. A request naming no version follows plan 1. A lib change to a mirrored plan input is a new
+  quota. A request naming no version follows plan 1 when its extension build names its build time,
+  and is refused the same way when it names none. A lib change to a mirrored plan input is a new
   version, added here with its allowance before the client ships it. Plan version 2 keeps version
   1's capture plan and adds the Grader chat, held to `GRADER_CHAT_MESSAGE_CEILING` messages an audit
   above any configured allowance.
@@ -221,9 +234,13 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   `exchangeAuditActivation` resolves every setting its answer depends on, the cutoffs and chat terms
   included, and refuses a run the cutoff would already revoke, before the activation is consumed.
   `audit-auth.ts` refuses an extension build older than `GRADER_EXTENSION_BUILT_AFTER`, read from
-  `X-LimeSpot-Extension-Built-At` and taken as `2026-10-03T00:00:00Z` when absent, with 409
-  `extension_update_required` at exchange before the activation is read and on every audit request
-  before any reservation; a malformed value is 400.
+  `X-LimeSpot-Extension-Built-At`, with 409 `extension_update_required` at exchange before the
+  activation is read and on every audit request before any reservation; a malformed value is 400.
+  The cutoff applies only to a build that names its build time. A build naming none is held to the
+  plan-version contract instead: it must name a supported `X-LimeSpot-Audit-Plan-Version`, and one
+  naming neither is refused 409 `audit_plan_version_unsupported` at the same points, whatever the
+  cutoff. `assertCompatibleAuditClient` is the one check, applied to the exchange,
+  `GET /audit/session`, `POST /files` and `POST /messages`.
 - A valid new activation supersedes the audit's active session. `releaseSession` ends the old
   session exactly as expiry does — run, files and totals go; completed attempts, leased
   reservations, the outbox, consumed activations and chat state stay — and the record then names

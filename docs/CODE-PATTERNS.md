@@ -171,7 +171,9 @@ CONFIGURATION, not in code:
 4. **Contract constants stay in code.** Do NOT config-ify values that are
    frozen contracts or protocol facts: wire field names, tool names, HTTP
    routes, prompt text, the model catalog (what a model IS, as opposed to which
-   model a deployment chose), Anthropic's 4-breakpoint `cache_control` limit and
+   model a deployment chose), the AI provider allow-list with each provider's own
+   API base (`src/lib/ai-providers.ts`, a list the DPA states rather than a
+   deployment choice), Anthropic's 4-breakpoint `cache_control` limit and
    its `1h` extended TTL, the `anthropic-version`/beta headers, and the
    cross-repo-frozen `MAX_ITERATIONS` (= 8) / `MAX_CHAT_REFS` (= 5) (lib
    `CONTRACTS.md` §1). Internal robustness/observability constants with a

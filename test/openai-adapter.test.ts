@@ -8,10 +8,10 @@ import type {
   InferenceRequest,
   InferenceResult,
   ModelProfile,
-  ProviderContinuationState,
 } from '../src/lib/inference-types';
 import { InferenceFailure } from '../src/inference/adapter';
 import { OpenAIResponsesAdapter } from '../src/inference/adapters/openai';
+import { resolveModelFamily } from '../src/inference/model-catalog';
 import {
   createInferenceDiagnosticsService,
   createInferenceFileService,
@@ -19,8 +19,21 @@ import {
 } from '../src/inference/factory';
 import { dedupUpload } from '../src/lib/file-dedup';
 import { messagesCompatibilityResponse } from '../src/inference/messages-compatibility';
-import { registeredMessagesResponse } from '../src/handlers/messages';
-import { ENV, fetchCall, kvMock, sentBody, stubFetch } from './helpers';
+import { handleMessages, registeredMessagesResponse } from '../src/handlers/messages';
+import {
+  getModelProfile,
+  getPromptGroupDefinition,
+  getSystemPrompt,
+  listPromptGroups,
+  validateProviderConfiguration,
+} from '../src/prompt-registry';
+import { handleChat } from '../src/handlers/chat';
+import { graderChatRoute } from '../src/handlers/grader-chat';
+import type { Env } from '../src/config';
+import { CORS, ENV, fetchCall, kvMock, sentBody, stubFetch } from './helpers';
+import { OPENAI_FILE_EXPIRY_CAPTURE } from './fixtures/openai-file-expiry';
+import { OPENAI_REASONING_TOOL_ROUND_CAPTURE } from './fixtures/openai-reasoning-tool-round';
+import { OPENAI_TOOL_ROUND_CAPTURE } from './fixtures/openai-tool-round';
 
 const PROFILE: ModelProfile = {
   name: 'openai-responses-test',
@@ -272,6 +285,63 @@ function completedFunctionStream(responseId: string): Record<string, unknown>[] 
       response: response([finalCall], { id: responseId }),
     },
   ];
+}
+
+function genuineStream(body: string): Response {
+  return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+function completedOutput(body: string): readonly Record<string, unknown>[] {
+  for (const line of body.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const event = JSON.parse(line.slice(5)) as {
+      type?: string;
+      response?: { output?: Record<string, unknown>[] };
+    };
+    if (event.type === 'response.completed' && event.response?.output) return event.response.output;
+  }
+  throw new Error('The captured stream has no response.completed event');
+}
+
+function completedText(body: string): string {
+  return completedOutput(body)
+    .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+    .map((part) => String((part as { text?: unknown }).text ?? ''))
+    .join('');
+}
+
+const GENUINE_TOOL_TURN = completedOutput(OPENAI_TOOL_ROUND_CAPTURE.toolCallTurn);
+const GENUINE_CALL_ID = String(GENUINE_TOOL_TURN[0]?.call_id);
+const GENUINE_REASONING_TURN = completedOutput(OPENAI_REASONING_TOOL_ROUND_CAPTURE.toolCallTurn);
+const GENUINE_REASONING_CALL_ID = String(
+  GENUINE_REASONING_TURN.find((item) => item.type === 'function_call')?.call_id,
+);
+
+function withoutPromptCacheFields(captured: unknown): unknown {
+  const strip = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(strip);
+    if (!value || typeof value !== 'object') return value;
+    const entries = Object.entries(value).filter(
+      ([key]) =>
+        !['prompt_cache_key', 'prompt_cache_options', 'prompt_cache_breakpoint'].includes(key),
+    );
+    const item = Object.fromEntries(entries.map(([key, member]) => [key, strip(member)]));
+    const output = item.output as { type?: unknown; text?: unknown }[] | undefined;
+    return item.type === 'function_call_output' &&
+      Array.isArray(output) &&
+      output.length === 1 &&
+      output[0]?.type === 'input_text'
+      ? { ...item, output: output[0].text }
+      : item;
+  };
+  return strip(captured);
+}
+
+function capturedText(captured: unknown, index: number): string {
+  const input = (captured as { input: { content: { text: string }[] }[] }).input;
+  const text = input[index]?.content[0]?.text;
+  if (text === undefined) throw new Error(`The captured request has no input ${index}`);
+  return text;
 }
 
 function completedReasoningStream(responseId: string): Record<string, unknown>[] {
@@ -538,18 +608,21 @@ describe('OpenAI Responses complete translation', () => {
       'Bearer test-openai-key',
     );
     const body = sentBody(call.init);
+    expect(body).not.toHaveProperty('previous_response_id');
+    expect(body).not.toHaveProperty('prompt_cache_key');
+    expect(body).not.toHaveProperty('prompt_cache_options');
+    expect(body).not.toHaveProperty('prompt_cache_retention');
+    expect(JSON.stringify(body)).not.toContain('prompt_cache_breakpoint');
     expect(body).toMatchObject({
       model: PROFILE.model,
       max_output_tokens: 2048,
-      store: true,
+      store: false,
       reasoning: { effort: 'medium' },
       temperature: 0.2,
       top_p: 0.9,
       service_tier: 'default',
       metadata: { trace: 'phase3-fixture' },
       parallel_tool_calls: false,
-      prompt_cache_key: 'app-ai:test-group:openai-responses-test',
-      prompt_cache_options: { mode: 'explicit', ttl: '30m' },
       tool_choice: { type: 'function', name: 'lookup' },
       text: {
         format: {
@@ -582,13 +655,7 @@ describe('OpenAI Responses complete translation', () => {
       expect.arrayContaining([
         expect.objectContaining({
           role: 'system',
-          content: [
-            expect.objectContaining({
-              type: 'input_text',
-              text: 'Stable instructions',
-              prompt_cache_breakpoint: { mode: 'explicit' },
-            }),
-          ],
+          content: [expect.objectContaining({ type: 'input_text', text: 'Stable instructions' })],
         }),
       ]),
     );
@@ -611,8 +678,8 @@ describe('OpenAI Responses complete translation', () => {
         reasoningTokens: 2,
       },
       stopReason: 'completed',
-      providerState: { backend: 'openai', value: { previousResponseId: 'resp_1' } },
     });
+    expect(result).not.toHaveProperty('providerState');
   });
 
   it('routes an internal OpenAI profile through the factory without changing the registry', async () => {
@@ -740,17 +807,12 @@ describe('OpenAI Responses complete translation', () => {
     ).rejects.toThrow('provider-hosted tools are not supported');
   });
 
-  it('uses previous_response_id and sends only post-response tool results, including images', async () => {
+  it('keeps no stored Responses object at OpenAI and resends the whole conversation, a tool turn as its untouched output items', async () => {
     const fetchMock = stubFetch().mockResolvedValue(
       new Response(JSON.stringify(response([message('continued')], { id: 'resp_2' }))),
     );
-    const continuation: ProviderContinuationState = {
-      backend: 'openai',
-      value: { previousResponseId: 'resp_1' },
-    };
-    await new OpenAIResponsesAdapter(ENV).complete(
+    const result = await new OpenAIResponsesAdapter(ENV).complete(
       request({
-        continuation,
         messages: [
           ...request().messages,
           {
@@ -758,20 +820,20 @@ describe('OpenAI Responses complete translation', () => {
             content: [
               {
                 type: 'tool-call',
-                id: 'call_1',
+                id: GENUINE_CALL_ID,
                 name: 'lookup',
                 input: { id: '42' },
                 cache: 'none',
+                providerState: { backend: 'openai', value: { outputItems: GENUINE_TOOL_TURN } },
               },
             ],
-            providerState: continuation,
           },
           {
             role: 'user',
             content: [
               {
                 type: 'tool-result',
-                toolCallId: 'call_1',
+                toolCallId: GENUINE_CALL_ID,
                 isError: false,
                 cache: 'none',
                 content: [
@@ -788,20 +850,81 @@ describe('OpenAI Responses complete translation', () => {
         ],
       }),
     );
+    expect(result).not.toHaveProperty('providerState');
     const body = sentBody(fetchCall(fetchMock, 0).init);
-    expect(body.previous_response_id).toBe('resp_1');
-    expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
-    expect(JSON.stringify(body.input)).not.toContain('Stable instructions');
+    expect(body.store).toBe(false);
+    expect(body).not.toHaveProperty('previous_response_id');
     expect(body.input).toEqual([
       {
+        type: 'message',
+        role: 'system',
+        content: [{ type: 'input_text', text: 'Stable instructions' }],
+      },
+      {
+        type: 'message',
+        role: 'system',
+        content: [{ type: 'input_text', text: 'Volatile system context' }],
+      },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] },
+      ...GENUINE_TOOL_TURN,
+      {
         type: 'function_call_output',
-        call_id: 'call_1',
+        call_id: GENUINE_CALL_ID,
         output: [
           { type: 'input_text', text: 'visible page' },
           { type: 'input_image', image_url: 'data:image/png;base64,cGFnZQ==', detail: 'auto' },
         ],
       },
     ]);
+  });
+
+  it('refuses continuation state and a tool call from an earlier request, before any call', async () => {
+    const fetchMock = stubFetch();
+    await expect(
+      new OpenAIResponsesAdapter(ENV).complete(
+        request({ continuation: { backend: 'openai', value: { outputItems: GENUINE_TOOL_TURN } } }),
+      ),
+    ).rejects.toThrow('keeps no conversation state between requests');
+    await expect(
+      new OpenAIResponsesAdapter(ENV).complete(
+        request({
+          messages: [
+            ...request().messages,
+            {
+              role: 'assistant',
+              content: [
+                { type: 'tool-call', id: 'call_1', name: 'lookup', input: {}, cache: 'none' },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow('only a tool call made earlier in the same request');
+    await expect(
+      new OpenAIResponsesAdapter(ENV).complete(
+        request({
+          messages: [
+            ...request().messages,
+            {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Earlier answer', cache: 'none' }],
+            },
+            { role: 'user', content: [{ type: 'text', text: 'And now?', cache: 'none' }] },
+          ],
+        }),
+      ),
+    ).rejects.toThrow('OpenAI serves one turn');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a tool turn whose reasoning item carries no encrypted content to replay', async () => {
+    const unsealed = { id: 'rs_unsealed', type: 'reasoning', summary: [] };
+    stubFetch().mockResolvedValueOnce(
+      new Response(JSON.stringify(response([unsealed, ...GENUINE_TOOL_TURN]))),
+    );
+    await expect(new OpenAIResponsesAdapter(ENV).complete(request())).rejects.toThrow(
+      'without the encrypted content a stateless turn replays',
+    );
   });
 
   it('normalizes function calls and incomplete responses without fabricating arguments', async () => {
@@ -921,40 +1044,46 @@ describe('OpenAI Responses complete translation', () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
-  it('fails before provider I/O when canonical cache intent exceeds OpenAI write limits', async () => {
-    const fetchMock = stubFetch();
-    await expect(
-      new OpenAIResponsesAdapter(ENV).complete(
-        request({
-          messages: [
-            {
-              role: 'user',
-              content: Array.from({ length: 5 }, (_, index) => ({
-                type: 'text' as const,
-                text: `stable-${index}`,
-                cache: 'short' as const,
-              })),
-            },
-          ],
-        }),
-      ),
-    ).rejects.toThrow('at most 4 writable prompt-cache breakpoints');
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('gives every gpt- model the automatic-cache profile, which declares no inline breakpoints', () => {
+    for (const model of ['gpt-5-nano', 'gpt-5.2', 'gpt-5.6-luna', 'gpt-6.1-sol']) {
+      const family = resolveModelFamily(model, 'MODEL_BALANCED');
+      expect(family.profile, model).toBe('gpt');
+      expect(family.capabilities.inlineCacheBreakpoints, model).toBe(false);
+    }
   });
 
-  it('fails before provider I/O for undeclared caching and unsupported canonical controls', async () => {
+  it('requests no explicit or extended prompt caching: no breakpoint, cache options, retention or cache key', async () => {
+    const fetchMock = stubFetch().mockResolvedValue(
+      new Response(JSON.stringify(response([message('{"answer":"ok"}')]))),
+    );
+    await new OpenAIResponsesAdapter(ENV).complete(
+      request({
+        messages: [
+          {
+            role: 'system',
+            content: [{ type: 'text', text: 'Stable grounding', cache: 'extended' }],
+          },
+          {
+            role: 'user',
+            content: Array.from({ length: 6 }, (_, index) => ({
+              type: 'text' as const,
+              text: `stable-${index}`,
+              cache: 'short' as const,
+            })),
+          },
+        ],
+      }),
+    );
+    const sent = sentBody(fetchCall(fetchMock, 0).init);
+    for (const field of ['prompt_cache_key', 'prompt_cache_options', 'prompt_cache_retention']) {
+      expect(sent, field).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(sent)).not.toContain('prompt_cache_breakpoint');
+  });
+
+  it('fails before provider I/O for unsupported canonical controls', async () => {
     const adapter = new OpenAIResponsesAdapter(ENV);
     const fetchMock = stubFetch();
-    await expect(
-      adapter.complete(
-        request({
-          modelProfile: {
-            ...PROFILE,
-            capabilities: { ...PROFILE.capabilities, inlineCacheBreakpoints: false },
-          },
-        }),
-      ),
-    ).rejects.toThrow('cannot cache prompts');
     await expect(adapter.complete(request({ sampling: { topK: 20 } }))).rejects.toThrow(
       'does not support canonical topK',
     );
@@ -1155,10 +1284,8 @@ describe('OpenAI Responses streaming and failure normalization', () => {
     const events = [];
     for await (const event of new OpenAIResponsesAdapter(ENV).stream(request())) events.push(event);
     expect(events.map((event) => event.type)).toEqual(['message-start', 'usage', 'complete']);
-    expect(events.at(-1)).toMatchObject({
-      type: 'complete',
-      result: { stopReason: 'completed', providerState: { backend: 'openai' } },
-    });
+    expect(events.at(-1)).toMatchObject({ type: 'complete', result: { stopReason: 'completed' } });
+    expect(events.at(-1)).not.toHaveProperty('result.providerState');
   });
 
   it('streams a refusal through the complete item/content lifecycle', async () => {
@@ -1176,10 +1303,62 @@ describe('OpenAI Responses streaming and failure normalization', () => {
     });
   });
 
-  it('continues the shared server-tool loop with previous_response_id and call_id', async () => {
+  for (const capture of [OPENAI_TOOL_ROUND_CAPTURE, OPENAI_REASONING_TOOL_ROUND_CAPTURE]) {
+    it(`builds the two requests the genuine ${capture.model} capture was answered for, less the prompt-cache fields app-ai no longer sends`, async () => {
+      const fetchMock = stubFetch()
+        .mockResolvedValueOnce(genuineStream(capture.toolCallTurn))
+        .mockResolvedValueOnce(genuineStream(capture.answerTurn));
+      const env: Env = {
+        ...ENV,
+        MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},setup-strategy=${capture.model}`,
+      };
+      await createInferenceService(env).runAgent({
+        prompt: capturedText(capture.request, 0),
+        promptGroup: 'setup-strategy',
+        modelProfile: getModelProfile('proposals', env),
+        filePolicy: POLICY,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: capturedText(capture.request, 1), cache: 'none' }],
+          },
+        ],
+        maxOutputTokens: 1200,
+        effort: 'low',
+        mode: 'server',
+        maxIterations: 2,
+        tools: [
+          {
+            name: 'lookup',
+            description: 'Look up a record',
+            execution: 'server',
+            strict: true,
+            inputSchema: LOOKUP_SCHEMA,
+          },
+        ],
+        async executeTool(call) {
+          return {
+            type: 'tool-result',
+            toolCallId: call.id,
+            content: [{ type: 'text', text: 'record 42: a blue mug', cache: 'none' }],
+            isError: false,
+            cache: 'none',
+          };
+        },
+      });
+      expect(sentBody(fetchCall(fetchMock, 0).init)).toEqual(
+        withoutPromptCacheFields(capture.request),
+      );
+      expect(sentBody(fetchCall(fetchMock, 1).init)).toEqual(
+        withoutPromptCacheFields(capture.replayRequest),
+      );
+    });
+  }
+
+  it('replays a genuine encrypted reasoning item and tool call untouched beside its output when the server-tool loop resends the conversation', async () => {
     const fetchMock = stubFetch()
-      .mockResolvedValueOnce(sse(completedFunctionStream('resp_tool')))
-      .mockResolvedValueOnce(sse(completedMessageStream('done', 'resp_done')));
+      .mockResolvedValueOnce(genuineStream(OPENAI_REASONING_TOOL_ROUND_CAPTURE.toolCallTurn))
+      .mockResolvedValueOnce(genuineStream(OPENAI_REASONING_TOOL_ROUND_CAPTURE.answerTurn));
     const base = request();
     const result = await createInferenceService(ENV).runAgent({
       ...base,
@@ -1190,32 +1369,38 @@ describe('OpenAI Responses streaming and failure normalization', () => {
         return {
           type: 'tool-result',
           toolCallId: call.id,
-          content: [{ type: 'text', text: 'record 42', cache: 'none' }],
+          content: [{ type: 'text', text: 'record 42: a blue mug', cache: 'none' }],
           isError: false,
           cache: 'none',
         };
       },
     });
-    expect(result).toMatchObject({ text: 'done', iterations: 2, stopReason: 'completed' });
+    expect(result).toMatchObject({
+      text: completedText(OPENAI_REASONING_TOOL_ROUND_CAPTURE.answerTurn),
+      iterations: 2,
+      stopReason: 'completed',
+    });
+    expect(result).not.toHaveProperty('providerState');
+    const first = sentBody(fetchCall(fetchMock, 0).init);
+    expect(first.include).toEqual(['reasoning.encrypted_content']);
     const second = sentBody(fetchCall(fetchMock, 1).init);
-    expect(second.previous_response_id).toBe('resp_tool');
-    expect(second.input).toEqual([
+    expect(second.store).toBe(false);
+    expect(second.include).toEqual(['reasoning.encrypted_content']);
+    expect(second).not.toHaveProperty('previous_response_id');
+    expect(JSON.stringify(second.input)).toContain('Stable instructions');
+    expect(GENUINE_REASONING_TURN.map((item) => item.type)).toEqual(['reasoning', 'function_call']);
+    expect((second.input as unknown[]).slice(-3)).toEqual([
+      ...GENUINE_REASONING_TURN,
       {
         type: 'function_call_output',
-        call_id: 'call_1',
-        output: [
-          {
-            type: 'input_text',
-            text: 'record 42',
-            prompt_cache_breakpoint: { mode: 'explicit' },
-          },
-        ],
+        call_id: GENUINE_REASONING_CALL_ID,
+        output: 'record 42: a blue mug',
       },
     ]);
   });
 
-  it('returns browser-owned tool calls with opaque OpenAI continuation state', async () => {
-    stubFetch().mockResolvedValue(sse(completedFunctionStream('resp_client')));
+  it('returns browser-owned tool calls with no continuation state', async () => {
+    stubFetch().mockResolvedValue(genuineStream(OPENAI_TOOL_ROUND_CAPTURE.toolCallTurn));
     const clientTool: CanonicalClientToolDefinition = {
       name: 'lookup',
       description: 'Look up in the browser',
@@ -1233,9 +1418,9 @@ describe('OpenAI Responses streaming and failure normalization', () => {
     expect(result).toMatchObject({
       iterations: 1,
       stopReason: 'tool-call',
-      toolCalls: [expect.objectContaining({ id: 'call_1' })],
-      providerState: { backend: 'openai', value: { previousResponseId: 'resp_client' } },
+      toolCalls: [expect.objectContaining({ id: GENUINE_CALL_ID, name: 'lookup' })],
     });
+    expect(result).not.toHaveProperty('providerState');
   });
 
   it('fails closed on malformed complete/SSE envelopes and tool JSON', async () => {
@@ -1575,6 +1760,31 @@ describe('OpenAI Responses streaming and failure normalization', () => {
 });
 
 describe('OpenAI Files adapter', () => {
+  it('asks for a 30-day expiry that the genuine Files answers honour, reads it back and deletes the file', async () => {
+    const capture = OPENAI_FILE_EXPIRY_CAPTURE;
+    const fetchMock = stubFetch()
+      .mockResolvedValueOnce(new Response(JSON.stringify(capture.upload)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(capture.metadata)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(capture.deleted)));
+    const adapter = new OpenAIResponsesAdapter(ENV);
+    const uploaded = await adapter.uploadFile({
+      bytes: new TextEncoder().encode('app-ai upload expiry smoke'),
+      filename: 'expiry-smoke.txt',
+      mediaType: 'text/plain',
+      policy: { ...POLICY, requestedLifetimeSeconds: 30 * 24 * 60 * 60 },
+    });
+    const form = fetchCall(fetchMock, 0).init.body as FormData;
+    for (const field of ['purpose', 'expires_after[anchor]', 'expires_after[seconds]'] as const) {
+      expect(form.get(field), field).toBe(capture.uploadForm[field]);
+    }
+    expect(capture.upload.expires_at - capture.upload.created_at).toBe(30 * 24 * 60 * 60);
+    const expiresAt = new Date(capture.upload.expires_at * 1000).toISOString();
+    expect(uploaded).toMatchObject({ id: capture.upload.id, expiresAt });
+    expect(await adapter.getFileMetadata(capture.upload.id)).toMatchObject({ expiresAt });
+    await expect(adapter.deleteFile(capture.upload.id)).resolves.toBeUndefined();
+    expect(fetchCall(fetchMock, 2).init.method).toBe('DELETE');
+  });
+
   const file = {
     id: 'file_1',
     object: 'file',
@@ -1620,6 +1830,28 @@ describe('OpenAI Files adapter', () => {
     expect(await files.getMetadata(PROFILE, 'file_1')).toMatchObject({ id: 'file_1' });
     await files.delete(PROFILE, 'file_1');
     expect(fetchCall(fetchMock, 1).url).toContain('/v1/files/file_1');
+  });
+
+  it('asks OpenAI to expire an upload after the lifetime its policy requests, and refuses one the Files API would not accept', async () => {
+    const fetchMock = stubFetch().mockResolvedValue(new Response(JSON.stringify(file)));
+    const files = createInferenceFileService(ENV);
+    const thirtyDays = { ...POLICY, requestedLifetimeSeconds: 30 * 24 * 60 * 60 };
+    await files.upload(PROFILE, thirtyDays, new Uint8Array([1]), 'page.png', 'image/png');
+    const form = fetchCall(fetchMock, 0).init.body as FormData;
+    expect(form.get('expires_after[anchor]')).toBe('created_at');
+    expect(form.get('expires_after[seconds]')).toBe(String(30 * 24 * 60 * 60));
+    for (const requestedLifetimeSeconds of [60, 31 * 24 * 60 * 60]) {
+      await expect(
+        files.upload(
+          PROFILE,
+          { ...POLICY, requestedLifetimeSeconds },
+          new Uint8Array([1]),
+          'page.png',
+          'image/png',
+        ),
+      ).rejects.toThrow(/requests no lifetime the Files API accepts/);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('forwards one caller AbortSignal through every OpenAI Files operation', async () => {
@@ -1692,5 +1924,183 @@ describe('OpenAI Files adapter', () => {
       reference: { upstreamFileId: 'file_2', mediaType: 'image/jpeg' },
     });
     expect(fetchCall(fetchMock, 2).init.method).toBe('POST');
+  });
+});
+
+describe('OpenAI routes take no follow-up from an earlier request', () => {
+  const PRODUCTION: Env = { ...ENV, ENVIRONMENT: 'production' };
+  const OPENAI_ROUTES: Env = {
+    ...ENV,
+    MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},analytics-narrative=gpt-5.1,onboarding-visual=gpt-5.1,onboarding-qc-gate=gpt-5.1`,
+  };
+  const STATELESS = 'The openai route keeps no conversation state between requests';
+  const TEXT_HISTORY = [
+    { role: 'user', content: 'Which offer should I run?' },
+    { role: 'assistant', content: 'A spend-and-save offer.' },
+    { role: 'user', content: 'Why that one?' },
+  ];
+  const CALLER_TOOLS = [
+    { name: 'lookup', description: 'Look up', input_schema: { type: 'object' } },
+  ];
+  const TOOL_HISTORY = [
+    { role: 'user', content: 'Look up record 42' },
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'call_1', name: 'lookup', input: { id: '42' } }],
+    },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'found' }] },
+  ];
+
+  function studioChat(body: Record<string, unknown>): Request {
+    return new Request('https://app-ai.test/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Personalizer-Context-ID': 'ctx-openai',
+        'X-Personalizer-System-Prompt': 'analytics-insights',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function probe(body: Record<string, unknown>): Request {
+    return new Request('https://app-ai.test/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Personalizer-Context-ID': 'ctx-openai',
+        'X-Personalizer-System-Prompt': 'probe-currency',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('refuses an OpenAI model before serving on every route whose conversation carries earlier turns or browser-owned tools, and accepts it on every single-turn route', () => {
+    const refused: string[] = [];
+    for (const group of listPromptGroups()) {
+      if (group === 'free-render-verification') continue;
+      const { requirements } = getPromptGroupDefinition(group);
+      const multiTurn =
+        requirements.includes('textConversation') || requirements.includes('clientTools');
+      const validation = expect(
+        () =>
+          validateProviderConfiguration({
+            ...PRODUCTION,
+            MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},${group}=gpt-5.1`,
+          }),
+        group,
+      );
+      if (multiTurn) {
+        refused.push(group);
+        validation.toThrow(`Group ${group} requires`);
+      } else {
+        validation.not.toThrow();
+      }
+    }
+    expect(refused.sort()).toEqual([
+      'billing-narrative',
+      'grader-sales',
+      'studio-data-agent',
+      'studio-visual-agent',
+    ]);
+    expect(() =>
+      validateProviderConfiguration({
+        ...PRODUCTION,
+        MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},onboarding-chat=gpt-5.1`,
+      }),
+    ).toThrow(/unsupported by profile gpt/);
+  });
+
+  it('refuses a /chat continuation, earlier assistant or tool turn, or caller tools on an OpenAI route with a 400 and no provider call', async () => {
+    const fetchMock = stubFetch();
+    for (const body of [
+      { continuation: 'continuation_v2_sealed', messages: [{ role: 'user', content: 'go on' }] },
+      { messages: TEXT_HISTORY },
+      { messages: TOOL_HISTORY },
+      { messages: [{ role: 'user', content: 'Look up record 42' }], tools: CALLER_TOOLS },
+      { messages: [{ role: 'user', content: 'Look up record 42' }], tools: {} },
+      { messages: [{ role: 'user', content: 'Look up record 42' }], tools: 'lookup' },
+      { messages: [{ role: 'user', content: 'Look up record 42' }], tools: null },
+    ]) {
+      const refused = await handleChat(studioChat(body), OPENAI_ROUTES, CORS);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        Message: expect.stringContaining(STATELESS),
+        ExceptionType: 'ArgumentException',
+      });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a /messages continuation, earlier assistant or tool turn, or caller tools on an OpenAI route with a 400 and no provider call', async () => {
+    const fetchMock = stubFetch();
+    for (const body of [
+      { continuation: 'continuation_v2_sealed', messages: [{ role: 'user', content: 'go on' }] },
+      { messages: TEXT_HISTORY },
+      { messages: TOOL_HISTORY },
+      { messages: [{ role: 'user', content: 'Read the prices' }], tools: CALLER_TOOLS },
+      { messages: [{ role: 'user', content: 'Read the prices' }], tools: {} },
+      { messages: [{ role: 'user', content: 'Read the prices' }], tools: 'lookup' },
+      { messages: [{ role: 'user', content: 'Read the prices' }], tools: null },
+    ]) {
+      const refused = await handleMessages(probe(body), OPENAI_ROUTES, CORS);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        Message: expect.stringContaining(STATELESS),
+        ExceptionType: 'ArgumentException',
+      });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses malformed caller tools before any upload, Brain call or provider call', async () => {
+    const fetchMock = stubFetch();
+    const env: Env = {
+      ...OPENAI_ROUTES,
+      MODEL_OVERRIDES: `${OPENAI_ROUTES.MODEL_OVERRIDES},image-selection=gpt-5.1`,
+    };
+    for (const prompt of ['image-selection', 'onboarding-batch-all']) {
+      for (const tools of [{}, 'lookup']) {
+        const refused = await handleMessages(
+          new Request('https://app-ai.test/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Personalizer-Context-ID': 'ctx-openai',
+              'X-Personalizer-System-Prompt': prompt,
+              'X-Personalizer-Ruleset-Version': getSystemPrompt(prompt, env).rulesetVersion ?? '',
+            },
+            body: JSON.stringify({ messages: [{ role: 'user', content: 'go' }], tools }),
+          }),
+          env,
+          CORS,
+        );
+        expect(refused.status, `${prompt} ${JSON.stringify(tools)}`).toBe(400);
+        expect(await refused.json()).toMatchObject({ Message: expect.stringContaining(STATELESS) });
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses the Grader chat on an OpenAI model, since a chat carries its earlier turns', () => {
+    expect(() =>
+      graderChatRoute({ ...ENV, MODEL_OVERRIDES: `${ENV.MODEL_OVERRIDES},grader-sales=gpt-5.1` }),
+    ).toThrow('Group grader-sales requires textConversation, unsupported by profile gpt');
+    expect(() => graderChatRoute(ENV)).not.toThrow();
+  });
+
+  it('serves the same routes a single turn, statelessly', async () => {
+    const fetchMock = stubFetch().mockResolvedValue(
+      new Response(JSON.stringify(response([message('{"currency":"USD"}')]))),
+    );
+    const answered = await handleMessages(
+      probe({ messages: [{ role: 'user', content: 'Read the prices' }] }),
+      OPENAI_ROUTES,
+      CORS,
+    );
+    expect(answered.status).toBe(200);
+    expect(await answered.json()).not.toHaveProperty('continuation');
+    expect(sentBody(fetchCall(fetchMock, 0).init)).toMatchObject({ store: false });
   });
 });

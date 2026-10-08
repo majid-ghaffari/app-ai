@@ -23,6 +23,8 @@ import {
 } from '../adapter';
 import * as openai from './openai-wire';
 
+const FILE_LIFETIME_BOUNDS_SECONDS = { minimum: 3600, maximum: 2592000 } as const;
+
 interface OpenAIErrorBody {
   error?: {
     code?: string | null;
@@ -65,7 +67,7 @@ type OpenAIInputItem = Readonly<Record<string, unknown>>;
 
 /** OpenAI adapter bound to one Worker environment. */
 export class OpenAIResponsesAdapter implements InferenceProviderAdapter {
-  readonly continuationOwnsAgentHistory = true;
+  readonly offersContinuation = false;
   readonly provider = 'openai' as const;
   readonly apiFamily = 'openai-responses' as const;
 
@@ -228,6 +230,11 @@ export class OpenAIResponsesAdapter implements InferenceProviderAdapter {
       request.filename,
     );
     formData.append('purpose', request.policy.purpose as string);
+    const lifetimeSeconds = uploadLifetimeSeconds(request.policy);
+    if (lifetimeSeconds !== null) {
+      formData.append('expires_after[anchor]', 'created_at');
+      formData.append('expires_after[seconds]', String(lifetimeSeconds));
+    }
     const response = await callOpenAI(
       () => openai.uploadFile(formData, this.env, request.abortSignal),
       request.abortSignal,
@@ -277,41 +284,24 @@ export class OpenAIResponsesAdapter implements InferenceProviderAdapter {
 }
 
 function toOpenAIPayload(request: InferenceRequest): Record<string, unknown> {
-  const continuationId = continuationResponseId(request.continuation);
+  if (request.continuation) {
+    throw new Error(
+      `OpenAI keeps no conversation state between requests and cannot continue ${request.continuation.backend} provider state`,
+    );
+  }
   const input: OpenAIInputItem[] = [
-    ...(continuationId
-      ? []
-      : [
-          {
-            type: 'message',
-            role: 'system',
-            content: [
-              {
-                type: 'input_text',
-                text: request.prompt,
-                prompt_cache_breakpoint: { mode: 'explicit' },
-              },
-            ],
-          },
-        ]),
-    ...toOpenAIInput(request.messages, continuationId),
+    { type: 'message', role: 'system', content: [{ type: 'input_text', text: request.prompt }] },
+    ...request.messages.flatMap(toOpenAIMessageItems),
   ];
   const payload: Record<string, unknown> = {
     model: request.modelProfile.model,
     input,
     max_output_tokens: request.maxOutputTokens,
-    store: true,
+    store: false,
   };
-  const breakpoints = countPromptCacheBreakpoints(input);
-  if (breakpoints > 4) {
-    throw new Error('OpenAI Responses supports at most 4 writable prompt-cache breakpoints');
+  if (request.modelProfile.capabilities.reasoning) {
+    payload.include = ['reasoning.encrypted_content'];
   }
-  if (!request.modelProfile.capabilities.inlineCacheBreakpoints) {
-    throw new Error(`OpenAI model profile ${request.modelProfile.name} cannot cache prompts`);
-  }
-  payload.prompt_cache_key = `app-ai:${request.promptGroup}:${request.modelProfile.name}`;
-  payload.prompt_cache_options = { mode: 'explicit', ttl: '30m' };
-  if (continuationId) payload.previous_response_id = continuationId;
   if (request.effort) payload.reasoning = { effort: request.effort };
   if (request.structuredOutput) {
     payload.text = {
@@ -350,29 +340,27 @@ function toOpenAIPayload(request: InferenceRequest): Record<string, unknown> {
   return payload;
 }
 
-function toOpenAIInput(
-  messages: readonly InferenceMessage[],
-  continuationId: string | null,
-): OpenAIInputItem[] {
-  let selected = messages;
-  if (continuationId) {
-    let boundary = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (
-        message?.role === 'assistant' &&
-        (!message.providerState || continuationResponseId(message.providerState) === continuationId)
-      ) {
-        boundary = index;
-        break;
-      }
-    }
-    if (boundary >= 0) selected = messages.slice(boundary + 1);
+function replayItems(state: ProviderContinuationState): readonly OpenAIInputItem[] {
+  if (state.backend !== 'openai') {
+    throw new Error(`OpenAI cannot continue ${state.backend} provider state`);
   }
-  return selected.flatMap(toOpenAIMessageItems);
+  const items = isJsonObject(state.value) ? state.value.outputItems : undefined;
+  if (!Array.isArray(items) || items.length === 0 || !items.every(isJsonObject)) {
+    throw invalidOpenAIResponse('OpenAI tool-call state omitted its output items');
+  }
+  return items;
 }
 
 function toOpenAIMessageItems(message: InferenceMessage): OpenAIInputItem[] {
+  if (message.role === 'assistant') {
+    const toolTurn = message.content.find((content) => content.type === 'tool-call');
+    if (!toolTurn?.providerState) {
+      throw new Error(
+        'OpenAI serves one turn and replays only a tool call made earlier in the same request',
+      );
+    }
+    return [...replayItems(toolTurn.providerState)];
+  }
   const items: OpenAIInputItem[] = [];
   let messageContent: OpenAIInputContent[] = [];
   const flushMessage = () => {
@@ -382,14 +370,7 @@ function toOpenAIMessageItems(message: InferenceMessage): OpenAIInputItem[] {
   };
   for (const content of message.content) {
     if (content.type === 'tool-call') {
-      flushMessage();
-      items.push({
-        type: 'function_call',
-        call_id: content.id,
-        name: content.name,
-        arguments: JSON.stringify(content.input),
-      });
-      continue;
+      throw new Error(`OpenAI received a tool call in a ${message.role} message`);
     }
     if (content.type === 'tool-result') {
       flushMessage();
@@ -409,33 +390,18 @@ function toOpenAIMessageItems(message: InferenceMessage): OpenAIInputItem[] {
 function toOpenAIInputContent(
   content: Exclude<InferenceContent, { type: 'tool-call' | 'tool-result' }>,
 ): OpenAIInputContent[] {
-  if (content.type === 'text') {
-    return withPromptCacheBreakpoint([{ type: 'input_text', text: content.text }], content.cache);
-  }
-  if (content.type === 'image') {
-    return withPromptCacheBreakpoint([toOpenAIImage(content)], content.cache);
-  }
+  if (content.type === 'text') return [{ type: 'input_text', text: content.text }];
+  if (content.type === 'image') return [toOpenAIImage(content)];
   const prefix = [content.title, content.context].filter(Boolean).join('\n');
   if (content.source.type === 'content') {
     const nested =
       typeof content.source.content === 'string'
         ? [{ type: 'input_text', text: content.source.content }]
         : content.source.content.flatMap((item) => toOpenAIInputContent(item));
-    return withPromptCacheBreakpoint(
-      prefix ? [{ type: 'input_text', text: prefix }, ...nested] : nested,
-      content.cache,
-    );
+    return prefix ? [{ type: 'input_text', text: prefix }, ...nested] : nested;
   }
   if (content.source.type === 'text') {
-    return withPromptCacheBreakpoint(
-      [
-        {
-          type: 'input_text',
-          text: `${prefix ? `${prefix}\n` : ''}${content.source.text}`,
-        },
-      ],
-      content.cache,
-    );
+    return [{ type: 'input_text', text: `${prefix ? `${prefix}\n` : ''}${content.source.text}` }];
   }
   const file: Record<string, unknown> = { type: 'input_file' };
   if (content.source.type === 'provider-file') {
@@ -451,10 +417,7 @@ function toOpenAIInputContent(
   } else {
     throw new Error('OpenAI received an unresolved public file reference');
   }
-  return withPromptCacheBreakpoint(
-    prefix ? [{ type: 'input_text', text: prefix }, file] : [file],
-    content.cache,
-  );
+  return prefix ? [{ type: 'input_text', text: prefix }, file] : [file];
 }
 
 function toOpenAIImage(content: Extract<InferenceContent, { type: 'image' }>): OpenAIInputContent {
@@ -477,45 +440,12 @@ function toOpenAIImage(content: Extract<InferenceContent, { type: 'image' }>): O
 }
 
 function toOpenAIToolOutput(content: Extract<InferenceContent, { type: 'tool-result' }>): unknown {
-  const parts = withPromptCacheBreakpoint(
-    content.content.flatMap((item) => toOpenAIInputContent(item)),
-    content.cache,
-  );
-  if (
-    parts.length === 1 &&
-    parts[0]?.type === 'input_text' &&
-    parts[0].prompt_cache_breakpoint === undefined
-  ) {
+  const parts = content.content.flatMap((item) => toOpenAIInputContent(item));
+  if (parts.length === 1 && parts[0]?.type === 'input_text') {
     const text = String(parts[0].text ?? '');
     return content.isError ? `[tool error]\n${text}` : text;
   }
   return content.isError ? [{ type: 'input_text', text: '[tool error]' }, ...parts] : parts;
-}
-
-function withPromptCacheBreakpoint(
-  blocks: readonly OpenAIInputContent[],
-  cache: InferenceContent['cache'],
-): OpenAIInputContent[] {
-  const cloned = blocks.map((block) => ({ ...block }));
-  if (cache === 'none' || cloned.length === 0) return cloned;
-  const last = cloned.at(-1);
-  if (last) last.prompt_cache_breakpoint = { mode: 'explicit' };
-  return cloned;
-}
-
-function countPromptCacheBreakpoints(input: readonly OpenAIInputItem[]): number {
-  let count = 0;
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-      return;
-    }
-    if (!isJsonObject(value)) return;
-    if (value.prompt_cache_breakpoint !== undefined) count += 1;
-    Object.values(value).forEach(visit);
-  };
-  visit(input);
-  return count;
 }
 
 function toOpenAITool(tool: CanonicalToolDefinition): Record<string, unknown> {
@@ -590,7 +520,7 @@ function responseResult(
   } else {
     validateUsage(data.usage);
   }
-  const continuation = openAIState(data.id);
+  let toolTurn: ProviderContinuationState | undefined;
   const content: InferenceContent[] = [];
   let refused = false;
   for (const item of data.output) {
@@ -647,8 +577,8 @@ function responseResult(
       if (data.status !== 'completed') {
         throw invalidOpenAIResponse('OpenAI incomplete response contained a function call');
       }
-      const call = parseFunctionCall(item, continuation);
-      content.push(call);
+      toolTurn ??= replayState(data.output);
+      content.push(parseFunctionCall(item, toolTurn));
       continue;
     }
     throw invalidOpenAIResponse(`OpenAI output contained unsupported ${item.type} item`);
@@ -668,13 +598,28 @@ function responseResult(
           : normalizeStopReason(providerReason),
     providerStopReason:
       toolCalls.length > 0 ? 'function_call' : refused ? 'refusal' : providerReason,
-    providerState: continuation,
   };
+}
+
+function replayState(output: readonly unknown[]): ProviderContinuationState {
+  const outputItems = output.filter(isJsonObject);
+  if (
+    outputItems.some(
+      (item) =>
+        item.type === 'reasoning' &&
+        (typeof item.encrypted_content !== 'string' || item.encrypted_content.length === 0),
+    )
+  ) {
+    throw invalidOpenAIResponse(
+      'OpenAI returned a reasoning item without the encrypted content a stateless turn replays',
+    );
+  }
+  return { backend: 'openai', value: { outputItems } };
 }
 
 function parseFunctionCall(
   item: Readonly<Record<string, unknown>>,
-  continuation: ProviderContinuationState,
+  turn: ProviderContinuationState,
 ): InferenceToolCall {
   if (
     typeof item.call_id !== 'string' ||
@@ -702,7 +647,7 @@ function parseFunctionCall(
     name: item.name,
     input,
     cache: 'none',
-    providerState: continuation,
+    providerState: turn,
   };
 }
 
@@ -719,7 +664,10 @@ function validateReasoningItem(item: Readonly<Record<string, unknown>>): void {
         !item.content.every(
           (part) =>
             isJsonObject(part) && part.type === 'reasoning_text' && typeof part.text === 'string',
-        )))
+        ))) ||
+    (item.encrypted_content !== undefined &&
+      item.encrypted_content !== null &&
+      typeof item.encrypted_content !== 'string')
   ) {
     throw invalidOpenAIResponse('OpenAI reasoning item was invalid');
   }
@@ -781,22 +729,6 @@ function normalizeStopReason(reason: string | null): InferenceStopReason {
   if (reason === 'content_filter') return 'content-filter';
   if (reason === 'max_tool_calls') return 'max-iterations';
   return 'unknown';
-}
-
-function continuationResponseId(state?: ProviderContinuationState): string | null {
-  if (!state) return null;
-  if (state.backend !== 'openai' || !isJsonObject(state.value)) {
-    throw new Error(`OpenAI cannot continue ${state.backend} provider state`);
-  }
-  const id = state.value.previousResponseId;
-  if (typeof id !== 'string' || id.length === 0) {
-    throw invalidOpenAIResponse('OpenAI continuation state omitted previousResponseId');
-  }
-  return id;
-}
-
-function openAIState(previousResponseId: string): ProviderContinuationState {
-  return { backend: 'openai', value: { previousResponseId } };
 }
 
 function validCreatedResponse(
@@ -894,7 +826,10 @@ function validateProgressEvent(
       return;
     case 'response.function_call_arguments.done':
       requireItemCoordinates(event, false);
-      if (typeof event.arguments !== 'string' || typeof event.name !== 'string') {
+      if (
+        typeof event.arguments !== 'string' ||
+        (event.name !== undefined && typeof event.name !== 'string')
+      ) {
         throw invalidOpenAIResponse('OpenAI function argument terminal event was invalid');
       }
       lifecycle.functionArguments(event, true);
@@ -1264,7 +1199,10 @@ class OpenAIStreamLifecycle {
       throw invalidOpenAIResponse('OpenAI stream emitted function arguments outside an open call');
     }
     if (done) {
-      if (event.name !== call.name || event.arguments !== call.arguments) {
+      if (
+        (event.name !== undefined && event.name !== call.name) ||
+        event.arguments !== call.arguments
+      ) {
         throw invalidOpenAIResponse('OpenAI function arguments changed at completion');
       }
       state.functionArgumentsDone = true;
@@ -1560,6 +1498,19 @@ function validateFilePolicy(policy: FilePolicy): void {
   }
 }
 
+function uploadLifetimeSeconds(policy: FilePolicy): number | null {
+  const lifetime = policy.requestedLifetimeSeconds;
+  if (lifetime === null) return null;
+  if (
+    !Number.isSafeInteger(lifetime) ||
+    lifetime < FILE_LIFETIME_BOUNDS_SECONDS.minimum ||
+    lifetime > FILE_LIFETIME_BOUNDS_SECONDS.maximum
+  ) {
+    throw new Error(`File policy ${policy.name} requests no lifetime the Files API accepts`);
+  }
+  return lifetime;
+}
+
 function validateOpenAIFileRecord(
   value: unknown,
   expectedId?: string,
@@ -1567,11 +1518,11 @@ function validateOpenAIFileRecord(
 ): asserts value is {
   id: string;
   object: 'file';
-  bytes: number;
+  bytes: number | null;
   filename: string;
   purpose: string;
   created_at: number;
-  expires_at?: number;
+  expires_at?: number | null;
 } {
   if (
     !isJsonObject(value) ||
@@ -1579,20 +1530,22 @@ function validateOpenAIFileRecord(
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
     (expectedId !== undefined && value.id !== expectedId) ||
-    !isNonNegativeInteger(value.bytes) ||
+    (value.bytes !== null && !isNonNegativeInteger(value.bytes)) ||
     typeof value.filename !== 'string' ||
     value.filename.length === 0 ||
     typeof value.purpose !== 'string' ||
     (expectedPurpose !== undefined && value.purpose !== expectedPurpose) ||
     !isEpochSeconds(value.created_at) ||
-    (value.expires_at !== undefined && !isEpochSeconds(value.expires_at))
+    (value.expires_at !== undefined &&
+      value.expires_at !== null &&
+      !isEpochSeconds(value.expires_at))
   ) {
     throw invalidOpenAIResponse('OpenAI file response was invalid');
   }
 }
 
-function expiryFrom(value?: number): string | null {
-  return value === undefined ? null : new Date(value * 1000).toISOString();
+function expiryFrom(value?: number | null): string | null {
+  return value === undefined || value === null ? null : new Date(value * 1000).toISOString();
 }
 
 function filenameFor(mediaType: string): string {

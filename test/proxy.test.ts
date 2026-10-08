@@ -789,7 +789,7 @@ describe('handleHealth', () => {
     ).toBe(503);
   });
 
-  it('requires the evidence bucket when a production prompt routes to Kimi', () => {
+  it('fails production health closed when a prompt carrying customer content routes to Kimi Code, bucket or not', () => {
     const routed = {
       ...ENV,
       ENVIRONMENT: 'production',
@@ -800,7 +800,7 @@ describe('handleHealth', () => {
     expect(
       handleHealth(CORS, { ...routed, INLINE_EVIDENCE_R2: {} as R2Bucket }, undefined, 'fc00704')
         .status,
-    ).toBe(200);
+    ).toBe(503);
   });
 
   it('stays a plain liveness check outside production', async () => {

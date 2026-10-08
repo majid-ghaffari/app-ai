@@ -17,7 +17,7 @@ export const AUDIT_PLAN_VERSION_HEADER = 'X-LimeSpot-Audit-Plan-Version';
 /** The audit plan versions this worker holds an allowance for, each documented in docs/AUDIT-AUTH.md. */
 export const SUPPORTED_AUDIT_PLAN_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
 
-/** The plan a request naming no version follows. */
+/** The plan a request naming no version follows; only a build naming its build time may name none. */
 export const UNDECLARED_AUDIT_PLAN_VERSION = 1;
 
 /** The first plan version whose runs include the Grader's sales chat. */
@@ -65,7 +65,11 @@ export function auditRunCeiling(env: Env): AuditRunAllowance {
   };
 }
 
-/** Whether a request's declared plan version is one this worker holds an allowance for; a missing declaration follows plan 1. */
+/**
+ * Whether a request's declared plan version is one this worker holds an allowance for; a missing
+ * declaration follows plan 1, and `assertCompatibleAuditClient` refuses it from a build naming no
+ * build time.
+ */
 export function isSupportedAuditPlanVersion(declared: string | null): boolean {
   if (declared === null) return true;
   return /^[1-9][0-9]*$/u.test(declared) && SUPPORTED_AUDIT_PLAN_VERSIONS.has(Number(declared));

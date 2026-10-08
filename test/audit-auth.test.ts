@@ -27,6 +27,7 @@ import {
   deliverStatusEvents,
   durableEnv,
   exchange,
+  EXTENSION_BUILD_HEADERS,
   messageRequest,
   signWebsiteActivation,
   storageFor,
@@ -50,7 +51,7 @@ describe('audit session authorization', () => {
       worker.fetch(
         new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
           body: JSON.stringify({ activationToken: token, storeUrl: `${STORE_ORIGIN}/x` }),
         }),
         env,
@@ -96,7 +97,7 @@ describe('audit session authorization', () => {
       worker.fetch(
         new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
           body: JSON.stringify({
             activationToken: await signWebsiteActivation(payload, env),
             storeUrl: `${STORE_ORIGIN}/products/example`,
@@ -169,7 +170,7 @@ describe('audit session authorization', () => {
     const publicMismatch = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: publicToken,
           storeUrl: 'https://another-shop.test',
@@ -188,7 +189,7 @@ describe('audit session authorization', () => {
     const invalidStaffResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: invalidStaff,
           storeUrl: 'https://another-shop.test',
@@ -207,7 +208,7 @@ describe('audit session authorization', () => {
     const staffResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: staff,
           storeUrl: 'https://another-shop.test/path',
@@ -226,7 +227,7 @@ describe('audit session authorization', () => {
     const insecureResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: insecureStaff,
           storeUrl: 'http://another-shop.test/path',
@@ -245,7 +246,7 @@ describe('audit session authorization', () => {
     const loopbackResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: loopbackStaff,
           storeUrl: 'http://127.0.0.1:5173/path',
@@ -266,7 +267,7 @@ describe('audit session authorization', () => {
     const unmeteredPublicResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: unmeteredPublic, storeUrl: STORE_ORIGIN }),
       }),
       env,
@@ -284,7 +285,7 @@ describe('audit session authorization', () => {
     const cappedStaffResponse = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: cappedStaff, storeUrl: STORE_ORIGIN }),
       }),
       env,
@@ -300,7 +301,7 @@ describe('audit session authorization', () => {
       worker.fetch(
         new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
           body: JSON.stringify({
             activationToken: await activationToken(env, crypto.randomUUID(), {
               type: 'store-origin',
@@ -363,7 +364,7 @@ describe('audit session authorization', () => {
       worker.fetch(
         new Request('https://app-ai.test/audit/session/exchange', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
           body: JSON.stringify({
             activationToken: await activationToken(
               env,
@@ -412,7 +413,7 @@ describe('audit session authorization', () => {
     const exchanged = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: await activationToken(env, 'signed-origin-status', {
             type: 'store-origin',
@@ -495,7 +496,7 @@ describe('audit session authorization', () => {
     const replay = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: firstToken, storeUrl: STORE_ORIGIN }),
       }),
       env,
@@ -578,7 +579,7 @@ describe('audit session authorization', () => {
     const exhausted = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({
           activationToken: await activation('superseded-third'),
           storeUrl: `${STORE_ORIGIN}/`,
@@ -590,7 +591,7 @@ describe('audit session authorization', () => {
     const replay = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: firstToken, storeUrl: `${STORE_ORIGIN}/` }),
       }),
       env,
@@ -2563,7 +2564,7 @@ describe('audit plan versions', () => {
     return declaring(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: activation, storeUrl: `${STORE_ORIGIN}/` }),
       }),
       planVersion,
@@ -2597,7 +2598,7 @@ describe('audit plan versions', () => {
   for (const [label, planVersion] of [
     ['plan version 1', '1'],
     ['plan version 2', '2'],
-    ['no plan version', undefined],
+    ['no plan version from a build naming its build time', undefined],
   ] as const) {
     it(`admits a grader naming ${label} through exchange, upload and inference`, async () => {
       const env = durableEnv();
@@ -2865,7 +2866,7 @@ describe('audit session record bounds', () => {
     const replay = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
         body: JSON.stringify({ activationToken: freshToken, storeUrl: `${STORE_ORIGIN}/` }),
       }),
       env,

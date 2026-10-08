@@ -146,8 +146,8 @@ because that run would already be revoked.
 
 `GET /audit/session` reads a live session's standing with its own bearer, so the extension can check
 a run it cached before showing it again. It sends the same `Authorization: Bearer ls_audit_<session
-JWT>`, `X-LimeSpot-Audit-Store-Origin`, `X-LimeSpot-Audit-Plan-Version` and
-`X-LimeSpot-Extension-Built-At` headers as every audit request, and no body. Every answer, a refusal
+JWT>`, `X-LimeSpot-Audit-Store-Origin` and `X-LimeSpot-Audit-Plan-Version` headers as every audit
+request, plus `X-LimeSpot-Extension-Built-At` when the build names its build time, and no body. Every answer, a refusal
 included, carries `Cache-Control: no-store`, because the standing changes as the session does and a
 410 is otherwise heuristically cacheable. It answers 200:
 
@@ -172,8 +172,8 @@ now. The call reserves nothing, writes nothing, starts no attempt, touches no da
 no model. It refuses exactly as an audit request does: no audit bearer or an invalid one 401
 `AuditAuthorizationException`, an expired or superseded session 401 `audit_session_expired`, a
 session whose current run is older than `GRADER_RUNS_VALID_FROM` 410 `grader_run_revoked`, an
-outdated build 409 `extension_update_required`, an unsupported plan 409
-`audit_plan_version_unsupported`, and a store-origin header naming another store 403.
+outdated build 409 `extension_update_required`, an unsupported plan, or none from a build naming no
+build time, 409 `audit_plan_version_unsupported`, and a store-origin header naming another store 403.
 
 The session JWT uses the same exact HS256 header and this payload:
 
@@ -194,10 +194,10 @@ The session JWT uses the same exact HS256 header and this payload:
 
 The extension background worker sends `Authorization: Bearer ls_audit_<session
 JWT>`, `X-LimeSpot-Audit-Store-Origin: <active-tab origin>`, the
-`X-LimeSpot-Audit-Plan-Version` it follows (see "The plan is versioned" below), and the
-`X-LimeSpot-Extension-Built-At` instant its build was made (see Kill switches below). App-ai requires
-that explicit store-origin header to be the same store as the signed `storeOrigin`. MV3
-background requests have a `chrome-extension://…` Origin (or none), and browser
+`X-LimeSpot-Audit-Plan-Version` it follows (see "The plan is versioned" below), and, when it names
+one, the `X-LimeSpot-Extension-Built-At` instant its build was made (see Kill switches below).
+App-ai requires that explicit store-origin header to be the same store as the signed `storeOrigin`.
+MV3 background requests have a `chrome-extension://…` Origin (or none), and browser
 JavaScript cannot set the forbidden HTTP `Origin` header, so HTTP Origin is not
 the storefront proof. The extension must derive the dedicated header from the
 active tab and reject a sender/tab mismatch before making the request. The
@@ -374,9 +374,9 @@ session's write fails past 2 MB.
 
 The plan above is the capture and proposal plan of versions 1 and 2 of a contract lib and app-ai
 share. A Grader client names the version it
-follows in `X-LimeSpot-Audit-Plan-Version` on `POST /audit/session/exchange`, `POST /files` and
-`POST /messages`. `SUPPORTED_AUDIT_PLAN_VERSIONS` in `src/lib/audit-plan.ts` lists the versions this
-worker holds an allowance for, beside the plan values themselves.
+follows in `X-LimeSpot-Audit-Plan-Version` on `POST /audit/session/exchange`, `GET /audit/session`,
+`POST /files` and `POST /messages`. `SUPPORTED_AUDIT_PLAN_VERSIONS` in `src/lib/audit-plan.ts` lists
+the versions this worker holds an allowance for, beside the plan values themselves.
 
 | Version | Capture                                                                                                | Proposal                                                                                                    | Allowance                                                                          | Chat                                                                                       |
 | ------: | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -386,11 +386,13 @@ worker holds an allowance for, beside the plan values themselves.
 A request naming any other value — a version this worker does not list, or anything other than a
 bare positive integer — answers 409 `AuditPlanVersionException` with `MessageDetail`
 `audit_plan_version_unsupported`. The exchange checks it before it reads or consumes the activation,
-and `/files` and `/messages` check it after the bearer and store origin and before any reservation,
-so a refused request spends nothing.
+and `GET /audit/session`, `/files` and `/messages` check it after the bearer and store origin and
+before any reservation, so a refused request spends nothing.
 
-A missing declaration follows plan 1, so a client that sends no header keeps working and is offered
-no chat.
+A missing declaration follows plan 1, offered no chat, from a build that names its build time in
+`X-LimeSpot-Extension-Built-At`. A build naming no build time is held to the plan it declares
+("Extension build" below), so a request naming neither answers the same 409
+`audit_plan_version_unsupported`.
 
 A lib change to any input the plan mirrors — the page kinds, the widths, the tile height or overlap,
 the whole-store sends, the per-page requests or the repairs — is a new plan version. Lib names it,
@@ -438,7 +440,7 @@ worker that has not learned the version refuses the run at its exchange rather t
   longer would widen every merchant upload's reference window and the `TOKEN_ENCRYPTION_SECRET`
   rotation bound with it. A sealed continuation lasts 24 hours (`src/inference/continuation.ts`),
   and no audit route uses one: the proposal prompts are one-shot and the chat's route refuses a
-  model that needs provider state between turns. The chat's visitor and deployment counters stay
+  model that needs provider state between turns or lacks `textConversation`. The chat's visitor and deployment counters stay
   UTC-day windows, and a settlement older than a day is dropped because the counters it names have
   reset. The lifetime is a security boundary for new work only: no upload, inference or chat message is
   admitted after it, and an expired or superseded bearer answers 401
@@ -497,20 +499,31 @@ To invalidate every run so far, set `GRADER_RUNS_VALID_FROM` to the current UTC 
 
 The extension names the instant its build was made in `X-LimeSpot-Extension-Built-At`, an ISO-8601
 UTC instant such as `2026-10-15T09:30:00Z`, on the exchange and on every relayed `/files` and
-`/messages` call. A build made before `GRADER_EXTENSION_BUILT_AFTER` answers 409
+`/messages` call, unless it names no build time (below). A build made before `GRADER_EXTENSION_BUILT_AFTER` answers 409
 `ExtensionUpdateRequiredException` / `extension_update_required`. The exchange checks it before it
 reads or consumes the activation, so the visitor can exchange the same link after updating while the
 link is still valid; every other audit request checks it after the bearer and store origin and before
-any reservation, so a refused request spends nothing. A request naming no build time is read as made
-at `2026-10-03T00:00:00Z`, because the header did not exist before then, so every build that sends
-none is older than any later cutoff; a malformed value answers 400 `ArgumentException`. The exchange
-reports the cutoff as `extensionBuiltAfter`, so a build can warn before it is refused. The header is
-a compatibility switch, not a security boundary: any caller can name any instant. An extension
-released before the header shows its generic failure for this refusal, since it shows its update
-notice only for `audit_plan_version_unsupported`.
+any reservation, so a refused request spends nothing. A malformed value answers 400
+`ArgumentException`. The exchange reports the cutoff as `extensionBuiltAfter`, so a build can warn
+before it is refused. The header is a compatibility switch, not a security boundary: any caller can
+name any instant.
 
-To make every older build update, set `GRADER_EXTENSION_BUILT_AFTER` to the build instant of the
-oldest build still allowed and merge the change to `main`.
+The cutoff applies only to a build that names its build time. A build may name none: Firefox lets a
+user refuse the optional technical data the build time is, and refusing it must not cost the user
+the Grader, while builds released before the header never named one. A request naming no build time
+is held to the plan-version contract instead ("The plan is versioned" above): it is admitted when it
+names a supported `X-LimeSpot-Audit-Plan-Version`, and refused 409 `AuditPlanVersionException` /
+`audit_plan_version_unsupported` when it names an unsupported version or none, whatever the cutoff,
+so a build released before both headers is refused. One check, `assertCompatibleAuditClient`
+(`src/lib/audit-auth.ts`), applies both rules to the exchange, `GET /audit/session`, `/files` and
+`/messages`, so no call measures the build time without also holding the plan version. A build that
+names no build time is never refused `extension_update_required`: it is admitted by a supported plan
+version or refused `audit_plan_version_unsupported`.
+
+To make every older build that names its build time update, set `GRADER_EXTENSION_BUILT_AFTER` to
+the build instant of the oldest build still allowed and merge the change to `main`. A build naming no
+build time is retired with the plan version it names, by removing that version from
+`SUPPORTED_AUDIT_PLAN_VERSIONS`, which retires every build naming it.
 
 ### No per-run switch
 
@@ -572,14 +585,14 @@ carries a new identifier.
 
 ### Admission, in order
 
-Like every audit request, a chat message is first refused when its extension build predates
-`GRADER_EXTENSION_BUILT_AFTER` (409 `extension_update_required`) or its plan version is unsupported
-(409 `audit_plan_version_unsupported`).
+Like every audit request, a chat message is first refused when its extension build names a build
+time before `GRADER_EXTENSION_BUILT_AFTER` (409 `extension_update_required`) or its plan version is
+unsupported, or missing from a build naming no build time (409 `audit_plan_version_unsupported`).
 
 1. `GRADER_CHAT_ENABLED` off → 503 `ServiceUnavailableException` / `grader_chat_disabled`.
-2. A plan without chat (version 1, or no header) → 403 `AuditScopeException` /
-   `grader_chat_not_in_plan`. An unsupported version is refused 409 first, as for every audit
-   request.
+2. A plan without chat (version 1, or no header from a build naming its build time) → 403
+   `AuditScopeException` / `grader_chat_not_in_plan`. An unsupported version is refused 409 first,
+   as for every audit request.
 3. A body past `AUDIT_MAX_MESSAGE_BYTES`, or a visitor turn longer than
    `GRADER_CHAT_MAX_INPUT_CHARACTERS` code points → 400 `ArgumentException` /
    `grader_chat_input_too_long`; any other departure from the strict body, a missing or malformed
@@ -867,9 +880,14 @@ enabled last. Enabling the website issuer ahead of the worker would 401 every ex
 add is additive — `runsValidFrom` and `extensionBuiltAfter` on the exchange, `graderChat.runsValidFrom`
 on a chat reply — and the released extension and lib copy only the fields they know, so they keep
 working unchanged. The website's report-email endpoints hold their own 24-hour window from the run's
-start, so a report email for an older run is refused there however long the app-ai session lasts. Raising `GRADER_EXTENSION_BUILT_AFTER` past `2026-10-03T00:00:00Z` refuses
-every build that sends no `X-LimeSpot-Extension-Built-At`, so it waits until the build that sends the
-header is the one visitors have.
+start, so a report email for an older run is refused there however long the app-ai session lasts.
+
+**The undeclared-build rule deploys before an extension build that omits its build time.** Raising
+`GRADER_EXTENSION_BUILT_AFTER` refuses only builds naming an older `X-LimeSpot-Extension-Built-At`;
+a build naming none is held to its plan version, so a Firefox user who refuses technical data keeps
+the Grader past any cutoff. A worker rolled back below that rule reads a build naming no build time
+as made at `2026-10-03T00:00:00Z`, so while it serves, `GRADER_EXTENSION_BUILT_AFTER` stays at or
+before that instant.
 
 ## Retention
 
@@ -889,26 +907,27 @@ session and falls due a lease after it finished.
 Nothing else can reach those objects by then. The content-hash dedup layer shares an object only
 among uploads under one tenant pseudonym, and an audit session's pseudonym is derived from its own
 session identifier, so every reference to one of its uploads is that session's, and the session can
-no longer spend. The audit's alarm deletes each object through the configured route that still
-reaches it (`storedFileRoute` in `src/inference/file-references.ts`), then the session's `FILES_KV`
+no longer spend. The audit's alarm deletes each object through the provider that holds it (the
+file service's `deleteStored` in `src/inference/factory.ts`), then the session's `FILES_KV`
 dedup records and `discard:` keys together with the object each names, at most 50 of each a pass,
 and runs the next pass at once while more remain. An object its provider reports missing counts as
 deleted, and so does one past the expiry at which its provider deleted it, which holds only under a
 provider-managed file policy (`providerDeletesAtExpiry` in `src/inference/model-catalog.ts`). A
-delete that fails — the provider unreachable, or the route since configured onto another provider —
-keeps the object and retries it a minute later, then at doubling intervals of at most an hour, until
+delete that fails — the provider unreachable, or its configured key not the account that stored the
+object — keeps the object and retries it a minute later, then at doubling intervals of at most an hour, until
 the delete succeeds or that provider expiry passes; an object with no provider expiry, or one in
 worker-managed storage, is retried until it is deleted. Each delete is
 abandoned as failed after ten seconds (`STORED_FILE_DELETE_TIMEOUT_MILLISECONDS`), whether or not
 its transport honours the abort, and a pass starts no delete once it has run a minute, so a provider
-that stops answering cannot keep the alarm from recording the retry. A route configured
-onto Kimi stores its evidence encrypted in R2, which is worker-managed storage: the expiry a
-reference to it carries, 15 days and an hour after the upload, only ends the reference, and the
-object stays until the bucket's 16-day rule removes it. The alarm therefore always deletes such
-evidence explicitly, the object and its hosted-id sidecar, whatever that expiry says, while an image
-Kimi already accepted upstream follows Kimi's retention policy because its delete operation is
-unavailable; public privacy copy and the processor retention policy
-must describe that before any audit route resolves to Kimi.
+that stops answering cannot keep the alarm from recording the retry. Each delete reaches the object
+through the provider that holds it, chosen by the object's own file policy, never through the
+current routing, so a session's uploads are deleted when it ends even after its routes moved to
+another provider ([AI-PROVIDERS.md](AI-PROVIDERS.md) → Retention). No production Grader route may
+use Kimi Code, because every Grader route carries customer content. Evidence an earlier route stored
+in R2 is worker-managed storage: the expiry a reference to it carries, 15 days and an hour after the
+upload, only ends the reference, and the object stays until the bucket's 16-day rule removes it. The
+alarm therefore always deletes such evidence explicitly, the object and its hosted-id sidecar,
+whatever that expiry says and with no request and no Kimi key.
 
 Anthropic also deletes every audit upload 30 days after it was made. That remains the bound for an
 upload whose success never reached the audit's object.

@@ -1,5 +1,6 @@
 /** Gemini generateContent/Files transport: the only module that reads Gemini config. */
 
+import { fetchProvider } from './provider-fetch';
 import { geminiApiBase, geminiApiKey, type Env } from '../../config';
 
 /**
@@ -60,12 +61,16 @@ export function generateContent(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${geminiApiBase(env)}/models/${encodeURIComponent(model)}:generateContent`, {
-    method: 'POST',
-    headers: jsonHeaders(env),
-    body: JSON.stringify(payload),
-    ...(abortSignal ? { signal: abortSignal } : {}),
-  });
+  return fetchProvider(
+    'Gemini',
+    `${geminiApiBase(env)}/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: 'POST',
+      headers: jsonHeaders(env),
+      body: JSON.stringify(payload),
+      ...(abortSignal ? { signal: abortSignal } : {}),
+    },
+  );
 }
 
 export function streamGenerateContent(
@@ -74,7 +79,8 @@ export function streamGenerateContent(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(
+  return fetchProvider(
+    'Gemini',
     `${geminiApiBase(env)}/models/${encodeURIComponent(model)}:streamGenerateContent?${STREAM_QUERY}`,
     {
       method: 'POST',
@@ -91,12 +97,16 @@ export function countTokens(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${geminiApiBase(env)}/models/${encodeURIComponent(model)}:countTokens`, {
-    method: 'POST',
-    headers: jsonHeaders(env),
-    body: JSON.stringify(payload),
-    ...(abortSignal ? { signal: abortSignal } : {}),
-  });
+  return fetchProvider(
+    'Gemini',
+    `${geminiApiBase(env)}/models/${encodeURIComponent(model)}:countTokens`,
+    {
+      method: 'POST',
+      headers: jsonHeaders(env),
+      body: JSON.stringify(payload),
+      ...(abortSignal ? { signal: abortSignal } : {}),
+    },
+  );
 }
 
 /**
@@ -110,7 +120,7 @@ export function startResumableUpload(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${uploadBase(env)}/files`, {
+  return fetchProvider('Gemini', `${uploadBase(env)}/files`, {
     method: 'POST',
     headers: {
       ...jsonHeaders(env),
@@ -152,7 +162,7 @@ export function finishResumableUpload(
   bytes: Uint8Array,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(uploadEndpointUrl, {
+  return fetchProvider('Gemini', uploadEndpointUrl, {
     method: 'POST',
     headers: {
       [UPLOAD_OFFSET_HEADER]: '0',
@@ -164,14 +174,14 @@ export function finishResumableUpload(
 }
 
 export function getFile(name: string, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${geminiApiBase(env)}/${encodeFileName(name)}`, {
+  return fetchProvider('Gemini', `${geminiApiBase(env)}/${encodeFileName(name)}`, {
     headers: readHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),
   });
 }
 
 export function deleteFile(name: string, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${geminiApiBase(env)}/${encodeFileName(name)}`, {
+  return fetchProvider('Gemini', `${geminiApiBase(env)}/${encodeFileName(name)}`, {
     method: 'DELETE',
     headers: readHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),

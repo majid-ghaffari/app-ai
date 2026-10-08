@@ -33,8 +33,9 @@ withholds any link off limespot.com and any URL, and anything but plain text bes
 - Effort: `GRADER_CHAT_EFFORT`, sent only when the resolved model reasons (a Haiku route sends
   none, which the Anthropic API would refuse). The registry entry declares no effort, so the group
   needs no `reasoning` capability.
-- Tools: none. Attachments: none. A model whose adapter needs provider state between turns is
-  refused before any reservation, and production readiness answers 503 for such a route while the
+- Tools: none. Attachments: none. A model whose adapter needs provider state between turns, or
+  whose family lacks `textConversation` (OpenAI's, which serves one turn), is refused before any
+  reservation, and production readiness answers 503 for such a route while the
   chat is enabled: both go through `graderChatRoute` in `src/handlers/grader-chat.ts`.
 
 The transport, accounting, limits and refusals are in

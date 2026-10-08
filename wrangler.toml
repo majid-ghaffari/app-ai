@@ -186,8 +186,8 @@ GRADER_CHAT_ALERT_EVERY = "500"
 GRADER_RUNS_VALID_FROM = "2026-01-01T00:00:00Z"
 # Extension builds made before GRADER_EXTENSION_BUILT_AFTER, by the X-LimeSpot-Extension-Built-At
 # header they send, are refused extension_update_required at exchange and on every Grader call; the
-# exchange reports it as extensionBuiltAfter. A build that sends no such header is read as made at
-# 2026-10-03T00:00:00Z.
+# exchange reports it as extensionBuiltAfter. The cutoff applies only to a build that sends the
+# header; one that sends none is held to the X-LimeSpot-Audit-Plan-Version it declares instead.
 GRADER_EXTENSION_BUILT_AFTER = "2026-01-01T00:00:00Z"
 
 # ── Logging ──

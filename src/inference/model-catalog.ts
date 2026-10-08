@@ -35,7 +35,7 @@ import type {
 
 export const BOUNDED_FREE_VISUAL_MODEL = '@cf/qwen/qwen3.8-27b';
 
-const ANTHROPIC_FILE_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
+const PROVIDER_FILE_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
 /**
  * Direct-provider file policies. Each states how one provider takes uploaded
@@ -49,7 +49,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: null,
-    requestedLifetimeSeconds: ANTHROPIC_FILE_LIFETIME_SECONDS,
+    requestedLifetimeSeconds: PROVIDER_FILE_LIFETIME_SECONDS,
   },
   'openai-user-data-files': {
     name: 'openai-user-data-files',
@@ -58,7 +58,7 @@ const FILE_POLICIES = {
     inputMode: 'provider-file',
     lifecycle: 'provider-managed',
     purpose: 'user_data',
-    requestedLifetimeSeconds: null,
+    requestedLifetimeSeconds: PROVIDER_FILE_LIFETIME_SECONDS,
   },
   'moonshot-image-files': {
     name: 'moonshot-image-files',
@@ -115,6 +115,12 @@ export function providerDeletesAtExpiry(filePolicyName: string): boolean {
   return listFilePolicies().some(
     (name) => name === filePolicyName && FILE_POLICIES[name].lifecycle === 'provider-managed',
   );
+}
+
+export function filePolicyNamed(name: string): FilePolicy | null {
+  return listFilePolicies().find((policy) => policy === name) === undefined
+    ? null
+    : FILE_POLICIES[name as FilePolicyName];
 }
 
 /** Every declared file-policy name, in declaration order. */
@@ -197,7 +203,12 @@ const MODEL_FAMILIES = [
     prefixes: ['gpt-'],
     provider: 'openai',
     apiFamily: 'openai-responses',
-    capabilities: EVERY_CAPABILITY,
+    capabilities: {
+      ...EVERY_CAPABILITY,
+      clientTools: false,
+      textConversation: false,
+      inlineCacheBreakpoints: false,
+    },
     filePolicy: 'openai-user-data-files',
   },
   {

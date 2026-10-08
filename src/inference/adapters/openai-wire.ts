@@ -1,5 +1,6 @@
 /** OpenAI Responses/Files transport: the only module that reads OpenAI config. */
 
+import { fetchProvider } from './provider-fetch';
 import { openaiApiBase, openaiApiKey, type Env } from '../../config';
 
 function headers(env: Env): Record<string, string> {
@@ -27,7 +28,7 @@ export function createResponse(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${openaiApiBase(env)}/v1/responses`, {
+  return fetchProvider('OpenAI', `${openaiApiBase(env)}/v1/responses`, {
     method: 'POST',
     headers: headers(env),
     body: JSON.stringify(payload),
@@ -36,7 +37,7 @@ export function createResponse(
 }
 
 export function uploadFile(body: FormData, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${openaiApiBase(env)}/v1/files`, {
+  return fetchProvider('OpenAI', `${openaiApiBase(env)}/v1/files`, {
     method: 'POST',
     headers: filesHeaders(env),
     body,
@@ -49,14 +50,14 @@ export function getFileMetadata(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${openaiApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
+  return fetchProvider('OpenAI', `${openaiApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
     headers: filesHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),
   });
 }
 
 export function deleteFile(id: string, env: Env, abortSignal?: AbortSignal): Promise<Response> {
-  return fetch(`${openaiApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
+  return fetchProvider('OpenAI', `${openaiApiBase(env)}/v1/files/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: filesHeaders(env),
     ...(abortSignal ? { signal: abortSignal } : {}),

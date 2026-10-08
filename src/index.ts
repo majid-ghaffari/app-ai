@@ -69,7 +69,11 @@ import {
   type AuditAuthorization,
 } from './lib/audit-auth';
 import { auditFileTenantScope } from './inference/file-references';
-import { assertFreeVisualVerifyRoute, FREE_VISUAL_VERIFY_PROMPT } from './prompt-registry';
+import {
+  assertFreeVisualVerifyRoute,
+  FREE_VISUAL_VERIFY_PROMPT,
+  validateProviderConfiguration,
+} from './prompt-registry';
 export { AuditSessionAuthority } from './lib/audit-session-authority';
 import type { Env } from './config';
 
@@ -114,6 +118,21 @@ async function handleRequest(
 
     if (pathname === '/health' && method === 'GET') {
       return handleHealth(corsHeaders, env, logging);
+    }
+    const providerConfigurationFailure = unservableProviderConfiguration(env);
+    if (providerConfigurationFailure) {
+      logging
+        .logger('Router')
+        .error(
+          'The provider configuration is outside the AI provider allow-list',
+          providerConfigurationFailure,
+        );
+      return errorResponse(
+        'App AI service is not ready.',
+        corsHeaders,
+        503,
+        'ServiceUnavailableException',
+      );
     }
     if (pathname === '/audit/session/exchange' && method === 'POST') {
       return await handleAuditSessionExchange(request, env, corsHeaders);
@@ -232,6 +251,19 @@ async function handleRequest(
     logging?.logger('Router').error('Request handler error', error);
     return errorResponseFrom(error, corsHeaders);
   }
+}
+
+const servableEnvironments = new WeakSet<Env>();
+
+function unservableProviderConfiguration(env: Env): Error | null {
+  if (servableEnvironments.has(env)) return null;
+  try {
+    validateProviderConfiguration(env);
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  servableEnvironments.add(env);
+  return null;
 }
 
 async function answerAuditRequest(

@@ -32,7 +32,11 @@ import {
   workersAiBinding,
   type Env,
 } from '../config';
-import { providersInUse, validateModelRouting } from '../prompt-registry';
+import {
+  providersInUse,
+  validateModelRouting,
+  validateProviderConfiguration,
+} from '../prompt-registry';
 import { graderChatMessageAllowance } from '../lib/audit-plan';
 import { graderChatRoute } from './grader-chat';
 
@@ -87,6 +91,7 @@ function productionReadinessFailure(env: Env): Error | null {
   }
   try {
     validateModelRouting(env);
+    validateProviderConfiguration(env);
     graderRunsValidFrom(env);
     graderExtensionBuiltAfter(env);
     if (providers.has('kimi')) inlineEvidenceBucket(env);

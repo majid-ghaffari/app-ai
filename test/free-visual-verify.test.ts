@@ -7,7 +7,7 @@ import { InferenceFailure } from '../src/inference/adapter';
 import { AuditSessionAuthority } from '../src/lib/audit-session-authority';
 import type { InferenceRequest } from '../src/lib/inference-types';
 import { getFilePolicy, getModelProfile, getSystemPrompt } from '../src/prompt-registry';
-import { CORS, ENV } from './helpers';
+import { CORS, ENV, kvMock, stubFetch } from './helpers';
 
 const MODEL = '@cf/qwen/qwen3.8-27b';
 const PNG =
@@ -323,6 +323,41 @@ describe('free visual verification', () => {
       acceptanceReserve: 4,
       quotaClass: 'diagnostic',
     });
+  });
+
+  it('stores nothing beyond the request: no R2, KV or provider write, and only a count reaches the quota authority', async () => {
+    const verdict = JSON.stringify({ pass: true, reason: 'stored nothing', fix: null });
+    const quota = quotaNamespace();
+    const { kv } = kvMock();
+    const put = vi.fn();
+    const fetchMock = stubFetch();
+    const response = await handleMessages(
+      request(),
+      {
+        ...ENV,
+        AI: { run: vi.fn().mockResolvedValue(workersAiSuccess(verdict)) },
+        AUDIT_SESSIONS: quota.namespace,
+        FILES_KV: kv as unknown as KVNamespace,
+        INLINE_EVIDENCE_R2: { put } as unknown as R2Bucket,
+      },
+      CORS,
+      undefined,
+      { tenantScope: 'tenant' },
+    );
+
+    expect(response.status).toBe(200);
+    expect(kv.put).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(quota.reserve).toHaveBeenCalledTimes(1);
+    for (const [, init] of quota.reserve.mock.calls) {
+      expect(Object.keys(JSON.parse(String((init as RequestInit).body))).sort()).toEqual([
+        'acceptanceReserve',
+        'dailyLimit',
+        'limit',
+        'quotaClass',
+      ]);
+    }
   });
 
   it('does not derive quota authority from caller metadata', async () => {

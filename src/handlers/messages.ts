@@ -37,6 +37,7 @@ import {
   createInferenceService,
   createUnregisteredSelectorPassthrough,
   isRequiredContinuationMissing,
+  statelessRouteRefusal,
   requiresOrdinaryTurnContinuation,
 } from '../inference/factory';
 import { allocateSingleTurnCache } from '../inference/cache';
@@ -179,6 +180,13 @@ export async function handleMessages(
       }
       await preflightContinuationSealing(env);
     }
+    const refusal = statelessRouteRefusal(profile, env, {
+      continuation: safeBody.continuation,
+      messages: safeBody.messages,
+      tools: safeBody.tools,
+    });
+    if (refusal)
+      throw new WorkerError(refusal, { status: 400, exceptionType: 'ArgumentException' });
     const continuation = await decodeMessagesContinuation(
       safeBody.continuation,
       tenantScope ? { tenantScope, promptGroup: entry.group, modelProfile: profile.name } : null,

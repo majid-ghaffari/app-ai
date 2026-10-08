@@ -151,18 +151,21 @@ is unavailable and fails explicitly.
 
 ## Providers
 
-| Provider                   | Status                      | What it is used for                                                                          |
-| -------------------------- | --------------------------- | -------------------------------------------------------------------------------------------- |
-| Anthropic Messages         | Primary production provider | Every production prompt except the protected-CI visual judge resolves to Anthropic.          |
-| Cloudflare Workers AI      | Protected visual judge      | One inline-image, non-streaming route used by protected CI within the daily free allocation. |
-| OpenAI Responses           | Adapter present, unrouted   | Deterministic adapter contract tests and the explicit paid smoke matrix.                     |
-| Moonshot Chat Completions  | Adapter present, unrouted   | Metered platform account with deterministic contract tests and an opt-in paid smoke matrix.  |
-| Kimi Code Chat Completions | Adapter present, unrouted   | Subscription account with deterministic contract tests and an opt-in paid probe matrix.      |
-| Gemini                     | Adapter present, unrouted   | Deterministic adapter contract tests and the double-opt-in paid probe matrix.                |
-| Claude Code, Codex         | Local development only      | The free local fulfillers behind the dev shim; never bundled, never reached in production.   |
+| Provider                   | Status                      | What it is used for                                                                                                                                             |
+| -------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic Messages         | Primary production provider | Every production prompt except the protected-CI visual judge resolves to Anthropic.                                                                             |
+| Cloudflare Workers AI      | Protected visual judge      | One inline-image, non-streaming route used by protected CI within the daily free allocation.                                                                    |
+| OpenAI Responses           | Adapter present, unrouted   | Deterministic adapter contract tests and the explicit paid smoke matrix.                                                                                        |
+| Moonshot Chat Completions  | Adapter present, unrouted   | Metered platform account with deterministic contract tests and an opt-in paid smoke matrix; in production only a route carrying no customer content may use it. |
+| Kimi Code Chat Completions | Adapter present, unrouted   | Subscription account with deterministic contract tests and an opt-in paid probe matrix; in production only a route carrying no customer content may use it.     |
+| Gemini                     | Adapter present, unrouted   | Deterministic adapter contract tests and the double-opt-in paid probe matrix.                                                                                   |
+| Claude Code, Codex         | Local development only      | The free local fulfillers behind the dev shim; never bundled, never reached in production.                                                                      |
 
 An unrouted adapter is reachable only by configuring a model in its family. Doing so is a
-deliberate act with the conditions below attached to it.
+deliberate act with the conditions below attached to it, and in production it is possible only for a
+provider the AI provider allow-list lets serve that route: the allow-list mirrors the DPA's AI
+sub-processors, and Moonshot and Kimi Code may serve only a route that carries no customer content
+([AI-PROVIDERS.md](AI-PROVIDERS.md)).
 
 The Workers AI route is isolated in `free-render-verification`: it shares prompt text and the
 public `/messages` envelope with `visual-verify`, but it accepts exactly one inline image and no
@@ -178,13 +181,21 @@ prompt caching, effort, token estimates, usage, errors, and the handler response
 behavior, and every other adapter is measured against them. Provider-specific behavior the adapters
 own, and which a route change inherits:
 
-- OpenAI Responses continuation uses adapter-owned `previous_response_id`, carried opaquely by the
-  runtime and the public client. OpenAI File metadata omits MIME, so route-scoped dedup records
+- OpenAI keeps no stored Responses object: every Responses call sends `store: false` and no
+  `previous_response_id`. It still holds its automatic prompt-cache state — in memory for minutes,
+  or up to 24 hours of extended caching for an organization without Zero Data Retention — and app-ai
+  requests no explicit cache. No stored Responses object, app-ai continuation state or output-item replay crosses a request boundary, while OpenAI's automatic prompt-cache state can persist across calls (in memory for minutes, or up to 24 hours without Zero Data Retention), so an OpenAI route serves one public turn: it offers no
+  continuation, refuses a request carrying one, an earlier assistant turn, a tool result or caller
+  tools, and cannot route a conversation that carries earlier turns or browser-owned tools. Within a request, a
+  reasoning model returns its reasoning encrypted (`include: ["reasoning.encrypted_content"]`), and
+  a tool-call turn's untouched output items are replayed on the next server-tool iteration, only
+  within that one request. OpenAI File metadata omits MIME, so route-scoped dedup records
   retain the validated upload MIME and a cached image can never be reclassified as a document.
-  Canonical cache intents become explicit `30m` breakpoints on `input_text`, `input_image`, and
-  `input_file` blocks only, capped at four writable breakpoints; OpenAI exposes no distinct extended
-  TTL, so `short` and `extended` preserve the same canonical boundary. The adapter follows the
-  current Responses schema rather than Anthropic assumptions.
+  OpenAI requests ask for no explicit or extended prompt caching (no cache options, breakpoints,
+  retention or cache key); every `gpt-` model is the one `gpt` profile, which declares no inline
+  breakpoints, and OpenAI's automatic prompt caching is all that applies
+  ([AI-PROVIDERS.md](AI-PROVIDERS.md) → Retention, per provider). The adapter follows the current
+  Responses schema rather than Anthropic assumptions.
 - Gemini uses `generateContent` over `x-goog-api-key`, serves the `gemini-3` family only, and
   completes a stream on a clean close after a finish reason because the provider publishes no
   terminal sentinel. `thoughtSignature` is part-level, mandatory on replay, and therefore stored and
@@ -236,7 +247,8 @@ IDs, or provider secrets; the redaction is the logger's ([ARCHITECTURE-MAP.md](A
 ## Gates
 
 Every change clears this repository's five gates — `npm run lint`, `npm run format-check`,
-`npm run typecheck`, `npx vitest run`, `npm run deploy:dry-run` — listed with their CI wiring in
+`npm run typecheck`, `npx vitest run` with root's published-DPA checker beside it,
+`npm run deploy:dry-run` — listed with their CI wiring in
 [CLAUDE.md](../CLAUDE.md) → CI + deploy. The suites that specifically hold this system together are
 registry inventory/fallback/capability fitness, model-catalog resolution, upload
 routing/dedup/reference compatibility, adapter request/response/stream fixtures, canonical
@@ -274,7 +286,13 @@ production prompt group is served by a different provider:
 5. **The change is reversible.** It is one `[vars]` edit, so the revert is one too — which only
    holds while no prompt, handler, or lib caller has grown a provider-shaped assumption.
 6. **A Kimi route clears its provider gates.** The required paid smoke matrix passes against the
-   configured subscription model, followed by a merchant canary on the exact prompt group.
+   configured subscription model, on a route that carries no customer content.
+7. **The provider is on the allow-list for that route.** Production validation refuses any other
+   before serving. A provider not yet on the DPA's AI sub-processor list is added to the root
+   `ai-providers.json` first, then to the website DPA, and the Privacy Policy where its retention or
+   training terms differ, then to the allow-list; no route carrying customer content selects it
+   before that DPA is live, which CI's published-DPA check enforces
+   ([AI-PROVIDERS.md](AI-PROVIDERS.md)).
 
 ## Adding a provider
 

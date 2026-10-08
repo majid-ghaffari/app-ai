@@ -32,8 +32,8 @@ or changes the inference response.
   (turns, reply length, withheld and its reason, stop reason, tokens, remaining messages, booklet
   version, elapsed time). It builds its canonical request itself from the registry route, the
   configured booklet, and `GRADER_CHAT_EFFORT` — sent only when the resolved model reasons — and
-  `graderChatRoute` refuses a model whose adapter needs provider state between turns, the same check
-  production readiness runs. Its response never echoes the provider's raw message: it carries
+  `graderChatRoute` refuses a model whose adapter needs provider state between turns or whose
+  family lacks `textConversation`, the same check production readiness runs. Its response never echoes the provider's raw message: it carries
   exactly the reply text its fingerprint was taken over, or none when withheld, and it is returned
   only after the audit's ledger committed the message with that response as its stored outcome; the
   daily counters settle after it, from this request or the audit's alarm. A request whose
@@ -43,6 +43,12 @@ or changes the inference response.
   releases the message and admits it once more on the new day. The handler never delivers a volume
   alert: the deployment counter's alarm does.
 
+- `/messages` and `/chat` refuse with 400 `ArgumentException`, before decoding a continuation or
+  any file or provider I/O, a request that a route keeping no conversation state between requests
+  cannot serve. Such a route serves one turn, so it refuses a continuation, any earlier assistant
+  turn (text or tool call), a tool result, and caller tools (`statelessRouteRefusal`,
+  `../inference/factory.ts`); `/chat` reads a `tools` member only for that refusal, since the
+  registry owns its tool surface. OpenAI is such a route.
 - `/messages` and `/chat` resolve model and effort only through prompt → group
   → tier → configured model, with the provider inferred from that model id by
   the model catalog. Registered-prompt callers cannot override model, provider,
@@ -89,8 +95,9 @@ or changes the inference response.
   required by a resolved route are validated there too; the protected Workers AI route checks its
   binding, authority, internal origin, enable switch, daily limit, and acceptance reserve; while the
   Grader chat is enabled, its configuration and its route (`graderChatRoute`) are checked too, and the
-  two Grader kill switches, `GRADER_RUNS_VALID_FROM` and `GRADER_EXTENSION_BUILT_AFTER`, always are. The
-  reason goes to the log.
+  two Grader kill switches, `GRADER_RUNS_VALID_FROM` and `GRADER_EXTENSION_BUILT_AFTER`, always are, and so
+  is the provider configuration (`validateProviderConfiguration`), which the router also checks before
+  it serves any other route. The reason goes to the log.
 - A merchant route hit by an absent required secret answers the generic
   `SECRET_CONFIGURATION_PUBLIC_MESSAGE` envelope (`../lib/responses.ts`); the
   secret's name and the secret-store instruction stay in the thrown
@@ -136,8 +143,10 @@ or changes the inference response.
   each reserved first, and the read-only, unreserved `GET /audit/session`.
   The exchange refuses an extension build older than `GRADER_EXTENSION_BUILT_AFTER`
   (`X-LimeSpot-Extension-Built-At`) and an unsupported `X-LimeSpot-Audit-Plan-Version`
-  before it reads the activation, and answers with `runsValidFrom` and
-  `extensionBuiltAfter`; a Grader chat reply carries `graderChat.runsValidFrom`.
+  before it reads the activation (`assertCompatibleAuditClient`). The cutoff applies only to a
+  build that names its build time; a build naming none is held to the plan version it names, and
+  one naming neither is refused `audit_plan_version_unsupported`. The exchange answers with
+  `runsValidFrom` and `extensionBuiltAfter`; a Grader chat reply carries `graderChat.runsValidFrom`.
   `GET /audit/session` (`handleAuditSessionStatus`) reads a live session's
   standing with its own bearer and the same headers — chat terms and both
   cutoffs — reserving and writing nothing, and refuses exactly as an audit

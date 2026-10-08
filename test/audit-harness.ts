@@ -9,6 +9,7 @@ import { AUDIT_STATUS_CALLBACK_URL, ENV } from './helpers';
 export const STORE_ORIGIN = 'https://lsdev.myshopline.com';
 export const USABLE_PROPOSAL = JSON.stringify({ pages: { Home: { boxes: [] } } });
 export const DURABLE_OBJECT_ENTRY_LIMIT_BYTES = 2_000_000;
+export const EXTENSION_BUILD_HEADERS = { 'X-LimeSpot-Extension-Built-At': '2026-10-01T00:00:00Z' };
 
 interface NamedDurableObjectId {
   readonly name: string;
@@ -237,7 +238,11 @@ export async function exchange(
   const response = await worker.fetch(
     new Request('https://app-ai.test/audit/session/exchange', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'https://www.limespot.com' },
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://www.limespot.com',
+        ...EXTENSION_BUILD_HEADERS,
+      },
       body: JSON.stringify({
         activationToken: resolvedToken,
         storeUrl: `${STORE_ORIGIN}/products/example?campaign=grader`,
@@ -258,6 +263,7 @@ export function auditHeaders(
     Authorization: `Bearer ${accessToken}`,
     Origin: STORE_ORIGIN,
     'X-LimeSpot-Audit-Store-Origin': STORE_ORIGIN,
+    ...EXTENSION_BUILD_HEADERS,
     ...(prompt
       ? {
           ...(jsonContent ? { 'Content-Type': 'application/json' } : {}),

@@ -22,10 +22,14 @@ import {
 import {
   graderChatBookletVersion,
   graderChatMaxReplyTokens,
+  isProductionDeployment,
   modelOverrides,
   resolveModel,
+  validateProviderBases,
   type Env,
 } from './config';
+import { aiSubprocessorOf, mayServeRoute } from './lib/ai-providers';
+import { WorkerError } from './lib/responses';
 
 export { getFilePolicy, listFilePolicies } from './inference/model-catalog';
 export type { FilePolicyName, ModelProfileName } from './inference/model-catalog';
@@ -118,13 +122,17 @@ export interface PromptGroupDefinition {
   /**
    * Capabilities a resolved model must HAVE for this group's prompts to be
    * CORRECT. A cost characteristic is not one of them: `inlineCacheBreakpoints`
-   * says a provider honours per-block cache markers, which Anthropic and OpenAI
-   * do and Gemini does not — Gemini caches a stable request prefix implicitly
-   * instead. Requiring the MECHANISM rather than the outcome makes a provider
+   * says a provider honours per-block cache markers, which only Anthropic does —
+   * OpenAI and Gemini cache a stable request prefix automatically instead. Requiring the MECHANISM rather than the outcome makes a provider
    * that caches by another route unroutable, so that flag is required by no
    * group and reported per prompt by `describePromptRoutes`.
    */
   readonly requirements: readonly ModelCapabilityName[];
+  /**
+   * Whether the group's prompts receive merchant, shopper, user or captured-page content. In
+   * production only a provider the DPA lists may serve a group that does.
+   */
+  readonly carriesCustomerContent: boolean;
   /**
    * OPTIONAL — the group whose provider file route carries this group's evidence,
    * so a cascade that hands one uploaded evidence set from a cheaper classifier to
@@ -139,63 +147,78 @@ export interface PromptGroupDefinition {
 const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = {
   'image-selection': {
     tier: 'fast',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'studio-data-agent': {
     tier: 'frontier',
-    requirements: ['streaming', 'serverTools'],
+    carriesCustomerContent: true,
+    requirements: ['streaming', 'serverTools', 'textConversation'],
   },
   'studio-visual-agent': {
     tier: 'frontier',
-    requirements: ['vision', 'reusableFiles', 'streaming', 'clientTools'],
+    carriesCustomerContent: true,
+    requirements: ['vision', 'reusableFiles', 'streaming', 'clientTools', 'textConversation'],
   },
   'placement-vision': {
     tier: 'fast',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'streaming', 'structuredOutput'],
   },
   'setup-strategy': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'streaming', 'structuredOutput', 'serverTools'],
   },
   'onboarding-visual': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput', 'reasoning'],
   },
   'onboarding-qc-gate': {
     tier: 'fast',
+    carriesCustomerContent: true,
     fileRouteGroup: 'onboarding-visual',
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'cartdrawer-visual': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'render-verification': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'free-render-verification': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision'],
   },
   'website-analysis-visual': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'website-industry': {
     tier: 'frontier',
+    carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
   'analytics-narrative': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['streaming', 'structuredOutput'],
   },
   'billing-narrative': {
     tier: 'balanced',
-    requirements: ['streaming'],
+    carriesCustomerContent: true,
+    requirements: ['streaming', 'textConversation'],
   },
   'grader-sales': {
     tier: 'balanced',
+    carriesCustomerContent: true,
     requirements: ['textConversation'],
   },
 };
@@ -1030,6 +1053,7 @@ function resolveRoute(
 ): ResolvedModelRoute {
   const { model, configuredBy } = configuredModel(group, prompt, env);
   const family = resolveModelFamily(model, configuredBy);
+  assertProviderMayServe(group, family.provider, model, configuredBy, env);
   const profile: ModelProfile = {
     name: family.profile,
     provider: family.provider,
@@ -1042,6 +1066,72 @@ function resolveRoute(
     prompt === null ? PROMPT_GROUPS[group].requirements : getPromptRequiredCapabilities(prompt);
   validateResolvedGroupRoute(group, profile, policy, requirements);
   return { profile, policy, modelProfile: family.profile, filePolicy: family.filePolicy };
+}
+
+function assertProviderMayServe(
+  group: PromptGroupName,
+  provider: ProviderName,
+  model: string,
+  configuredBy: string,
+  env: Env,
+): void {
+  if (!isProductionDeployment(env)) return;
+  if (mayServeRoute(provider, PROMPT_GROUPS[group].carriesCustomerContent)) return;
+  throw new WorkerError(
+    `${configuredBy} routes ${group} to ${model} at ${provider}, which LimeSpot's DPA does not list as an AI sub-processor for customer content.`,
+    {
+      status: 503,
+      exceptionType: 'ProviderNotAllowedException',
+      messageDetail: 'provider_not_allowed',
+    },
+  );
+}
+
+/**
+ * Throw unless, in production, every prompt and group, every `MODEL_OVERRIDES` entry among them,
+ * resolves to a provider that may serve it, every prompt whose conversation carries earlier turns
+ * (`textConversation`) or browser-owned tools (`clientTools`) resolves to a model whose family can
+ * carry them across requests, and every configured provider API base is that provider's own. Outside production it checks nothing, so the adapter tests and paid smoke
+ * matrices keep every catalogued provider.
+ */
+export function validateProviderConfiguration(env: Env): void {
+  if (!isProductionDeployment(env)) return;
+  validatedModelOverrides(env);
+  for (const group of listPromptGroups()) checkConfiguredProvider(group, null, env);
+  for (const name of listPromptNames()) checkConfiguredProvider(getPromptGroup(name), name, env);
+  checkConfiguredProvider(null, null, env);
+  for (const name of listPromptNames()) {
+    const requirements = getPromptRequiredCapabilities(name);
+    if (requirements.includes('textConversation') || requirements.includes('clientTools')) {
+      getModelProfile(name, env);
+    }
+  }
+  validateProviderBases(env);
+}
+
+function checkConfiguredProvider(
+  group: PromptGroupName | null,
+  prompt: PromptName | null,
+  env: Env,
+): void {
+  if (group === null) {
+    const model = resolveModel(env, 'fast');
+    const provider = resolveModelFamily(model, TIER_VARIABLE.fast).provider;
+    if (aiSubprocessorOf(provider) === null) {
+      throw new Error(
+        `${TIER_VARIABLE.fast} resolves to ${provider}, which the DPA does not list.`,
+      );
+    }
+    return;
+  }
+  const { model, configuredBy } = configuredModel(group, prompt, env);
+  assertProviderMayServe(
+    group,
+    resolveModelFamily(model, configuredBy).provider,
+    model,
+    configuredBy,
+    env,
+  );
 }
 
 /** Resolve and validate the model route one prompt group's uploads travel. */

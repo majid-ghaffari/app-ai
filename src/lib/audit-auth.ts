@@ -81,8 +81,6 @@ export const GRADER_CHAT_PROMPT = 'grader-chat' satisfies PromptName;
 /** The header an extension names its build time in, as an ISO-8601 UTC instant. */
 export const EXTENSION_BUILT_AT_HEADER = 'X-LimeSpot-Extension-Built-At';
 
-const UNDECLARED_EXTENSION_BUILT_AT = Date.parse('2026-10-03T00:00:00Z');
-
 const GRADER_REPORT_PLATFORMS = ['shopify', 'shopline', 'bigcommerce'] as const;
 const GRADER_REPORT_PAGE_STATES = [
   'read',
@@ -530,8 +528,7 @@ async function verifiedAuditClaims(request: Request, env: Env): Promise<AuditSes
   if (claims.expiresAt <= epochSeconds()) throw graderChatRefusal('audit_session_expired');
   assertTemporalClaims(claims.issuedAt, claims.expiresAt);
   assertRequestStoreOrigin(request, claims.storeOrigin);
-  assertCurrentExtensionBuild(request, env);
-  assertSupportedAuditPlan(request);
+  assertCompatibleAuditClient(request, env);
   return claims;
 }
 
@@ -1119,13 +1116,22 @@ function normalizeStoreOrigin(storeUrl: string): string {
 }
 
 /**
- * Refuse a request from an extension build made before `GRADER_EXTENSION_BUILT_AFTER` with 409
- * `extension_update_required`. A request naming no build time was made by a build older than the
- * header; a malformed one is refused 400.
+ * Refuse a grader request its client cannot be served under. A build naming its build time is
+ * refused 409 `extension_update_required` when made before `GRADER_EXTENSION_BUILT_AFTER`, and 400
+ * when the time is malformed. A build naming none is not measured against that cutoff: it is held
+ * to the plan version it declares, so one declaring none is refused 409
+ * `audit_plan_version_unsupported` like one declaring a version this worker holds no allowance for.
  */
-export function assertCurrentExtensionBuild(request: Request, env: Env): void {
-  const declared = request.headers.get(EXTENSION_BUILT_AT_HEADER);
-  const builtAt = declared === null ? UNDECLARED_EXTENSION_BUILT_AT : parseUtcInstant(declared);
+export function assertCompatibleAuditClient(request: Request, env: Env): void {
+  const declaredBuild = request.headers.get(EXTENSION_BUILT_AT_HEADER);
+  const declaredPlan = request.headers.get(AUDIT_PLAN_VERSION_HEADER);
+  if (declaredBuild !== null) assertBuiltAfterCutoff(declaredBuild, env);
+  if (declaredBuild === null && declaredPlan === null) throw unsupportedAuditPlan();
+  if (!isSupportedAuditPlanVersion(declaredPlan)) throw unsupportedAuditPlan();
+}
+
+function assertBuiltAfterCutoff(declaredBuild: string, env: Env): void {
+  const builtAt = parseUtcInstant(declaredBuild);
   if (builtAt === null) {
     throw invalidArgument(`${EXTENSION_BUILT_AT_HEADER} must be an ISO-8601 UTC timestamp.`);
   }
@@ -1140,10 +1146,8 @@ export function assertCurrentExtensionBuild(request: Request, env: Env): void {
   );
 }
 
-/** Refuse a grader request that names an audit plan this worker holds no allowance for. */
-export function assertSupportedAuditPlan(request: Request): void {
-  if (isSupportedAuditPlanVersion(request.headers.get(AUDIT_PLAN_VERSION_HEADER))) return;
-  throw new WorkerError(
+function unsupportedAuditPlan(): WorkerError {
+  return new WorkerError(
     'This grader version is not supported. Update the LimeSpot extension and try again.',
     {
       status: 409,

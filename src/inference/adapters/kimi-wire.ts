@@ -1,3 +1,4 @@
+import { fetchProvider } from './provider-fetch';
 import { kimiApiBase, kimiApiKey, type Env } from '../../config';
 
 function jsonHeaders(env: Env): Record<string, string> {
@@ -20,7 +21,7 @@ export function createChatCompletion(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${kimiApiBase(env)}/v1/chat/completions`, {
+  return fetchProvider('Kimi Code', `${kimiApiBase(env)}/v1/chat/completions`, {
     method: 'POST',
     headers: jsonHeaders(env),
     body: JSON.stringify(payload),
@@ -33,7 +34,7 @@ export function uploadImage(
   env: Env,
   abortSignal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${kimiApiBase(env)}/v1/files`, {
+  return fetchProvider('Kimi Code', `${kimiApiBase(env)}/v1/files`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${kimiApiKey(env)}` },
     body,

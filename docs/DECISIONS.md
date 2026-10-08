@@ -685,10 +685,11 @@ provider-native continuation handles without allowing stored provider state to
 cross an app-ai ownership boundary.
 
 Adapters whose continuation owns the complete internal agent transcript declare
-that capability to the shared loop. OpenAI, Gemini, and Moonshot/Kimi therefore
-receive initial public messages plus only the latest assistant/tool boundary and
-replay earlier provider-native turns from their state without duplication;
-Anthropic receives the accumulated canonical history. History-owning adapters
+that capability to the shared loop. Gemini and Moonshot/Kimi therefore receive
+initial public messages plus only the latest assistant/tool boundary and replay
+earlier provider-native turns from their state without duplication; Anthropic
+and OpenAI receive the accumulated canonical history, OpenAI replaying each of
+its tool turns from the output items saved on that turn's tool calls. History-owning adapters
 that need accumulated usage perform provider-shaped aggregation themselves;
 Moonshot/Kimi and Gemini sum their internal calls. Anthropic retains the
 terminal raw usage envelope exposed by the established production `/chat`
@@ -719,20 +720,31 @@ assistant history receives opaque provider state only at the Anthropic
 compatibility boundary; selecting another provider never fabricates
 provider-owned continuation state.
 
-### 27. OpenAI uses Responses with stored opaque continuation, without changing production routes
+### 27. OpenAI uses Responses statelessly, without changing production routes
 
 The production-capable OpenAI adapter uses dependency-free Web `fetch` against the
 Responses and Files APIs. Canonical instructions/messages, image and file
 inputs, strict function tools, `text.format` JSON Schema, semantic reasoning
 effort, typed SSE events, usage, stops, and failures are translated and
 validated only under `src/inference/adapters/`. Tool results retain their
-`call_id`; visual tool results may carry input images/files. Successful turns
-return adapter-owned `previous_response_id` state, which the shared runtime and
-browser continuation contract carry opaquely. The initial stable system input
-and its explicit cache boundary remain in stored response state; a continuation
-therefore sends only input after the referenced assistant turn.
-The public envelope is authenticated and tenant/group/profile-bound before
-`previous_response_id` can reach the shared OpenAI project. Registered
+`call_id`; visual tool results may carry input images/files.
+OpenAI keeps no stored Responses object: every call sends `store: false` and no
+`previous_response_id`. It still holds its automatic prompt-cache state — in
+memory for minutes, or up to 24 hours of extended caching for an organization
+without Zero Data Retention — and app-ai requests no explicit cache (see the
+paragraph below and `docs/AI-PROVIDERS.md`). No stored Responses object, app-ai continuation state or output-item replay crosses a request boundary, while OpenAI's automatic prompt-cache state can persist across calls (in memory for minutes, or up to 24 hours without Zero Data Retention), so an OpenAI route serves one public turn: it offers no continuation, and a request carrying a
+continuation, any earlier assistant turn (text or tool call), a tool result, or
+caller tools is refused with 400 before any provider call. The `gpt` family
+declares neither `textConversation` nor `clientTools`, so no route whose
+conversation carries earlier turns or browser-owned tools can select it, which
+production validation refuses before serving. Within one request, following
+OpenAI's stateless guidance, a reasoning model is asked for its reasoning
+encrypted (`include: ["reasoning.encrypted_content"]`), and every output item of
+a turn that ends in function calls is saved untouched on those calls: the next
+server-tool iteration resends the conversation — the system input, the first
+user turn, and each tool turn as its saved items, reasoning beside its calls,
+followed by the tool outputs. Output items, encrypted reasoning included, are
+replayed only within that one request. Registered
 `/messages` results without an Anthropic raw envelope are serialized from the
 canonical result into the existing public message shape.
 Provider-hosted OpenAI tools remain fail-closed until their provider-specific
@@ -750,13 +762,15 @@ policy and capability mismatches before a group can select OpenAI.
 Best-effort dedup metadata retains validated upload MIME because OpenAI File
 objects omit MIME; a reused image therefore remains an image on later turns.
 
-Canonical prompt-cache intent is realized through Responses explicit
-`prompt_cache_breakpoint` markers on the supported text/image/file content
-blocks, a group/profile-stable `prompt_cache_key`, and request-wide explicit
-`30m` policy. The adapter rejects more than four writable markers before
-provider I/O. Because OpenAI currently offers only the `30m` explicit TTL,
-canonical `short` and `extended` preserve the requested stable-prefix boundary
-but share that provider retention policy.
+OpenAI requests ask for no explicit or extended prompt caching: no
+`prompt_cache_options`, no `prompt_cache_breakpoint` marker, no
+`prompt_cache_retention` and no `prompt_cache_key`. Every `gpt-` model resolves
+to the one `gpt` profile, which declares no inline breakpoints, so canonical
+cache intents are dropped and only OpenAI's automatic prompt caching applies:
+in memory for minutes, or up to 24 hours of extended caching for an
+organization without Zero Data Retention. That lifetime is recorded in
+`docs/AI-PROVIDERS.md`, beside the abuse-monitoring logs, because it is
+provider-side retention of request content.
 
 The optional `npm run verify:openai` matrix is paid and refuses to run unless
 both `OPENAI_LIVE_SMOKE=1` and `AI_CHANNEL=prod` are explicit. It is not a CI or
@@ -920,10 +934,11 @@ discover.
 ### 32. Gemini caches implicitly, so cache intent is honoured by order
 
 `inlineCacheBreakpoints` is a capability about a MECHANISM: whether a provider
-honours per-block cache markers on a request. Anthropic and OpenAI do; Gemini
-does not. Naming it after the mechanism matters because a name that reads as
-"can cache at all" is false — Gemini caches a repeated request PREFIX
-automatically, above a size floor, with no request field and no API call.
+honours per-block cache markers on a request. Only Anthropic does; OpenAI and
+Gemini do not. Naming it after the mechanism matters because a name that reads
+as "can cache at all" is false — Gemini and OpenAI each cache a repeated request
+PREFIX automatically, with no marker and no API call, so app-ai sends OpenAI no
+cache field at all.
 
 Because it reads as a cost characteristic rather than a correctness one, no
 prompt group requires it. Requiring the mechanism made a provider that caches by
@@ -990,7 +1005,8 @@ silent copy. The client names its plan in `X-LimeSpot-Audit-Plan-Version`, and a
 holds no allowance for with 409 at the exchange, before any run starts, instead of letting the run
 meet a 429 partway through or admitting it against a stale allowance. A version cannot give a worker
 capacity it lacks, so the worker still deploys before the client that sends a new version. A
-request naming no version follows plan 1, so a client that sends no header keeps working.
+request naming no version follows plan 1 when its build names its build time; a build naming neither
+is refused, because the plan version is then the only contract it can be held to.
 
 ### One upstream inference deadline, owned by app-ai
 
@@ -1322,10 +1338,13 @@ a counter because the question a client asks of its cache is "is my run older th
 date answers with no state of its own, and because the server can answer the same question from the
 run's own times. `GRADER_EXTENSION_BUILT_AFTER` is the matching instant for extension builds: a build
 names when it was made in `X-LimeSpot-Extension-Built-At`, and an older one is refused
-`extension_update_required` at exchange and on every Grader call. A build that names nothing predates
-the header, so it is read as made at the instant the header was introduced, which lets both switches
-ship at a past instant without refusing any released build. Neither switch restores an attempt or a
-message. The run cutoff is enforced from the server's own run times; the build cutoff is a
+`extension_update_required` at exchange and on every Grader call. The build cutoff applies only to a
+build that names its build time. Firefox lets a user refuse the optional technical data the build
+time is, and Mozilla requires that refusing it costs no function, so a build naming none is held to
+the one compatibility contract it still carries, the plan version it declares, rather than to a
+substituted date any later cutoff would refuse; a build naming neither is refused. The cost is that
+the build cutoff cannot retire a build naming no build time: removing its plan version from
+`SUPPORTED_AUDIT_PLAN_VERSIONS` does. Neither switch restores an attempt or a message. The run cutoff is enforced from the server's own run times; the build cutoff is a
 compatibility switch, not a security boundary, because the build time is whatever the caller says.
 A per-run switch would need an operator write path into the audit's Durable Object that does not
 exist, so there is none.
@@ -1389,3 +1408,42 @@ activation for the same audit identifier starts a fresh record, whose chat offer
 again once a run in it completes. Completed runs stay capped, because the website refuses an
 activation once it has mirrored two completions for the audit and keeps that count for as long as it
 reuses the identifier.
+
+### 39. The AI providers app-ai may use are the DPA's, enforced before serving
+
+LimeSpot's Privacy Policy says its AI model providers process content under commercial terms that do
+not allow them to train on it and keep it only for a stated window, and its DPA lists them as AI
+sub-processors. Routing alone could not keep that true: a tier binding or a `MODEL_OVERRIDES` entry
+moves a prompt to any catalogued provider as a settings change. So `src/lib/ai-providers.ts` holds
+the DPA's list, and every catalogued provider maps to a name on it or to none. The list is a copy of
+the workspace's canonical `ai-providers.json`, which every repository calling a model provider holds
+its code to, and its test pins it to that file rather than to names of its own, so the copy cannot
+drift from the file's names or origins without failing CI. The file itself is held to the DPA as
+published: CI fetches the live page and fails while its sub-processor list leaves out any provider
+the file names, so a provider added to the file is blocked here until the website DPA naming it is
+merged.
+
+Moonshot and Kimi Code map to none. Moonshot's platform terms let it use customer inputs to improve
+its services unless a separate written agreement says otherwise, and the Kimi Code subscription has
+no processor terms at all, so neither may receive merchant, shopper, user or captured-page content.
+Each prompt group therefore declares whether it carries such content, and a provider off the DPA
+list may serve only a group that does not; every group carries it today. Outside production every
+provider stays routable, because the adapter tests and the opt-in paid smoke matrices need them and
+no customer content reaches those channels.
+
+The check runs before serving, not when a route is first used: Workers give a script its
+configuration only with its first event, so the router validates the whole provider configuration
+before an isolate answers anything but `/health`, and refuses every request while it is invalid. A
+partly valid configuration that served some routes would send the rest elsewhere the moment they
+were used. Route resolution and the provider base accessors check again at request time, so a
+configuration changed after validation still cannot reach a disallowed provider or origin.
+
+In production each provider is reached only at its own API base, written exactly, and no transport
+follows a redirect, because a proxy or a redirect would hand content, keys or file ids to a party
+the DPA does not name. workerd implements no `redirect: 'error'`, so every call asks for `manual`
+and refuses the 3xx answer itself.
+
+Retention deletion is the one exception to routing: it reaches a stored object through the provider
+that holds it, at that provider's own origin, whatever the current routing, because the promise is
+that the object ends, and a routing change must not strand it. OpenAI uploads ask for a 30-day expiry
+like Anthropic's, because an OpenAI file otherwise persists until something deletes it.
