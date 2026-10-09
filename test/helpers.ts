@@ -1,13 +1,31 @@
 /**
  * Shared test utilities: the complete typed `Env` fixture (every required
  * config variable present — src/config.ts throws on a missing one), typed
- * fetch-mock accessors, and the worker-SSE parser.
+ * fetch-mock accessors, the worker-SSE parser, and where limespot/root's
+ * `_standards` directory is.
  */
 
+import { fileURLToPath } from 'node:url';
 import { vi, type Mock } from 'vitest';
+import { ROOT_STANDARDS_VARIABLE } from '../scripts/root-ai-providers.mjs';
 import * as anthropic from '../src/inference/adapters/anthropic-wire';
 import { fileTenantScope, mintOpaqueFileReference } from '../src/inference/file-references';
 import type { Env } from '../src/config';
+
+const SIBLING_STANDARDS = fileURLToPath(new URL('../../_standards', import.meta.url));
+
+/**
+ * The `_standards` directory of limespot/root that the specs pinned to a root file read:
+ * `LIMESPOT_ROOT_STANDARDS` when set, else the one beside this repository, with what to do when
+ * a file is missing there.
+ */
+export function rootStandards(): { readonly directory: string; readonly whenUnreadable: string } {
+  const configured: unknown = import.meta.env[ROOT_STANDARDS_VARIABLE];
+  return {
+    directory: typeof configured === 'string' && configured !== '' ? configured : SIBLING_STANDARDS,
+    whenUnreadable: `Set ${ROOT_STANDARDS_VARIABLE} to the _standards directory of a limespot/root checkout, as CI's root checkout step does, or check limespot/root out as this repository's parent, and keep it current, so ${SIBLING_STANDARDS} holds the file.`,
+  };
+}
 
 const auditSessionFetch = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
 const auditSessionNamespace = {

@@ -2,7 +2,7 @@
  * Prompt-text barrel — every registered prompt's FINAL system text as a named
  * export, so `../prompt-registry.ts` (the registry) is just `import * as prompts from
  * './prompts'`. Composed prompts (onboarding / cart-drawer / optimize twins, `chat`,
- * `grader-chat`) are assembled in their own `index.ts` (fragments + shared blocks +
+ * `billing-assistant`, `grader-chat`) are assembled in their own `index.ts` (fragments + shared blocks +
  * `composePrompt`); `grader-chat` exports its composition, booklet map and booklet structure,
  * because configuration picks its booklet and resolving one checks its headings;
  * single-file / multi-file / probe / visual-verify prompts re-export their raw
@@ -11,7 +11,6 @@
  */
 
 // Single-file prompts (raw `.md` text used directly).
-export { default as billingAssistant } from './billing-assistant.md';
 export { default as onboardingChat } from './onboarding-chat.md';
 export { default as onboarding } from './onboarding.md';
 export { default as placement } from './placement.md';
@@ -39,6 +38,7 @@ export { default as onboardingCssReview } from './onboarding-css-review/prompt.m
 
 // Composed prompts (each folder's index.ts assembles fragments + shared blocks).
 export { default as chat } from './chat';
+export { default as billingAssistant } from './billing-assistant';
 export {
   GRADER_CHAT_BOOKLET_HEADINGS,
   composeGraderChat,

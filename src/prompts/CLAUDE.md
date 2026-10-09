@@ -42,9 +42,23 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
    `assistant-shared/_shared-*.md`) →** it changes EVERY prompt that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
    composed text changes on purpose, regenerate that prompt's byte baseline in `test/__snapshots__/` — the
    byte-equivalence gate [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts)
-   fails otherwise. An `assistant-shared/` block reaches `chat`; its byte gate is
+   fails otherwise. The agents master rules in `assistant-shared/` reach `chat` and
+   `billing-assistant`, and the chat formatting block reaches `chat`; their byte gate is
    [`test/assistant-prompt-blocks.test.ts`](../../test/assistant-prompt-blocks.test.ts) against
-   `test/__snapshots__/chat.baseline.md` and `test/__snapshots__/grader-chat.baseline.md`.
+   `test/__snapshots__/chat.baseline.md`, `test/__snapshots__/billing-assistant.baseline.md` and
+   `test/__snapshots__/grader-chat.baseline.md`.
+6. **Edit the shared agents core (`assistant-shared/_shared-agents-core.md`) →** it is a copy of
+   `limespot/root`'s `_standards/agent-rules-core.md`, the shared core of the master rules every
+   LimeSpot AI agent works under, which Brain copies too as
+   `LimeSpot.AI/Agents/Prompts/agents-core.md`, the first layer of every unattended merchant agent.
+   The edit is a `limespot/root` pull request first; this copy then takes the root text unchanged.
+   [`test/shared-agents-core.test.ts`](../../test/shared-agents-core.test.ts) compares the copy
+   byte for byte with the root file in the directory `LIMESPOT_ROOT_STANDARDS` names, else
+   `../_standards`; in CI that is the root revision the `test` job checks out. While they differ it
+   fails, naming both files and the first line that differs, so CI stays red until the copy matches
+   root. No hash of the text is pinned. A rule that holds only in a conversation with the owner
+   belongs in `_shared-agents-master.md`, never in the core, because an unattended agent carries
+   the core too; the conversation rules may narrow the core, never widen it.
 
 The authoring/iteration workflow (artifact rules, length enforcement, what belongs in a maintenance doc) is
 [`../../docs/PROMPT-AUTHORING.md`](../../docs/PROMPT-AUTHORING.md).
@@ -66,14 +80,16 @@ each entry's `prompt:` references `prompts.<name>`).
   [`index.ts`](./onboarding-batch/index.ts) that assembles the final text via `composePrompt(...)`
   (from [`./_compose.ts`](./_compose.ts)) out of that prompt's own fragments PLUS shared blocks from
   `onboarding-shared/` or `assistant-shared/`, in a STABLE order (the cacheable prefix). The barrel
-  re-exports that folder's default. `chat` composes the shared chat formatting around its
-  Studio-only fragments, its identity among them, which names the platforms Studio serves;
+  re-exports that folder's default. `chat` composes the agents master rules after its identity,
+  which names the platforms Studio serves, and the shared chat formatting around its Studio-only
+  fragments; `billing-assistant` composes the agents master rules between its identity and its own
+  billing rules;
   `grader-chat`, whose replies lib shows as plain text, composes its own plain-text formatting block
   instead, around its platform-neutral identity, its one boundaries block, its buttons block and a
   booklet — the only part of its text that names a
   platform — and
   exports its composition function and booklet map instead of a default, because the booklet is
-  chosen by configuration. Both are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
+  chosen by configuration. All three are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
   name you can select via the header.
 - **Shared-text alias** — an explicit named export in the barrel points to another registered
   prompt's final text when the semantic input/output contract is identical but routing or access is
@@ -92,7 +108,15 @@ composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
 **`assistant-shared/` is the second shared block library**, for the conversational assistant
 prompts: `_shared-chat-formatting.md` (the Markdown chat-bubble formatting rules), composed by
-`chat`. `grader-chat` keeps its own `_formatting.md`, the plain-text rules, because lib shows a
+`chat`, and the agents master rules, which `agents-master-rules.ts` composes from two blocks:
+`_shared-agents-core.md`, the core copied from `limespot/root`, which Brain carries too (what
+LimeSpot Assistant and every agent works on, never does and treats as data, rule 6 above), then `_shared-agents-master.md`, the rules that
+hold in a conversation with the owner (out of scope, ask before acting, when a person takes over,
+stay helpful). Every prompt whose words the owner reads in a conversation composes the master
+rules right after its identity: `chat` and `billing-assistant`. The rest do not, each for a reason `test/assistant-prompt-blocks.test.ts` records beside
+every registered prompt: `grader-chat` and the Grader's two onboarding proposal prompts speak to
+stores without LimeSpot, `onboarding` and `onboarding-chat` have no live caller, and the other
+one-shot steps answer JSON lib reads rather than talking to the owner. `grader-chat` keeps its own `_formatting.md`, the plain-text rules, because lib shows a
 Grader reply as plain text with no Markdown applied, and each keeps its identity in its own folder,
 because Studio names the platforms it serves and the Grader leaves platforms to the booklet. Like `onboarding-shared/`, it is
 never a registered prompt.

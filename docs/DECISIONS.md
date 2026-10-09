@@ -1447,3 +1447,36 @@ Retention deletion is the one exception to routing: it reaches a stored object t
 that holds it, at that provider's own origin, whatever the current routing, because the promise is
 that the object ends, and a routing change must not strand it. OpenAI uploads ask for a 30-day expiry
 like Anthropic's, because an OpenAI file otherwise persists until something deletes it.
+
+### 40. One set of agents master rules, with its core held in limespot/root
+
+LimeSpot Assistant and its agents run in two places: the conversations an owner has in Studio and
+the subscription chat are prompts here, and the agents that run unattended on a schedule are Brain
+prompts. The rules on what an agent works on, what it never does and what it treats as data are
+the same in both, so they are one text, `limespot/root`'s `_standards/agent-rules-core.md`, beside
+the `ai-providers.json` both runtimes already hold their provider lists to. Each runtime ships a
+copy, because a worker cannot read another repository while it serves: here
+`src/prompts/assistant-shared/_shared-agents-core.md`, in Brain
+`LimeSpot.AI/Agents/Prompts/agents-core.md`. Each adds what holds only there: app-ai the rules of a
+conversation with the owner (out of scope, ask before acting, when a person takes over, stay
+helpful), Brain the rules of an unattended run; those may narrow the core, never widen it. Fetching
+the root text at runtime was the alternative; it would put prompt text outside `src/prompts/` and
+add a dependency to every call.
+
+`test/shared-agents-core.test.ts` compares this copy with the root file byte for byte, with nothing
+normalized, at the root revision CI's `test` job checks out for `ai-providers.json`, reading the
+same `LIMESPOT_ROOT_STANDARDS` directory, and fails naming both files and the first line that
+differs. Brain's test does the same with its copy. A change to the core is therefore a root pull
+request first, and each runtime's CI stays red until its copy matches, so the two runtimes cannot
+drift apart and the root text, not either copy, decides which is right. Neither repository pins a
+hash of the text: a hash pinned in each could say only that a copy changed, never which side had
+the rule as agreed.
+
+The core opens with its own heading, which limits its override to what an agent works on, never
+does and treats as data; tone, length and what a prompt works out from its own context stay with
+the instructions after it. A rule that beat every later fragment would also beat Studio's own
+"answer only what was asked" and its page inference. The conversation rules come right after the
+core, and every prompt whose words the owner reads in a conversation composes both right after its
+identity; `test/assistant-prompt-blocks.test.ts` records for every registered prompt whether it
+does and why not, so a new prompt cannot ship without that choice. The Grader's chat and its two
+onboarding proposal prompts do not, because they speak to stores that have not installed LimeSpot.

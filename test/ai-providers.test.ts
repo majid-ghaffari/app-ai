@@ -1,7 +1,6 @@
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readRootAiProviders, ROOT_STANDARDS_VARIABLE } from '../scripts/root-ai-providers.mjs';
+import { readRootAiProviders } from '../scripts/root-ai-providers.mjs';
 import worker from '../src/index';
 import { handleFileUpload } from '../src/handlers/files';
 import { anthropicApiBase, openaiApiBase, type Env } from '../src/config';
@@ -19,7 +18,7 @@ import {
   validateProviderConfiguration,
 } from '../src/prompt-registry';
 import { silentLoggingRuntime } from '../src/lib/logger';
-import { CORS, ENV, stubFetch } from './helpers';
+import { CORS, ENV, rootStandards, stubFetch } from './helpers';
 
 const PRODUCTION: Env = { ...ENV, ENVIRONMENT: 'production' };
 const { KIMI_API_KEY: _kimiKey, ...PRODUCTION_WITHOUT_KIMI_KEY } = PRODUCTION;
@@ -32,16 +31,9 @@ const OWN_API_BASES = {
   moonshot: 'https://api.moonshot.ai',
   kimi: 'https://api.kimi.com/coding',
 } as const;
-const SIBLING_STANDARDS = fileURLToPath(new URL('../../_standards', import.meta.url));
-
 function rootAiProviders(): ReturnType<typeof readRootAiProviders> {
-  const configured: unknown = import.meta.env[ROOT_STANDARDS_VARIABLE];
-  const directory =
-    typeof configured === 'string' && configured !== '' ? configured : SIBLING_STANDARDS;
-  return readRootAiProviders(
-    directory,
-    `Set ${ROOT_STANDARDS_VARIABLE} to the _standards directory of a limespot/root checkout, as CI's root checkout step does, or check limespot/root out as this repository's parent, and keep it current, so ${SIBLING_STANDARDS} holds the file.`,
-  );
+  const { directory, whenUnreadable } = rootStandards();
+  return readRootAiProviders(directory, whenUnreadable);
 }
 
 function byProvider(left: { provider: string }, right: { provider: string }): number {

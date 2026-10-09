@@ -57,9 +57,13 @@ locally to confirm or contradict it.
 CI's `test` job reads `ai-providers.json` from a checkout of the workspace repository
 `limespot/root`, first for the published-DPA check, which fails until the live DPA's
 sub-processor list prints every provider the file names
-([docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md)), then for the suite. A local run of `test/ai-providers.test.ts`, under one of those exceptions, reads
-it from the directory `LIMESPOT_ROOT_STANDARDS` names, or from `../_standards`, so keep that
-checkout current ([docs/TESTING.md](docs/TESTING.md) → Running the offline suite).
+([docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md)), then for the suite, which also compares the
+agents core with that checkout's `agent-rules-core.md` byte for byte. A change to the agents core
+is a `limespot/root` pull request first, and this repository's copy then takes the root text
+unchanged ([src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), doc-sync rule 6). A local run of
+`test/ai-providers.test.ts` or `test/shared-agents-core.test.ts`, under one of those exceptions,
+reads the root files from the directory `LIMESPOT_ROOT_STANDARDS` names, or from `../_standards`,
+so keep that checkout current ([docs/TESTING.md](docs/TESTING.md) → Running the offline suite).
 
 For changes touching prompt text, tool definitions, or cache-control code, the
 optional deployed-worker diagnostic can provide additional operational evidence;
