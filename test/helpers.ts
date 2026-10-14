@@ -173,15 +173,29 @@ export function anthropicFileRecord(
  * Create a typed fetch mock and install it as the global `fetch`. The mock plays the provider:
  * a test answers with the Anthropic message it wants the model to return, and when the request
  * asked for `stream: true` the provider delivers that message as the Messages API event stream,
- * exactly as the real API renders one answer in the transport the request chose.
+ * exactly as the real API renders one answer in the transport the request chose. Brain's chat
+ * usage route is answered apart, through `brainUsageReports`.
  */
 export function stubFetch(): FetchMock {
   const fetchMock: FetchMock = vi.fn();
+  brainUsageReports.mockReset();
+  brainUsageReports.mockImplementation(async () => new Response('{}', { status: 200 }));
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
-    inRequestedTransport(await fetchMock(input, init), init),
+    String(input) === BRAIN_USAGE_REPORT_URL
+      ? brainUsageReports(input, init)
+      : inRequestedTransport(await fetchMock(input, init), init),
   );
   return fetchMock;
 }
+
+/** Brain's chat usage route, which `stubFetch` answers apart from the provider mock. */
+export const BRAIN_USAGE_REPORT_URL = `${ENV.PERSONALIZER_API_URL}/v2/agents/report-chat-usage`;
+
+/**
+ * The usage reports a handler sent Brain under `stubFetch`, answered 200 unless a test
+ * answers otherwise, so the provider mock sees only the calls a test drives.
+ */
+export const brainUsageReports: FetchMock = vi.fn();
 
 async function inRequestedTransport(
   response: Response | undefined,

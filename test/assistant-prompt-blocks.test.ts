@@ -15,17 +15,33 @@ import {
 } from '../src/prompts/grader-chat';
 import { composePrompt } from '../src/prompts/_compose';
 import { agentsMasterRules } from '../src/prompts/assistant-shared/agents-master-rules';
+import { CLIENT_ACTIONS, type ClientAction } from '../src/lib/client-actions';
 import chatBaseline from './__snapshots__/chat.baseline.md';
+import chatWithoutClientActionsBaseline from './__snapshots__/chat.without-client-actions.baseline.md';
+import onboardingChatBaseline from './__snapshots__/onboarding-chat.baseline.md';
+import onboardingChatWithoutClientActionsBaseline from './__snapshots__/onboarding-chat.without-client-actions.baseline.md';
 import billingAssistantBaseline from './__snapshots__/billing-assistant.baseline.md';
 import graderChatBaseline from './__snapshots__/grader-chat.baseline.md';
-import studioIdentity from '../src/prompts/chat/_studio-identity.md';
+import studioIdentity from '../src/prompts/assistant-shared/_shared-studio-identity.md';
+import studioContext from '../src/prompts/assistant-shared/_shared-studio-context.md';
+import studioGrounding from '../src/prompts/assistant-shared/_shared-studio-grounding.md';
+import studioTeam from '../src/prompts/assistant-shared/_shared-studio-team.md';
+import studioDirectives from '../src/prompts/assistant-shared/_shared-studio-directives.md';
+import studioMoveBox from '../src/prompts/assistant-shared/_shared-studio-move-box.md';
+import studioChoices from '../src/prompts/assistant-shared/_shared-studio-choices.md';
+import studioSupport from '../src/prompts/assistant-shared/_shared-studio-support.md';
+import studioSupportAsk from '../src/prompts/assistant-shared/_shared-studio-support-ask.md';
+import chatDataTools from '../src/prompts/chat/_data-tools.md';
+import lookAtPage from '../src/prompts/onboarding-chat/_look-at-page.md';
 import billingIdentity from '../src/prompts/billing-assistant/_identity.md';
 import billingRules from '../src/prompts/billing-assistant/_rules.md';
 import sharedChatFormatting from '../src/prompts/assistant-shared/_shared-chat-formatting.md';
 import agentsCore from '../src/prompts/assistant-shared/_shared-agents-core.md';
 import agentsConversation from '../src/prompts/assistant-shared/_shared-agents-master.md';
 import graderIdentity from '../src/prompts/grader-chat/_identity.md';
+import optimizationIdentity from '../src/prompts/optimization-shared/_identity.md';
 import graderBoundaries from '../src/prompts/grader-chat/_boundaries.md';
+import graderTeam from '../src/prompts/grader-chat/_team.md';
 import graderFormatting from '../src/prompts/grader-chat/_formatting.md';
 import graderChoices from '../src/prompts/grader-chat/_choices.md';
 import bookletV3 from '../src/prompts/grader-chat/booklets/v3.md';
@@ -63,6 +79,37 @@ const bookletFiles = import.meta.glob('../src/prompts/grader-chat/booklets/*.md'
   import: 'default',
 }) as Record<string, string>;
 
+type StudioChatPrompt = 'chat' | 'onboarding-chat';
+const EVERY_CLIENT_ACTION: ReadonlySet<ClientAction> = new Set(CLIENT_ACTIONS);
+const CLIENT_ACTION_SETS: readonly (readonly ClientAction[])[] = [
+  [],
+  ['requestSupport'],
+  ['moveBox'],
+  ['requestSupport', 'moveBox'],
+];
+
+function studioChatFor(name: StudioChatPrompt, actions: ReadonlySet<ClientAction>): string {
+  const entry = getSystemPrompt(name, ENV);
+  if (!entry.promptForClientActions) throw new Error(`${name} composes no client actions`);
+  return entry.promptForClientActions(actions);
+}
+
+function expectedStudioChat(toolsBlock: string, actions: ReadonlySet<ClientAction>): string {
+  return `${composePrompt(
+    studioIdentity,
+    agentsMasterRules,
+    studioContext,
+    toolsBlock,
+    studioGrounding,
+    studioTeam,
+    sharedChatFormatting,
+    studioDirectives,
+    actions.has('moveBox') ? studioMoveBox : '',
+    studioChoices,
+    actions.has('requestSupport') ? studioSupport : studioSupportAsk,
+  )}\n`;
+}
+
 function bookletVersionOf(path: string): number {
   const match = /\/v([1-9][0-9]*)\.md$/u.exec(path);
   if (!match?.[1]) throw new Error(`Booklet file ${path} is not named v<version>.md`);
@@ -71,7 +118,12 @@ function bookletVersionOf(path: string): number {
 
 describe('Studio chat composition', () => {
   it('composes the committed chat text byte for byte, final newline included', () => {
-    expect(getSystemPrompt('chat', ENV).prompt).toBe(chatBaseline);
+    expect(studioChatFor('chat', EVERY_CLIENT_ACTION)).toBe(chatBaseline);
+  });
+
+  it('composes the committed text for a client that lists no actions byte for byte, as its prompt', () => {
+    expect(getSystemPrompt('chat', ENV).prompt).toBe(chatWithoutClientActionsBaseline);
+    expect(studioChatFor('chat', new Set())).toBe(chatWithoutClientActionsBaseline);
   });
 
   it('opens with its Studio identity, naming the platforms Studio serves, and carries the shared formatting', () => {
@@ -86,11 +138,102 @@ describe('Studio chat composition', () => {
     expect(chat.startsWith(`${studioIdentity.trim()}\n\n${agentsMasterRules}\n\n`)).toBe(true);
   });
 
+  it("lets a conductor switch an agent on, connect Google or keep a winner only through Studio's buttons", () => {
+    expect(getSystemPrompt('chat', ENV).prompt).toContain(
+      "never say an agent is on, a connection is made or a winner is kept until the team data or the step's `plan` says so.",
+    );
+  });
+
   it('tells the owner where Support is in Studio, and never that a person joins at once', () => {
-    const chat = getSystemPrompt('chat', ENV).prompt;
-    expect(chat).toContain('Talk with Support button in this chat');
-    expect(chat).toContain('the team replies in this chat when it is available');
+    const chat = studioChatFor('chat', EVERY_CLIENT_ACTION);
+    expect(chat).toContain(
+      "through Talk with Support, a choice under your reply that is also in this chat's menu",
+    );
+    expect(chat).toContain(
+      "It opens Support's own chat with your one-sentence summary of what they need, and the team replies there when it is available.",
+    );
+    expect(chat).toContain(
+      "opens a Support request in Support's own chat, with the summary as its first line",
+    );
+    expect(chat).toContain(
+      "say in one sentence that Support's chat is opening with your note, and never also ask them to pick it.",
+    );
     expect(chat).not.toMatch(/connect me to a person|brings someone from the team into this chat/u);
+  });
+
+  it('tells a client without the Support action that the owner asks for a person, and never that a request is open', () => {
+    const chat = getSystemPrompt('chat', ENV).prompt;
+    expect(chat).toContain(
+      "the owner reaches LimeSpot's Support team by asking in this chat to talk to a person, and the team replies in this chat when it is available.",
+    );
+    expect(chat).toContain(
+      "You can't open a request yourself, so never say one is open or on its way.",
+    );
+    expect(chat).not.toMatch(/requestSupport|Talk with Support|Support's own chat/u);
+  });
+});
+
+describe('Studio chat with the look_at_page tool', () => {
+  it('composes the committed text byte for byte, final newline included', () => {
+    expect(studioChatFor('onboarding-chat', EVERY_CLIENT_ACTION)).toBe(onboardingChatBaseline);
+  });
+
+  it('composes the committed text for a client that lists no actions byte for byte, as its prompt', () => {
+    expect(getSystemPrompt('onboarding-chat', ENV).prompt).toBe(
+      onboardingChatWithoutClientActionsBaseline,
+    );
+    expect(studioChatFor('onboarding-chat', new Set())).toBe(
+      onboardingChatWithoutClientActionsBaseline,
+    );
+  });
+
+  it.each(
+    CLIENT_ACTION_SETS.map((actions) => [actions.join(', ') || 'no actions', actions] as const),
+  )(
+    "is chat's blocks in chat's order, with the look-at-page block in place of the server data tools, for %s",
+    (_label, list) => {
+      const actions: ReadonlySet<ClientAction> = new Set(list);
+      expect(studioChatFor('chat', actions)).toBe(expectedStudioChat(chatDataTools, actions));
+      expect(studioChatFor('onboarding-chat', actions)).toBe(
+        expectedStudioChat(lookAtPage, actions),
+      );
+      expect(studioChatFor('onboarding-chat', actions)).not.toContain('get_entity_context');
+    },
+  );
+
+  it('teaches moveBox and requestSupport only through the blocks a client that lists them gets', () => {
+    for (const block of [
+      studioIdentity,
+      studioContext,
+      chatDataTools,
+      lookAtPage,
+      studioGrounding,
+      studioTeam,
+      sharedChatFormatting,
+      studioDirectives,
+      studioChoices,
+      studioSupportAsk,
+      agentsMasterRules,
+    ]) {
+      expect(block).not.toMatch(/moveBox|requestSupport|Talk with Support/u);
+    }
+    expect(studioMoveBox).toContain('`moveBox`');
+    expect(studioSupport).toContain('`requestSupport`');
+  });
+
+  it('offers only the look_at_page client tool, and tells the model to look before it describes a page', () => {
+    const entry = getSystemPrompt('onboarding-chat', ENV);
+    expect(entry.usesTools).toBe(false);
+    expect(entry.clientTools?.map((tool) => tool.name)).toEqual(['look_at_page']);
+    expect(entry.group).toBe('studio-visual-agent');
+    for (const rule of [
+      'in this chat your one tool is `look_at_page`',
+      "before you say how a box, an offer, a Progress Bar or the store's look appears",
+      'Never claim to see something you have not looked at',
+      "say plainly that you can't see it here rather than inventing one",
+    ]) {
+      expect(lookAtPage, rule).toContain(rule);
+    }
   });
 });
 
@@ -110,7 +253,20 @@ describe('the agents master rules', () => {
 
   const CONVERSATIONAL_OWNER_PROMPTS: Readonly<Record<string, string>> = {
     chat: studioIdentity,
+    'onboarding-chat': studioIdentity,
     'billing-assistant': billingIdentity,
+  };
+
+  const OWNER_FACING_CONDUCTOR_STEPS: Readonly<Record<string, string>> = {
+    'optimize-boxes': optimizationIdentity,
+    'optimize-ads-audiences': optimizationIdentity,
+    'optimize-progress-bar': optimizationIdentity,
+    'optimize-bundles': optimizationIdentity,
+  };
+
+  const PROMPTS_WITH_MASTER_RULES: Readonly<Record<string, string>> = {
+    ...CONVERSATIONAL_OWNER_PROMPTS,
+    ...OWNER_FACING_CONDUCTOR_STEPS,
   };
 
   const PROMPTS_WITHOUT_MASTER_RULES: Readonly<Record<string, string>> = {
@@ -118,7 +274,6 @@ describe('the agents master rules', () => {
     'onboarding-batch': 'also proposes for the Grader, which audits stores without LimeSpot',
     'onboarding-batch-all': 'also proposes for the Grader, which audits stores without LimeSpot',
     onboarding: 'has no live caller',
-    'onboarding-chat': 'has no live caller',
     'image-selection': 'one-shot step whose JSON lib reads',
     placement: 'one-shot step whose JSON lib reads',
     proposals: 'one-shot step whose JSON lib reads',
@@ -154,14 +309,15 @@ describe('the agents master rules', () => {
   it('decide on purpose, for every registered prompt, whether it carries them', () => {
     const classified = [
       ...Object.keys(CONVERSATIONAL_OWNER_PROMPTS),
+      ...Object.keys(OWNER_FACING_CONDUCTOR_STEPS),
       ...Object.keys(PROMPTS_WITHOUT_MASTER_RULES),
     ];
     expect(new Set(classified).size).toBe(classified.length);
     expect([...classified].sort()).toEqual([...listPromptNames()].sort());
   });
 
-  it('follow the identity of every conversational prompt the owner talks to', () => {
-    for (const [name, identity] of Object.entries(CONVERSATIONAL_OWNER_PROMPTS)) {
+  it('follow the identity of every prompt whose words the owner reads, conductor steps included', () => {
+    for (const [name, identity] of Object.entries(PROMPTS_WITH_MASTER_RULES)) {
       expect(
         promptText(name as PromptName).startsWith(`${identity.trim()}\n\n${agentsMasterRules}\n\n`),
         name,
@@ -258,16 +414,24 @@ describe('grader-chat composition', () => {
     expect(`${getGraderChatPrompt(ENV).prompt}\n`).toBe(graderChatBaseline);
   });
 
-  it('is the Grader identity, the Grader boundaries, the Grader plain-text formatting, the buttons block, and the booklet', () => {
+  it('is the Grader identity, the Grader boundaries, the team block, the Grader plain-text formatting, the buttons block, and the booklet', () => {
     const { prompt, booklet, bookletVersion } = getGraderChatPrompt(ENV);
     expect(bookletVersion).toBe(SELECTED_BOOKLET_VERSION);
     expect(prompt).toBe(
-      composePrompt(graderIdentity, graderBoundaries, graderFormatting, graderChoices, booklet),
+      composePrompt(
+        graderIdentity,
+        graderBoundaries,
+        graderTeam,
+        graderFormatting,
+        graderChoices,
+        booklet,
+      ),
     );
     expect(getSystemPrompt('grader-chat', ENV)).toMatchObject({
       prompt: composePrompt(
         graderIdentity,
         graderBoundaries,
+        graderTeam,
         graderFormatting,
         graderChoices,
         getGraderChatPrompt({ ...ENV, GRADER_CHAT_BOOKLET_VERSION: String(NEWEST_BOOKLET_VERSION) })
@@ -289,6 +453,7 @@ describe('grader-chat composition', () => {
     for (const [label, block] of [
       ['identity', graderIdentity],
       ['boundaries', graderBoundaries],
+      ['team', graderTeam],
       ['formatting', graderFormatting],
       ['buttons', graderChoices],
     ] as const) {
@@ -333,6 +498,26 @@ describe('grader-chat composition', () => {
       expect(graderBoundaries, boundary).toContain(boundary);
     }
     expect(getGraderChatPrompt(ENV).prompt.split('BOUNDARIES')).toHaveLength(2);
+  });
+
+  it("answers about the Growth Agents team only from the report's own entries", () => {
+    for (const rule of [
+      'the report may also carry `team`',
+      "`result`: the Grader ran this agent's public checks on the store's pages",
+      '`running`: its checks were still running when this message was sent',
+      '`install`: this agent needs LimeSpot installed on the store before it can look, so the Grader has no result for it.',
+      'Say what an agent found only from its own entry. State a figure only as one of its facts gives it, with its unit, and never work one out yourself.',
+      'An agent that is `running` has not finished: say so, and never describe a result it does not carry.',
+      'say what it does in the words of its `role`, and that installing LimeSpot shows what it finds on this store; offer the Install LimeSpot button when it fits. Never guess what it would find.',
+      "Every agent on the team is part of LimeSpot. When asked about an agent's finding, say that this agent works on it once LimeSpot is installed, in the words of its `role`, and never that LimeSpot doesn't cover it; the booklet's rule against technical advice still holds.",
+      'Describe what any agent does only in the words of its `title` and `role`, never what it will achieve.',
+      'When the report carries no `team`, say nothing about the team beyond what the booklet says.',
+    ]) {
+      expect(graderTeam, rule).toContain(rule);
+    }
+    const { prompt } = getGraderChatPrompt(ENV);
+    expect(prompt.indexOf(graderBoundaries.trim())).toBeLessThan(prompt.indexOf(graderTeam.trim()));
+    expect(prompt.split('THE GROWTH AGENTS TEAM')).toHaveLength(2);
   });
 
   it('tells the model to write plain text, and the guard agrees with every form it names', () => {
@@ -594,6 +779,33 @@ describe('the buttons block and its envelope examples', () => {
     for (const text of [selected.prompt, graderChatBookletSources.get(selected.bookletVersion)]) {
       expect(text).not.toContain('demo-request');
       expect(text).not.toContain('utm_');
+    }
+  });
+});
+
+describe('merchant-facing names in every registered prompt', () => {
+  const GOOGLE_ADS_CONNECT_LINE =
+    'Nothing changes in your Google Ads account unless you ask for it.';
+  const promptTexts = listPromptNames().map((name) => ({
+    name,
+    prompt: getSystemPrompt(name, ENV).prompt,
+  }));
+
+  it('never names the Surgery Table', () => {
+    for (const { name, prompt } of promptTexts) {
+      expect(prompt, name).not.toMatch(/surgery table/iu);
+    }
+  });
+
+  it('never calls a connection read-only', () => {
+    for (const { name, prompt } of promptTexts) {
+      expect(prompt.replaceAll('READ-ONLY EVIDENCE', ''), name).not.toMatch(/read-only/iu);
+    }
+  });
+
+  it('gives every prompt that speaks of connecting Google Ads the one connect line', () => {
+    for (const name of ['chat', 'onboarding-chat', 'optimize-ads-audiences'] as const) {
+      expect(getSystemPrompt(name, ENV).prompt, name).toContain(GOOGLE_ADS_CONNECT_LINE);
     }
   });
 });

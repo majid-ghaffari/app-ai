@@ -22,6 +22,10 @@
     "cartdrawer-batch-all",
     "cartdrawer-review-all",
     "optimize-demand",
+    "optimize-boxes",
+    "optimize-ads-audiences",
+    "optimize-progress-bar",
+    "optimize-bundles",
     "visual-verify",
     "grader-chat"
   ],

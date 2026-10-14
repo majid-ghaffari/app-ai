@@ -23,6 +23,7 @@ import type {
   SemanticEffort,
 } from '../lib/inference-types';
 import { getDefaultsBlock } from '../lib/brain-defaults';
+import { reportChatUsage, UNREGISTERED_MESSAGES_USAGE_PROMPT } from '../lib/brain-usage';
 import { dedupUpload } from '../lib/file-dedup';
 import { jsonResponse, errorResponseFrom, WorkerError, type CorsHeaders } from '../lib/responses';
 import { jsonBodyValue, readJsonBody, type JsonBody } from '../lib/request-body';
@@ -160,6 +161,19 @@ export async function handleMessages(
       });
       const data = await passthrough.complete(passthroughBody, request.signal, log);
       trace.record('response.received', { content: traceRawContent(data) });
+      reportChatUsage(
+        options.audit === true ? null : request.headers.get('X-Personalizer-Context-ID'),
+        [
+          {
+            promptName: UNREGISTERED_MESSAGES_USAGE_PROMPT,
+            model: route.model,
+            provider: 'anthropic',
+            usage: passthrough.usage(data),
+          },
+        ],
+        env,
+        logging,
+      );
       return jsonResponse(data, corsHeaders);
     }
 
@@ -233,6 +247,21 @@ export async function handleMessages(
 
     const result = await createInferenceService(env, tenantScope).complete(inferenceRequest);
     logUsageStats(result.usage, log);
+    if (options.audit !== true && entry.excludedFromStoreAiCap !== true) {
+      reportChatUsage(
+        request.headers.get('X-Personalizer-Context-ID'),
+        [
+          {
+            promptName: entry.name,
+            model: inferenceRequest.modelProfile.model,
+            provider: inferenceRequest.modelProfile.provider,
+            usage: result.usage,
+          },
+        ],
+        env,
+        logging,
+      );
+    }
     trace.record('response.received', {
       stopReason: result.stopReason,
       usage: result.usage,
@@ -563,9 +592,10 @@ async function prependPromptAttachments(
 /**
  * Enforce the onboarding ruleset-version handshake (cross-repo contract). When
  * the resolved entry declares a `rulesetVersion` (the four onboarding
- * propose/review prompts PLUS the three sibling playbook conductors —
- * `cartdrawer-batch-all` / `cartdrawer-review-all` / `optimize-demand` — that
- * reuse the same shared onboarding playbook blocks) AND the caller sent the
+ * propose/review prompts PLUS the sibling prompts — `onboarding-review-gate-all` /
+ * `onboarding-css-review` / `cartdrawer-batch-all` / `cartdrawer-review-all` /
+ * `optimize-demand` / `optimize-boxes` — that reuse the same shared onboarding
+ * playbook blocks) AND the caller sent the
  * `X-Personalizer-Ruleset-Version` header, the two MUST match; a mismatch throws
  * a 409 `RulesetVersionMismatchException` (Brain envelope) naming BOTH versions,
  * so a lib built against a stale playbook is rejected before inference rather

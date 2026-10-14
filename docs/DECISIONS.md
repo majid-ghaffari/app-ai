@@ -435,14 +435,15 @@ block's first line. The lib holds the equal string and sends it as the
 `RulesetVersionMismatchException` (Brain envelope naming BOTH versions) before
 inference. Bump the string whenever the enforced-rule set changes.
 
-The handshake also covers the THREE sibling playbook conductors that reuse the
-same shared onboarding blocks (box-placement / guidance / box-vocab /
-correction-verbs): `cartdrawer-batch-all`, `cartdrawer-review-all`, and
-`optimize-demand` each carry `rulesetVersion` too. They do NOT compose
-`_block-fixed-rules.md` (so the string is not embedded in their prompt text) —
-for them the version is a pure playbook-contract identifier: a lib built against
-a stale cart-drawer / optimize playbook is rejected the same way. Only the four
-onboarding prompts have the block-first-line pin.
+The handshake also covers the sibling prompts that reuse the same shared
+onboarding blocks (QC gate / CSS review / box-placement / guidance / box-vocab /
+correction-verbs): `onboarding-review-gate-all`, `onboarding-css-review`,
+`cartdrawer-batch-all`, `cartdrawer-review-all`, `optimize-demand` and the
+Optimization conductor's `optimize-boxes` each carry `rulesetVersion` too. They
+do NOT compose `_block-fixed-rules.md` (so the string is not embedded in their
+prompt text) — for them the version is a pure playbook-contract identifier: a
+lib built against a stale cart-drawer / optimize playbook is rejected the same
+way. Only the four onboarding prompts have the block-first-line pin.
 
 **Rollout — fail-OPEN interim default (Risk R1):** an ABSENT header SKIPS the
 check, so this deploys before every lib caller sends the header. Once the lib
@@ -1034,7 +1035,8 @@ response contract stays one JSON message.
 ### Conductor prompts carry their model's maximum output
 
 Every conductor prompt — the onboarding proposals, reviews, QC gate, CSS specialist and currency
-recovery, the cart-drawer proposal and review, and `optimize-demand` — declares the semantic budget
+recovery, the cart-drawer proposal and review, `optimize-demand` and the Optimization conductor's
+four steps — declares the semantic budget
 `MODEL_MAXIMUM_OUTPUT` in `src/prompt-registry.ts`. `getSystemPrompt` resolves it to the documented
 maximum output of whichever model the prompt's route selects, through `modelMaxOutputTokens` in
 `src/inference/model-catalog.ts`: in production 128000 for `claude-sonnet-5` on the balanced tier and
@@ -1480,3 +1482,91 @@ core, and every prompt whose words the owner reads in a conversation composes bo
 identity; `test/assistant-prompt-blocks.test.ts` records for every registered prompt whether it
 does and why not, so a new prompt cannot ship without that choice. The Grader's chat and its two
 onboarding proposal prompts do not, because they speak to stores that have not installed LimeSpot.
+
+### 41. The Optimization conductor's steps choose among options lib built and write only the words
+
+The Optimization conductor takes a set-up store through five areas in a fixed order: Recommendation
+Boxes, Google Ads & Audiences, Progress Bar, Bundle Discounts, Look & Feel. lib runs it, as it runs
+every conductor, and starts the specialist agent behind each area side by side: the Merchandising
+Agent, the Google Ads and Audiences Agents, the Discounts & Promotions Agent and the Look & Feel
+Agent. app-ai holds one one-shot `/messages` prompt for each of the first four areas:
+`optimize-boxes`, `optimize-ads-audiences`, `optimize-progress-bar` and `optimize-bundles`
+([docs/prompts/optimize-boxes.md](prompts/optimize-boxes.md#the-four-steps)); Look & Feel runs on
+onboarding's style-match prompts. A step reads JSON data lib built from Brain's records and the
+agents' latest results, and answers with keys from that data and the words the owner reads.
+
+The split follows the findings model the agents use: code writes every number, the evidence and
+the options, and the model writes the words. lib sizes each audience's Progress Bar goals to its
+own orders from Brain's templates, takes the discount rate Brain learned from the store's own
+discounted orders (or LimeSpot's default, which the words call a starting rate, or the rate the
+owner typed for the step, which the words attribute to the owner), decides which
+audiences have the data for an offer, and builds the evidence and tiles; a step picks among those
+options by key and says why and what each rests on. A model asked to choose a goal or a rate would
+be inventing a number the master rules forbid, and its words could not be checked against data it
+was never given. A step therefore never forecasts or ranks changes by expected effect, which is
+also why the areas keep a fixed order rather than one ordered by expected impact.
+
+The box plan is the Merchandising Agent's, not a step's: it plans each page from screenshots at
+both widths through Studio's single-page pipeline (`optimize-demand`, the render review and bounded
+corrections), puts the boxes in the draft and checks them on screen, which a step reading only the
+boxes' names and counts cannot do. `optimize-boxes` therefore writes words only, over the changes
+already in the draft: what changed on each page and why, as that agent's changes, never one of its
+own.
+
+Each step's words reach the owner in the Optimization chat, so each composes the agents master
+rules right after its identity, unlike the one-shot steps whose JSON lib only reads. The
+conversation rules hold through the JSON: a choice nothing settles is asked about in `question`,
+what the owner types during a step returns as `ownerNotes` data and comes first, and a case for a
+person points to Talk with Support in that chat's menu. The steps read no uploaded evidence,
+so they form their own `optimization-conductor` group on the balanced tier with no file route to
+share; `optimize-boxes` composes the onboarding box vocabulary and so carries the onboarding
+ruleset version.
+
+### 42. The Grader chat answers about the Growth Agents team only from the results the Grader showed
+
+The Growth Grader shows LimeSpot's whole Growth Agents team beside its report, as Studio's Home
+does: the agents whose public checks run without a login answer through Brain's public Grader
+endpoints, each a store-less run of the agent's own code and prompts, and the rest say what they
+would do and that installing LimeSpot shows it. lib sends what the visitor sees as the report's
+optional `team` member, and `grader-chat` reads it as data like the rest of the report, through
+its own team block ([docs/prompts/grader-chat.md](prompts/grader-chat.md#composition)).
+
+The chat holds no tool and calls no Brain route, so it can only repeat what a check already found:
+a finding comes from that agent's own entry, a figure only as one of its facts states it, an agent
+still running has no result beyond what it carries, and an agent that needs LimeSpot installed is
+described by its role line alone, never by a guess at what it would find. That keeps the team
+inside the boundaries block's rule that the report describes the store and never promises a
+result, and keeps one implementation of every check: the Grader, Studio and the chat all read the
+results Brain's agents produce.
+
+`team` is optional and validated as strictly as the rest of the report, so a worker without it
+refuses a report that carries it as an unknown member: this worker deploys before the lib that
+sends `team`, and a rollback removes the lib sender first.
+
+### 43. Studio chat offers Support and `moveBox` only to a client that says it carries them out
+
+Merging this worker deploys it to production at once, and every lib build, preview or not, calls
+the same worker. The Studio chat's `requestSupport` directive and Talk with Support choice, and
+its `moveBox` directive, need handlers that only a newer lib has; an older lib ignores a directive
+it does not know, so a prompt that taught them to every client would let it tell an owner that
+Support's chat is opening, or that a box is moving, while nothing happens.
+
+So the client says what it carries out. A `/chat` request lists the gated directives its build
+handles in `clientActions` (`CLIENT_ACTIONS` in `src/lib/client-actions.ts`), and only a listed
+one reaches the prompt. The registry composes the text for that set; no list means
+none, which is what every lib without the handlers sends, so those clients get the prompt that
+sends the owner to ask for a person in the chat, which their lib already hands to Support. The
+signal is explicit rather than read off another field, such as the Growth Agents grounding, that
+happens to differ between lib builds: what the grounding holds says nothing about which
+directives the build can run. A name the worker does not gate is ignored, so a lib can list an
+action before this worker gates it; the directives every lib has handled stay ungated.
+
+The prompt is the whole gate. A client that lists neither action is never told they exist, so the
+model does not offer them, and every lib ignores a directive it has no handler for. app-ai neither
+holds nor rewrites a reply on the list's account: every client streams and receives the reply as
+the model wrote it, so the Studio chats keep typing live.
+
+The gate deploys before the lib that lists the actions, and its rollback floor is the prompt
+change before it: while any lib in service may omit `clientActions`, a rollback keeps this worker
+or goes behind the prompts that teach `requestSupport` and `moveBox`, never to a worker that
+teaches either unconditionally.

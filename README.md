@@ -220,7 +220,10 @@ platform toolsets. The Anthropic key never leaves the worker.
 - **`Accept: text/event-stream`** → SSE (events: `text`, `tool_call`,
   `tool_result`, `done`, `error`). Otherwise → a single JSON object (same shape
   as the `done` payload).
-- Request body: `{ messages, context?, max_tokens?, fileIds?, continuation? }`.
+- Request body: `{ messages, context?, max_tokens?, fileIds?, continuation?, clientActions? }`.
+  `clientActions` lists the gated Studio chat directives the client carries out, `requestSupport`
+  and `moveBox` (`src/lib/client-actions.ts`). The Studio chat prompts teach only the ones it lists,
+  so a client that sends none is never asked to offer either; replies stream as they always have.
   Continuation values are authenticated opaque tokens bound to the validated
   tenant and resolved prompt route. They accompany browser-tool handoffs and
   provider-required ordinary turns (Gemini thought signatures); echo them
@@ -361,11 +364,11 @@ maps each name to its text and metadata (`SystemPromptEntry` in that file is the
 the single source of truth for each prompt's tier / token / tool choices (consumed by both
 `handlers/chat.ts` and `handlers/messages.ts`). `effort` is optional — see Token-Saving below.
 
-The registry holds 26 prompts — `/chat` agent-loop + one-shot prompts (chat, billing-assistant,
+The registry holds 30 prompts — `/chat` agent-loop + one-shot prompts (chat, billing-assistant,
 onboarding, onboarding-chat, placement, proposals, analytics-insights) and `/messages` prompts
 (image-selection, visual-verify, visual-verify-free, the five Website-Analysis probes, the onboarding /
 cart-drawer / optimize propose + review passes with the currency-recovery and CSS-review
-specialists, and the audit session's grader-chat). The authoritative inventory — every prompt with
+specialists, the Optimization conductor's four steps, and the audit session's grader-chat). The authoritative inventory — every prompt with
 its shape, endpoint, tools, and role — is [src/prompts/CLAUDE.md](src/prompts/CLAUDE.md), which
 also owns the per-prompt doc-sync rule.
 
@@ -380,8 +383,11 @@ entry (full convention + inventory in [src/prompts/CLAUDE.md](src/prompts/CLAUDE
 - **Composed** → a folder of `_`-prefixed BLOCK files assembled by `composePrompt(...)` in the
   folder's own `index.ts`, mixing that prompt's fragments with SHARED blocks from
   `src/prompts/onboarding-shared/` (the onboarding / cart-drawer / optimize propose + review
-  prompts), or the Markdown chat-formatting block in `src/prompts/assistant-shared/` (`chat`;
-  `grader-chat` composes its own plain-text formatting block). In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
+  prompts), the Optimization conductor's blocks in `src/prompts/optimization-shared/` (its four
+  steps), or `src/prompts/assistant-shared/` — the agents master rules (`chat`, `onboarding-chat`,
+  `billing-assistant` and the four Optimization steps) and the Markdown chat-formatting and Studio
+  blocks (`chat` and `onboarding-chat` only), while `grader-chat` composes its own Growth Agents
+  team and plain-text formatting blocks. In a composed prompt the `_`-files ARE imported, bundled, and shipped as the system
   text; elsewhere a `_*.md` is the co-located exclusion convention (never imported).
 - **Shared-text alias** → an explicit barrel export reuses another registered prompt's final text
   when the semantic contract is identical but routing or access is intentionally different.
@@ -755,8 +761,8 @@ wrangler whoami          # Check authentication
 ---
 
 **Platform:** Cloudflare Workers (V8 Isolates)
-**Live surface:** `/files` + `/messages` serve the scoped extension audit sessions in
-production; production Studio carries no app-ai client, and a Studio build that ships
-one reaches `/files`, `/messages`, and `/chat`.
+**Live surface:** every Studio AI surface reaches `/files`, `/messages` and `/chat` in
+production, the App's subscription chat reaches `/chat`, and the scoped extension audit
+sessions reach `/files` and `/messages`.
 **Deploy:** pushing `main` deploys to production — an operator action carrying its own deploy
 approval; `main` is read-only to every agent.

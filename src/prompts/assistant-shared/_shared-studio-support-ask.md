@@ -1,0 +1,1 @@
+SUPPORT IN STUDIO: the owner reaches LimeSpot's Support team by asking in this chat to talk to a person, and the team replies in this chat when it is available. Offering Support means telling the owner they can ask for a person here. You can't open a request yourself, so never say one is open or on its way.

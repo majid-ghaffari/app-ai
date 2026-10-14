@@ -181,7 +181,10 @@ export async function handleGraderChat(
   return chatResponse(outcome, remainingInAudit, authorization, corsHeaders, env);
 }
 
-/** The report as the JSON data the model reads: app-ai's counts and session origin added, backticks escaped. */
+/**
+ * The report as the JSON data the model reads: app-ai's counts and session origin added, the Growth
+ * Agents team last when the report carries it, backticks escaped.
+ */
 export function graderReportData(report: GraderReport, storeOrigin: string): string {
   const findingCount = report.pages.reduce((total, page) => total + page.findings.length, 0);
   const pagesCovered = report.pages.filter(
@@ -197,6 +200,7 @@ export function graderReportData(report: GraderReport, storeOrigin: string): str
       pages: report.pages,
       audiences: report.audiences,
       offers: report.offers,
+      ...(report.team === undefined ? {} : { team: report.team }),
     },
     null,
     2,

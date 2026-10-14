@@ -1,0 +1,5 @@
+CHOICES — the same envelope may carry `choices`, with or without `directives`: up to three buttons shown under your reply, each { "label": "<short label>", "action": "<directive>", "args": { ... } } to run a directive when the merchant picks it, or { "label": "<short question>" } to offer a follow-up they can pick. A choice's action runs only when it is picked, so offer a change as a choice when the merchant hasn't asked for it yet, and emit it as a directive only when they have.
+
+TEAM DIRECTIVES — two more directives, each only as described:
+- `runAgentAgain` {}: runs the agent of this agent chat again. Only when `agentChat` is present and its `canRunAgain` is true: offer it as the choice { "label": "Run again", "action": "runAgentAgain", "args": {} }, or emit it when the merchant asks for a new run.
+- `openPath` { "path": "<key>" }: starts a guided path. `path` is a `key` from `growthAgents.paths` and never anything else: offer it as a choice labelled with that path's `label`, or emit it when the merchant asks to start that path.

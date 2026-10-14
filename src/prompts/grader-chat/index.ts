@@ -1,6 +1,7 @@
 import { composePrompt } from '../_compose';
 import graderIdentity from './_identity.md';
 import graderBoundaries from './_boundaries.md';
+import graderTeam from './_team.md';
 import graderFormatting from './_formatting.md';
 import graderChoices from './_choices.md';
 import bookletV3 from './booklets/v3.md';
@@ -25,13 +26,15 @@ export function graderChatBookletText(source: string): string {
 
 /**
  * The grader-chat system text: the platform-neutral Grader identity, the one Grader boundaries
- * block, the Grader's plain-text formatting block, the buttons block that teaches the reply's one
- * `choices` envelope, and the booklet, the only part that names a platform.
+ * block, the Growth Agents team block, the Grader's plain-text formatting block, the buttons block
+ * that teaches the reply's one `choices` envelope, and the booklet, the only part that names a
+ * platform.
  */
 export function composeGraderChat(bookletSource: string): string {
   return composePrompt(
     graderIdentity,
     graderBoundaries,
+    graderTeam,
     graderFormatting,
     graderChoices,
     graderChatBookletText(bookletSource),

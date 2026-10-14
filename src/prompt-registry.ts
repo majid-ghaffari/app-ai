@@ -1,6 +1,7 @@
 import * as prompts from './prompts';
 import { composePrompt } from './prompts/_compose';
 import { LOOK_AT_PAGE_TOOL } from './lib/client-tools';
+import type { ClientActions } from './lib/client-actions';
 import type {
   CanonicalToolDefinition,
   FilePolicy,
@@ -83,6 +84,10 @@ export type PromptName =
   | 'cartdrawer-batch-all'
   | 'cartdrawer-review-all'
   | 'optimize-demand'
+  | 'optimize-boxes'
+  | 'optimize-ads-audiences'
+  | 'optimize-progress-bar'
+  | 'optimize-bundles'
   | 'analytics-insights'
   | 'probe-industry'
   | 'probe-cart-wiring'
@@ -102,6 +107,7 @@ export type PromptGroupName =
   | 'onboarding-visual'
   | 'onboarding-qc-gate'
   | 'cartdrawer-visual'
+  | 'optimization-conductor'
   | 'render-verification'
   | 'free-render-verification'
   | 'website-analysis-visual'
@@ -186,6 +192,11 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
     carriesCustomerContent: true,
     requirements: ['vision', 'reusableFiles', 'structuredOutput'],
   },
+  'optimization-conductor': {
+    tier: 'balanced',
+    carriesCustomerContent: true,
+    requirements: ['structuredOutput'],
+  },
   'render-verification': {
     tier: 'balanced',
     carriesCustomerContent: true,
@@ -227,9 +238,10 @@ const PROMPT_GROUPS: Readonly<Record<PromptGroupName, PromptGroupDefinition>> = 
  * The onboarding PLAYBOOK ruleset version — the cross-repo handshake identifier.
  * It is embedded VERBATIM as the FIRST LINE of `onboarding-shared/_block-fixed-rules.md`
  * (composed into the four onboarding prompts' stable prefix) AND set on those four
- * entries' `rulesetVersion` PLUS the three sibling conductors that reuse the same
- * shared onboarding playbook blocks — `cartdrawer-batch-all`, `cartdrawer-review-all`,
- * and `optimize-demand`. The lib holds the equal string and sends it as the
+ * entries' `rulesetVersion` PLUS the sibling prompts that reuse the same shared
+ * onboarding playbook blocks — `onboarding-review-gate-all`, `onboarding-css-review`,
+ * `cartdrawer-batch-all`, `cartdrawer-review-all`, `optimize-demand` and
+ * `optimize-boxes`. The lib holds the equal string and sends it as the
  * `X-Personalizer-Ruleset-Version` header on those `/messages` calls; the handler
  * (`validateRulesetVersion`) rejects a mismatch with a 409 so a lib built against a
  * stale playbook never proposes against the wrong enforced rules. Bump this string
@@ -319,16 +331,24 @@ export interface SystemPromptEntry {
    *  the `look_at_page` client tool; the generic client-tool capability seam. */
   clientTools?: readonly CanonicalToolDefinition[];
   /**
+   * OPTIONAL — the system text for a client that carries out these of `CLIENT_ACTIONS`
+   * (lib/client-actions.ts), set on the Studio chat prompts that teach them. `prompt` is this text
+   * for a client that carries out none; the /chat handler sends the text its request's client gets.
+   */
+  promptForClientActions?: (actions: ClientActions) => string;
+  /**
    * OPTIONAL onboarding-playbook ruleset version (`ONBOARDING_RULESET_VERSION`).
-   * Set on every prompt whose stable prefix composes the shared onboarding
-   * PLAYBOOK blocks — the four onboarding propose/review prompts PLUS the
-   * cart-drawer propose/review (`cartdrawer-batch-all` / `cartdrawer-review-all`)
-   * and the on-demand `optimize-demand` prompt (all reuse the same box-placement /
-   * guidance / box-vocab / correction-verb blocks that encode the playbook). When
-   * present, the handler enforces the cross-repo handshake: a caller's
-   * `X-Personalizer-Ruleset-Version` header must match, else the request is
-   * rejected (409). Entries without it (probes / chat / image-selection) skip the
-   * handshake entirely.
+   * Set on every prompt that works to the onboarding playbook: the four
+   * onboarding propose/review prompts, the QC gate (`onboarding-review-gate-all`),
+   * the advanced-CSS review (`onboarding-css-review`), the cart-drawer
+   * propose/review (`cartdrawer-batch-all` / `cartdrawer-review-all`), the
+   * on-demand `optimize-demand` prompt, and the Optimization box step
+   * (`optimize-boxes`), which composes the shared box vocabulary. When present,
+   * `validateRulesetVersion` in `handlers/messages.ts` enforces the cross-repo
+   * handshake: a caller's `X-Personalizer-Ruleset-Version` header must match,
+   * else the request is rejected (409). Entries without it skip the handshake
+   * entirely. `test/onboarding-ruleset-version.test.ts` pins this exact set
+   * against the registry.
    */
   rulesetVersion?: string;
   /**
@@ -342,6 +362,13 @@ export interface SystemPromptEntry {
    * app-ai fetches them server-side (no transport field).
    */
   injectsBrainDefaults?: boolean;
+  /**
+   * OPTIONAL — when `true`, this prompt's inference is not reported to Brain's
+   * `v2/agents/report-chat-usage` and so does not count toward the store's
+   * monthly AI cap (lib/brain-usage.ts). Every other prompt run under a
+   * merchant Context-ID counts.
+   */
+  excludedFromStoreAiCap?: boolean;
 }
 
 /**
@@ -395,6 +422,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
   chat: {
     group: 'studio-data-agent',
     prompt: prompts.chat,
+    promptForClientActions: prompts.composeChat,
     maxTokens: 4096,
     usesTools: true,
     description:
@@ -414,6 +442,7 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     description:
       'Subscription and billing assistant; answers only from the current plan and store-specific pricing grounding, with no tools or account mutations.',
     attachments: [],
+    excludedFromStoreAiCap: true,
   },
 
   'grader-chat': {
@@ -426,26 +455,18 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     attachments: [],
   },
 
-  // Onboarding / visual chat — the CLIENT-tool twin of `chat`. Same SYSTEM
-  // provider class as `chat`, but instead of the SERVER data toolset it carries the
-  // CLIENT `look_at_page` tool, which executes in the merchant's BROWSER (the store
-  // iframe is the AI's hands): on a `look_at_page` tool_use the /chat loop returns
-  // the call in `done.toolCalls` and STOPS — the lib captures/serves a screenshot of
-  // the named page, appends it as an image block on the tool_result turn, and calls
-  // /chat again so the model can SEE what rendered before it answers or refines a box.
   // `clientTools` is mutually exclusive with `usesTools` (chat.ts), so this is a
   // SEPARATE entry, not a flag on `chat` — a turn is EITHER server-data-tools OR the
-  // visual client tool, never both. This is the FIRST live consumer of the dormant
-  // client-tool mode; the onboarding refine loop / interactive review / cart-drawer
-  // chat / on-demand optimize all select it to gain visual self-inspection.
+  // visual client tool, never both.
   'onboarding-chat': {
     group: 'studio-visual-agent',
     prompt: prompts.onboardingChat,
+    promptForClientActions: prompts.composeOnboardingChat,
     maxTokens: 4096,
     usesTools: false,
     clientTools: [LOOK_AT_PAGE_TOOL],
     description:
-      'Onboarding / visual Studio chat; same identity + tier as `chat` but its OWN system prompt (`onboarding-chat.md`) — it DROPS the server-data-tool guidance (no `get_store_analytics` / `get_entity_context` in this client-tool mode) and instead steers the model to the CLIENT `look_at_page` tool (executed in the browser: capture/serve a full-page screenshot) so it can SEE the page before it answers or refines. Runs the /chat loop in CLIENT-tool mode: a look_at_page tool_use returns done.toolCalls and stops; the lib runs it and re-calls /chat with the screenshot.',
+      "The Studio chat with the CLIENT `look_at_page` tool in place of the server data tools: `chat`'s identity, agents master rules, context, grounding, team, formatting and directives, with the look-at-page block. Studio's optimizer chats (Optimization, Merchandising, Discounts & Promotions, Look & Feel) select it so the model can look at a page before it answers. Runs the /chat loop in CLIENT-tool mode: a look_at_page tool_use returns done.toolCalls and stops; the lib captures the page and re-calls /chat with the screenshot.",
     attachments: [],
   },
 
@@ -741,6 +762,47 @@ const systemPrompts: Record<PromptName, SystemPromptDefinition> = {
     usesTools: false,
     description:
       "On-demand OPTIMIZE PROPOSE; given ONE page (name + full-page desktop + mobile screenshots + the numbered candidate manifest) + the merchant's typed DEMAND, returns { page, boxes: [ { boxType, position, anchorNumber, styleReferenceSelector?, appearancePatch, appearancePatchMobile, reasoning } ] } — the per-page box shape (no `pages` wrapper, no progressBar, no segments/discounts), honoring the merchant's explicit request FIRST then best practice. Structured output, the conductor applies it box-by-box then QCs via onboarding-review. Sonnet, no tools.",
+    attachments: [],
+  },
+
+  'optimize-boxes': {
+    group: 'optimization-conductor',
+    prompt: prompts.optimizeBoxes,
+    rulesetVersion: ONBOARDING_RULESET_VERSION,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
+    usesTools: false,
+    description:
+      "Optimization conductor, Recommendation Boxes step; given each page the Merchandising Agent worked on, with its boxes `before` as the live page shows them and `after` as the draft holds them (box key, box type, title, and each `after` box's `added`, `moved` or `kept`) and the agent's own why, the evidence table, the Upsell & Cross-sell Agent's ready picks, helpers and the owner's notes as data, returns { headline, summary, pages: [ { page, why } ], basedOn, question? }. Words only, over the Merchandising Agent's changes already in the draft: it plans no change, and every number comes from the data. No tools.",
+    attachments: [],
+  },
+
+  'optimize-ads-audiences': {
+    group: 'optimization-conductor',
+    prompt: prompts.optimizeAdsAudiences,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
+    usesTools: false,
+    description:
+      "Optimization conductor, Google Ads & Audiences step; given the Google Ads connection, the Google Ads Agent's latest result and its requests for Optimization, the store's audiences with their facts, the audience templates, helpers and the owner's notes as data, returns { headline, summary, audiences: [ { templateKey, reason } ], requests: [ { noticeKey, answer: audience | progress-bar | bundles | none, templateKey?, reason } ], basedOn, question? }. Words only; every number comes from the data. No tools.",
+    attachments: [],
+  },
+
+  'optimize-progress-bar': {
+    group: 'optimization-conductor',
+    prompt: prompts.optimizeProgressBar,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
+    usesTools: false,
+    description:
+      "Optimization conductor, Progress Bar step; given each audience's facts and the goal options Studio sized to its orders, the shoppers in no audience, today's bars, helpers and the owner's notes as data, returns { headline, summary, offers: [ { audienceKey, optionKey, reason, basedOn } ], everyoneElse: { optionKey, reason, basedOn } | null, leaveOut: [ { audienceKey, reason } ], basedOn, question? }. Chooses options by key and writes the words; every number comes from the data. No tools.",
+    attachments: [],
+  },
+
+  'optimize-bundles': {
+    group: 'optimization-conductor',
+    prompt: prompts.optimizeBundles,
+    maxTokens: MODEL_MAXIMUM_OUTPUT,
+    usesTools: false,
+    description:
+      "Optimization conductor, Bundle Discounts step; given each audience's facts and the bundle options Studio built for it, the shoppers in no audience, today's bundle discounts, the products with bundle picks, helpers and the owner's notes as data, returns the per-audience offers shape { headline, summary, offers, everyoneElse, leaveOut, basedOn, question? }. Chooses options by key and writes the words; every number comes from the data. No tools.",
     attachments: [],
   },
 

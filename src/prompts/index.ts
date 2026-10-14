@@ -1,7 +1,8 @@
 /**
  * Prompt-text barrel — every registered prompt's FINAL system text as a named
  * export, so `../prompt-registry.ts` (the registry) is just `import * as prompts from
- * './prompts'`. Composed prompts (onboarding / cart-drawer / optimize twins, `chat`,
+ * './prompts'`. Composed prompts (onboarding / cart-drawer / optimize twins, the Optimization
+ * conductor's four steps, `chat` and its look-at-page twin `onboarding-chat`,
  * `billing-assistant`, `grader-chat`) are assembled in their own `index.ts` (fragments + shared blocks +
  * `composePrompt`); `grader-chat` exports its composition, booklet map and booklet structure,
  * because configuration picks its booklet and resolving one checks its headings;
@@ -11,7 +12,6 @@
  */
 
 // Single-file prompts (raw `.md` text used directly).
-export { default as onboardingChat } from './onboarding-chat.md';
 export { default as onboarding } from './onboarding.md';
 export { default as placement } from './placement.md';
 export { default as proposals } from './proposals.md';
@@ -37,7 +37,8 @@ export { default as onboardingCurrencyRecovery } from './onboarding-currency-rec
 export { default as onboardingCssReview } from './onboarding-css-review/prompt.md';
 
 // Composed prompts (each folder's index.ts assembles fragments + shared blocks).
-export { default as chat } from './chat';
+export { default as chat, composeChat } from './chat';
+export { default as onboardingChat, composeOnboardingChat } from './onboarding-chat';
 export { default as billingAssistant } from './billing-assistant';
 export {
   GRADER_CHAT_BOOKLET_HEADINGS,
@@ -54,3 +55,7 @@ export { default as onboardingReviewGateAll } from './onboarding-review-gate-all
 export { default as cartdrawerBatchAll } from './cartdrawer-batch-all';
 export { default as cartdrawerReviewAll } from './cartdrawer-review-all';
 export { default as optimizeDemand } from './optimize-demand';
+export { default as optimizeBoxes } from './optimize-boxes';
+export { default as optimizeAdsAudiences } from './optimize-ads-audiences';
+export { default as optimizeProgressBar } from './optimize-progress-bar';
+export { default as optimizeBundles } from './optimize-bundles';

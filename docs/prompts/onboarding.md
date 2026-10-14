@@ -49,7 +49,7 @@ Plain prose comes before the block. The `directives` array is the two-sided cont
 
 `onboarding` is the CONVERSATIONAL, best-practice AGENT-LOOP variant of the onboarding family. It is distinct from every other onboarding-named prompt:
 
-- **`onboarding-chat`** ([doc](onboarding-chat.md)) — the mid-flow VISUAL chat: a single-file CLIENT-tool prompt carrying `look_at_page` (no server tools). Where `onboarding` reads store data via the `studio-data-agent` server toolset, `onboarding-chat` sees the rendered page through the separate `studio-visual-agent` group.
+- **`onboarding-chat`** ([doc](onboarding-chat.md)) — the Studio chat that can look at the store: `chat`'s composed Studio blocks with a look-at-page block, carrying the `look_at_page` CLIENT tool (no server tools). Where `onboarding` reads store data via the `studio-data-agent` server toolset, `onboarding-chat` sees the rendered page through the separate `studio-visual-agent` group.
 - **`onboarding-batch` / `onboarding-batch-all`** — the JSON PROPOSE passes (per-page / whole-store). COMPOSED prompts (per-prompt fragments + the SHARED blocks under [`src/prompts/onboarding-shared/`](../../src/prompts/onboarding-shared/)), `usesTools: false`, structured JSON output over page-tile screenshots. They are the placement reasoners the shipped batch show actually drives.
 - **`onboarding-review` / `onboarding-review-all`** — the JSON QC passes (per-page / whole-store) that verify the applied render and emit corrections. Also COMPOSED, `usesTools: false`, JSON-only.
 

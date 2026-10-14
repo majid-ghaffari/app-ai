@@ -79,6 +79,10 @@ const EXACT_ROUTES: Array<{ name: string; maxTokens: number; kind: 'propose' | '
   { name: 'cartdrawer-batch-all', maxTokens: 128000, kind: 'propose' },
   { name: 'cartdrawer-review-all', maxTokens: 128000, kind: 'review' },
   { name: 'optimize-demand', maxTokens: 128000, kind: 'propose' },
+  { name: 'optimize-boxes', maxTokens: 128000, kind: 'propose' },
+  { name: 'optimize-ads-audiences', maxTokens: 128000, kind: 'propose' },
+  { name: 'optimize-progress-bar', maxTokens: 128000, kind: 'propose' },
+  { name: 'optimize-bundles', maxTokens: 128000, kind: 'propose' },
 ];
 
 describe('registry max_tokens is EXACT on /messages (no floor, no cap, no client read)', () => {

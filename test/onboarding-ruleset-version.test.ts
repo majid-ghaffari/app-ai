@@ -16,7 +16,11 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-import { getSystemPrompt, ONBOARDING_RULESET_VERSION } from '../src/prompt-registry';
+import {
+  getSystemPrompt,
+  listPromptNames,
+  ONBOARDING_RULESET_VERSION,
+} from '../src/prompt-registry';
 import blockFixedRules from '../src/prompts/onboarding-shared/_block-fixed-rules.md';
 import { handleMessages } from '../src/handlers/messages';
 import { anthropicMessage, ENV, CORS, stubFetch } from './helpers';
@@ -37,21 +41,12 @@ const ONBOARDING_PROMPTS = [
 // compose `_block-fixed-rules.md` — the version is their playbook contract id).
 const SIBLING_HANDSHAKE_PROMPTS = [
   'onboarding-review-gate-all',
+  'onboarding-css-review',
   'cartdrawer-batch-all',
   'cartdrawer-review-all',
   'optimize-demand',
+  'optimize-boxes',
 ] as const;
-
-// Prompts that must NOT participate in the handshake (no `rulesetVersion`).
-const NON_HANDSHAKE_PROMPTS = [
-  'chat',
-  'image-selection',
-  'proposals',
-  'visual-verify',
-  'probe-industry',
-  'probe-style',
-  'onboarding-currency-recovery',
-];
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -69,16 +64,19 @@ describe('onboarding ruleset-version — registry ↔ prompt pin', () => {
     }
   });
 
-  it('the three sibling playbook conductors ALSO declare the ruleset version', () => {
+  it('the sibling playbook conductors ALSO declare the ruleset version', () => {
     for (const name of SIBLING_HANDSHAKE_PROMPTS) {
       expect(getSystemPrompt(name, ENV).rulesetVersion).toBe(ONBOARDING_RULESET_VERSION);
     }
   });
 
-  it('non-handshake prompts do NOT declare a ruleset version', () => {
-    for (const name of NON_HANDSHAKE_PROMPTS) {
-      expect(getSystemPrompt(name, ENV).rulesetVersion).toBeUndefined();
-    }
+  it('the handshake prompts are exactly the registry entries that declare a ruleset version', () => {
+    const declaring = listPromptNames().filter(
+      (name) => getSystemPrompt(name, ENV).rulesetVersion !== undefined,
+    );
+    expect([...declaring].sort()).toEqual(
+      [...ONBOARDING_PROMPTS, ...SIBLING_HANDSHAKE_PROMPTS].sort(),
+    );
   });
 
   it('the version + enforced-rule guidance compose into each onboarding stable prefix', () => {
@@ -178,7 +176,7 @@ describe('POST /messages — ruleset-version handshake enforcement', () => {
     }
   });
 
-  it('enforces the handshake for the three sibling conductors too (mismatch → 409)', async () => {
+  it('enforces the handshake for the sibling conductors too (mismatch → 409)', async () => {
     for (const name of SIBLING_HANDSHAKE_PROMPTS) {
       const fetchMock = stubFetch();
       fetchMock.mockImplementation(async () => jsonOk(anthropicMessage()));

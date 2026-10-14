@@ -77,7 +77,11 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
 
   constructor(private readonly env: Env) {}
 
-  /** Bounded passthrough for a request whose selector names no registered prompt. */
+  /**
+   * Bounded passthrough for a request whose selector names no registered prompt. A success whose
+   * usage breaks the token-count contract is an invalid Anthropic response, as it is for a
+   * registered prompt, so no answer leaves without the usage the store's AI cap is reported from.
+   */
   async completePassthrough(
     payload: Record<string, unknown>,
     abortSignal?: AbortSignal,
@@ -91,7 +95,16 @@ export class AnthropicMessagesAdapter implements InferenceProviderAdapter {
     );
     const data = await readAnthropicJson<AnthropicResponseBody>(response);
     if (!response.ok) throw anthropicFailure(response.status, data);
+    passthroughUsageOf(data);
     return data;
+  }
+
+  /**
+   * The canonical usage of a passthrough response body, held to the token-count contract a
+   * registered response is held to; a body that breaks it is an invalid Anthropic response.
+   */
+  passthroughUsage(body: unknown): InferenceUsage {
+    return normalizeUsage(passthroughUsageOf(body));
   }
 
   /** Best-effort count for the bounded unregistered-selector passthrough. */
@@ -754,6 +767,12 @@ function anthropicContinuationContent(
     else delete last.cache_control;
   }
   return cloned;
+}
+
+function passthroughUsageOf(body: unknown): Usage {
+  const usage = isJsonObject(body) ? body.usage : undefined;
+  validateUsage(usage, true);
+  return usage;
 }
 
 function normalizeUsage(usage?: Usage): InferenceUsage {

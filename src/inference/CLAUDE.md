@@ -132,6 +132,18 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   into the exact non-streaming message body, so registered `/messages` keep
   their JSON response while large output budgets stay on the transport the
   provider recommends for them.
+- The unregistered-selector passthrough service (`factory.ts`) exposes
+  `complete`, `countTokens` and `usage(body)`. `usage(body)` is how a handler
+  reads a passthrough answer's usage without an Anthropic wire field: it returns
+  canonical `InferenceUsage`, which `/messages` reports to Brain for the store's
+  AI cap (`../lib/brain-usage.ts`) as it reports a registered prompt. The
+  Anthropic adapter owns it as `passthroughUsage`, holding the body to the
+  token-count contract a registered response is held to: `input_tokens` and
+  `output_tokens` present, every count a non-negative safe integer, the two
+  cache counts optionally null. `completePassthrough` applies the same check
+  before it answers, so a success that breaks it fails as the invalid-response
+  `InferenceFailure` (500 `AnthropicApiException`) a registered prompt's would,
+  and no passthrough answer leaves without the usage its report is built from.
 - Production code remains dependency-free and uses Web `fetch` plus local types.
 - The Cloudflare adapter accepts one inline image, emits Qwen's OpenAI-compatible
   multimodal message shape, disables thinking, propagates request cancellation,

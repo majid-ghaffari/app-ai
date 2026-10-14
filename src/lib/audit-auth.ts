@@ -95,6 +95,16 @@ const GRADER_REPORT_SUGGESTIONS = 10;
 const GRADER_REPORT_LABEL_CHARACTERS = 80;
 const GRADER_REPORT_FIX_CHARACTERS = 240;
 const GRADER_REPORT_REASON_CHARACTERS = 400;
+const GRADER_REPORT_TEAM_MEMBERS = 20;
+const GRADER_REPORT_TEAM_KEY = /^[a-z][a-z0-9-]{0,63}$/u;
+const GRADER_REPORT_TEAM_STATES = ['result', 'running', 'install'] as const;
+const GRADER_REPORT_TEAM_SEVERITIES = ['Urgent', 'WorthDoing', 'NiceToHave', 'AllClear'] as const;
+const GRADER_REPORT_TEAM_UNITS = ['Score', 'Milliseconds', 'Unitless', 'Count', 'Percent'] as const;
+const GRADER_REPORT_TEAM_ROLE_CHARACTERS = 240;
+const GRADER_REPORT_TEAM_HEADLINE_CHARACTERS = 160;
+const GRADER_REPORT_TEAM_FACT_LABEL_CHARACTERS = 120;
+const GRADER_REPORT_TEAM_FACTS = 12;
+const GRADER_REPORT_TEAM_ISSUES = 12;
 const GRADER_CHAT_TURNS = 2 * GRADER_CHAT_MESSAGE_CEILING + 1;
 const GRADER_CHAT_MESSAGE_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -216,6 +226,35 @@ export interface GraderReportSuggestion {
   readonly reason?: string;
 }
 
+/** One measured value a Growth Agents team member's public checks found, as the Grader showed it. */
+export interface GraderTeamFact {
+  readonly label: string;
+  readonly value: number;
+  readonly unit: (typeof GRADER_REPORT_TEAM_UNITS)[number];
+}
+
+/** One issue a Growth Agents team member's public checks raised: its severity and headline. */
+export interface GraderTeamIssue {
+  readonly severity: (typeof GRADER_REPORT_TEAM_SEVERITIES)[number];
+  readonly headline: string;
+}
+
+/**
+ * One member of the Growth Agents team as the Grader showed it: `result` when its public checks
+ * answered, `running` while they still run, `install` when it needs LimeSpot installed to look.
+ * Only a `result` or `running` member carries what its checks found.
+ */
+export interface GraderTeamMember {
+  readonly key: string;
+  readonly title: string;
+  readonly role: string;
+  readonly state: (typeof GRADER_REPORT_TEAM_STATES)[number];
+  readonly headline?: string;
+  readonly severity?: (typeof GRADER_REPORT_TEAM_SEVERITIES)[number];
+  readonly facts?: readonly GraderTeamFact[];
+  readonly issues?: readonly GraderTeamIssue[];
+}
+
 /** The strictly validated Grader report a chat request carries. */
 export interface GraderReport {
   readonly platform: (typeof GRADER_REPORT_PLATFORMS)[number];
@@ -223,6 +262,7 @@ export interface GraderReport {
   readonly pages: readonly GraderReportPage[];
   readonly audiences: readonly GraderReportSuggestion[];
   readonly offers: readonly GraderReportSuggestion[];
+  readonly team?: readonly GraderTeamMember[];
 }
 
 /** A validated Grader chat request body. */
@@ -630,7 +670,7 @@ function validateGraderReport(value: unknown): GraderReport {
   const report = asRecord(value);
   if (
     !report ||
-    !hasExactKeys(report, ['platform', 'partial', 'pages', 'audiences', 'offers']) ||
+    !hasAllowedKeys(report, ['platform', 'partial', 'pages', 'audiences', 'offers'], ['team']) ||
     !isOneOf(report.platform, GRADER_REPORT_PLATFORMS) ||
     typeof report.partial !== 'boolean' ||
     !Array.isArray(report.pages) ||
@@ -646,7 +686,85 @@ function validateGraderReport(value: unknown): GraderReport {
     pages,
     audiences: validateSuggestions(report.audiences),
     offers: validateSuggestions(report.offers),
+    ...(report.team === undefined ? {} : { team: validateTeam(report.team) }),
   };
+}
+
+function validateTeam(value: unknown): readonly GraderTeamMember[] {
+  if (!Array.isArray(value) || value.length > GRADER_REPORT_TEAM_MEMBERS) throw invalidReport();
+  const team = value.map(validateTeamMember);
+  if (new Set(team.map((member) => member.key)).size !== team.length) throw invalidReport();
+  return team;
+}
+
+function validateTeamMember(value: unknown): GraderTeamMember {
+  const member = asRecord(value);
+  if (
+    !member ||
+    !hasAllowedKeys(
+      member,
+      ['key', 'title', 'role', 'state'],
+      ['headline', 'severity', 'facts', 'issues'],
+    ) ||
+    typeof member.key !== 'string' ||
+    !GRADER_REPORT_TEAM_KEY.test(member.key) ||
+    !isReportText(member.title, GRADER_REPORT_LABEL_CHARACTERS) ||
+    !isReportText(member.role, GRADER_REPORT_TEAM_ROLE_CHARACTERS) ||
+    !isOneOf(member.state, GRADER_REPORT_TEAM_STATES) ||
+    (member.state === 'install' &&
+      ['headline', 'severity', 'facts', 'issues'].some((key) => key in member)) ||
+    (member.headline !== undefined &&
+      !isReportText(member.headline, GRADER_REPORT_TEAM_HEADLINE_CHARACTERS)) ||
+    (member.severity !== undefined && !isOneOf(member.severity, GRADER_REPORT_TEAM_SEVERITIES))
+  ) {
+    throw invalidReport();
+  }
+  const facts = member.facts === undefined ? undefined : validateTeamFacts(member.facts);
+  const issues = member.issues === undefined ? undefined : validateTeamIssues(member.issues);
+  return {
+    key: member.key,
+    title: member.title,
+    role: member.role,
+    state: member.state,
+    ...(member.headline === undefined ? {} : { headline: member.headline }),
+    ...(member.severity === undefined ? {} : { severity: member.severity }),
+    ...(facts === undefined ? {} : { facts }),
+    ...(issues === undefined ? {} : { issues }),
+  };
+}
+
+function validateTeamFacts(value: unknown): readonly GraderTeamFact[] {
+  if (!Array.isArray(value) || value.length > GRADER_REPORT_TEAM_FACTS) throw invalidReport();
+  return value.map((raw: unknown): GraderTeamFact => {
+    const fact = asRecord(raw);
+    if (
+      !fact ||
+      !hasExactKeys(fact, ['label', 'value', 'unit']) ||
+      !isReportText(fact.label, GRADER_REPORT_TEAM_FACT_LABEL_CHARACTERS) ||
+      typeof fact.value !== 'number' ||
+      !Number.isFinite(fact.value) ||
+      !isOneOf(fact.unit, GRADER_REPORT_TEAM_UNITS)
+    ) {
+      throw invalidReport();
+    }
+    return { label: fact.label, value: fact.value, unit: fact.unit };
+  });
+}
+
+function validateTeamIssues(value: unknown): readonly GraderTeamIssue[] {
+  if (!Array.isArray(value) || value.length > GRADER_REPORT_TEAM_ISSUES) throw invalidReport();
+  return value.map((raw: unknown): GraderTeamIssue => {
+    const issue = asRecord(raw);
+    if (
+      !issue ||
+      !hasExactKeys(issue, ['severity', 'headline']) ||
+      !isOneOf(issue.severity, GRADER_REPORT_TEAM_SEVERITIES) ||
+      !isReportText(issue.headline, GRADER_REPORT_TEAM_HEADLINE_CHARACTERS)
+    ) {
+      throw invalidReport();
+    }
+    return { severity: issue.severity, headline: issue.headline };
+  });
 }
 
 function validateReportPage(value: unknown): GraderReportPage {

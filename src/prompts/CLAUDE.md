@@ -38,15 +38,21 @@ prompt's purpose, model, tools, input contract, and frozen output contract. Keep
 3. **Rename a prompt →** rename the text file(s), the registry key, and `docs/prompts/<name>.md` together.
 4. **Retire a prompt →** delete the text, the registry entry, and the doc together (No Dead Code). A doc
    with no registered prompt, or a registered prompt with no doc, is a broken tree.
-5. **Edit a SHARED block (`onboarding-shared/_shared-*.md` / `_block-*.md`, or
-   `assistant-shared/_shared-*.md`) →** it changes EVERY prompt that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
+5. **Edit a SHARED block (`onboarding-shared/_shared-*.md` / `_block-*.md`,
+   `assistant-shared/_shared-*.md`, or `optimization-shared/_*.md`) →** it changes EVERY prompt that composes it. Update the doc of each composing prompt (or the shared note they carry) and, when the
    composed text changes on purpose, regenerate that prompt's byte baseline in `test/__snapshots__/` — the
    byte-equivalence gate [`test/onboarding-prompt-blocks.test.ts`](../../test/onboarding-prompt-blocks.test.ts)
-   fails otherwise. The agents master rules in `assistant-shared/` reach `chat` and
-   `billing-assistant`, and the chat formatting block reaches `chat`; their byte gate is
+   fails otherwise. The agents master rules in `assistant-shared/` reach `chat`,
+   `onboarding-chat`, `billing-assistant` and the four Optimization conductor steps, and the chat
+   formatting and Studio blocks reach `chat` and `onboarding-chat`; their byte gate is
    [`test/assistant-prompt-blocks.test.ts`](../../test/assistant-prompt-blocks.test.ts) against
-   `test/__snapshots__/chat.baseline.md`, `test/__snapshots__/billing-assistant.baseline.md` and
-   `test/__snapshots__/grader-chat.baseline.md`.
+   `test/__snapshots__/chat.baseline.md` and `test/__snapshots__/onboarding-chat.baseline.md`, the
+   text for a client that lists every gated action, their `.without-client-actions.baseline.md`
+   twins, the text for one that lists none,
+   `test/__snapshots__/billing-assistant.baseline.md` and
+   `test/__snapshots__/grader-chat.baseline.md`, and the steps' gate is
+   [`test/optimization-prompts.test.ts`](../../test/optimization-prompts.test.ts) against
+   `test/__snapshots__/optimize-*.baseline.md`.
 6. **Edit the shared agents core (`assistant-shared/_shared-agents-core.md`) →** it is a copy of
    `limespot/root`'s `_standards/agent-rules-core.md`, the shared core of the master rules every
    LimeSpot AI agent works under, which Brain copies too as
@@ -79,17 +85,18 @@ each entry's `prompt:` references `prompts.<name>`).
 - **Composed** — a `<name>/` folder of `_`-prefixed BLOCK files (no `prompt.md`) PLUS its own
   [`index.ts`](./onboarding-batch/index.ts) that assembles the final text via `composePrompt(...)`
   (from [`./_compose.ts`](./_compose.ts)) out of that prompt's own fragments PLUS shared blocks from
-  `onboarding-shared/` or `assistant-shared/`, in a STABLE order (the cacheable prefix). The barrel
+  `onboarding-shared/`, `assistant-shared/` or `optimization-shared/`, in a STABLE order (the cacheable prefix). The barrel
   re-exports that folder's default. `chat` composes the agents master rules after its identity,
-  which names the platforms Studio serves, and the shared chat formatting around its Studio-only
-  fragments; `billing-assistant` composes the agents master rules between its identity and its own
+  which names the platforms Studio serves, and the shared chat formatting and Studio blocks around
+  its own data-tools fragment; `onboarding-chat` composes the same blocks with its own
+  look-at-page fragment in that place; `billing-assistant` composes the agents master rules between its identity and its own
   billing rules;
   `grader-chat`, whose replies lib shows as plain text, composes its own plain-text formatting block
-  instead, around its platform-neutral identity, its one boundaries block, its buttons block and a
-  booklet — the only part of its text that names a
+  instead, around its platform-neutral identity, its one boundaries block, its Growth Agents team
+  block, its buttons block and a booklet — the only part of its text that names a
   platform — and
   exports its composition function and booklet map instead of a default, because the booklet is
-  chosen by configuration. All three are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
+  chosen by configuration. All four — `chat`, `onboarding-chat`, `billing-assistant` and `grader-chat` — are byte-pinned against `test/__snapshots__/`. The `_` prefix here marks a BLOCK PART that IS imported and composed — it is not a standalone
   name you can select via the header.
 - **Shared-text alias** — an explicit named export in the barrel points to another registered
   prompt's final text when the semantic input/output contract is identical but routing or access is
@@ -107,19 +114,53 @@ folder; a block shared across prompts is hoisted to `onboarding-shared/` so a si
 composer. It never gets a registry entry and never gets a `docs/prompts/` doc.
 
 **`assistant-shared/` is the second shared block library**, for the conversational assistant
-prompts: `_shared-chat-formatting.md` (the Markdown chat-bubble formatting rules), composed by
-`chat`, and the agents master rules, which `agents-master-rules.ts` composes from two blocks:
+prompts: `_shared-chat-formatting.md` (the Markdown chat-bubble formatting rules) and the Studio
+blocks `_shared-studio-identity.md`, `_shared-studio-context.md`, `_shared-studio-grounding.md`,
+`_shared-studio-team.md`, `_shared-studio-directives.md`, `_shared-studio-move-box.md`,
+`_shared-studio-choices.md`, `_shared-studio-support.md` and `_shared-studio-support-ask.md`, all
+composed by `studio-chat.ts` for `chat` and its look-at-page twin `onboarding-chat`, which differ
+only in their own data-tools and look-at-page fragments. The move-box block reaches only a client
+that lists `moveBox` in its request's `clientActions`, and the Support block, which teaches
+`requestSupport`, only one that lists `requestSupport`; any other client gets the support-ask
+block, which sends the owner to ask for a person in the chat. No other block names either
+directive. Each prompt's registry entry composes its text per client through
+`promptForClientActions`, and its `prompt` is the text for a client that lists none
+(`../lib/client-actions.ts`). The library also holds the agents master rules, which
+`agents-master-rules.ts` composes from two blocks:
 `_shared-agents-core.md`, the core copied from `limespot/root`, which Brain carries too (what
 LimeSpot Assistant and every agent works on, never does and treats as data, rule 6 above), then `_shared-agents-master.md`, the rules that
 hold in a conversation with the owner (out of scope, ask before acting, when a person takes over,
-stay helpful). Every prompt whose words the owner reads in a conversation composes the master
-rules right after its identity: `chat` and `billing-assistant`. The rest do not, each for a reason `test/assistant-prompt-blocks.test.ts` records beside
+stay helpful). Every prompt whose words the owner reads composes the master rules right after its
+identity: the conversations `chat`, `onboarding-chat` and `billing-assistant`, and the Optimization
+conductor's four steps, whose JSON words lib shows in the Optimization chat. The rest do not, each for a reason `test/assistant-prompt-blocks.test.ts` records beside
 every registered prompt: `grader-chat` and the Grader's two onboarding proposal prompts speak to
-stores without LimeSpot, `onboarding` and `onboarding-chat` have no live caller, and the other
+stores without LimeSpot, `onboarding` has no live caller, and the other
 one-shot steps answer JSON lib reads rather than talking to the owner. `grader-chat` keeps its own `_formatting.md`, the plain-text rules, because lib shows a
 Grader reply as plain text with no Markdown applied, and each keeps its identity in its own folder,
 because Studio names the platforms it serves and the Grader leaves platforms to the booklet. Like `onboarding-shared/`, it is
 never a registered prompt.
+
+**`optimization-shared/` is the third shared block library**, for the Optimization conductor's
+four steps (`optimize-boxes`, `optimize-ads-audiences`, `optimize-progress-bar`,
+`optimize-bundles`): `_identity.md` (the Optimization agent, working for LimeSpot Assistant, its
+areas in order and the specialist agent behind each), `_step.md` (how a step works: lib writes
+every number and option, keys only from the data, the owner's notes first, a question instead of a
+guess, and the data every step carries), `_words.md` (the word fields, their lengths, no figure of
+its own and no forecast, and how a change already in the draft is written), and
+`_per-audience-offers.md` (the per-audience rules and output shape Progress Bar and Bundle
+Discounts share, their template options and the discount rate's source). Every step composes the identity, the agents master rules, the step and words
+blocks, its own fragments, then `onboarding-shared/_shared-json-tail.md`; `optimize-boxes` also
+composes `onboarding-shared/_shared-box-vocab.md` and so carries the onboarding ruleset version.
+Like the other two, it is never a registered prompt.
+
+## Merchant-facing names
+
+Prompt text uses only the names the owner sees, because a model repeats what its prompt calls
+things. The panel beside a Studio chat is "the details beside the chat", never its internal name,
+the Surgery Table. Wherever a prompt speaks of connecting Google Ads, it uses the line every Google
+Ads connect point in Studio shows, "Nothing changes in your Google Ads account unless you ask for
+it.", and no prompt describes that connection as one that only reads the account.
+`test/assistant-prompt-blocks.test.ts` holds every registered prompt to both.
 
 ## Grader chat booklets
 
@@ -150,7 +191,7 @@ review convention, not an enforced rule.
 
 ## Registered-prompt inventory
 
-`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/` and `assistant-shared/` is exactly one registered prompt; every loose prompt `.md` at this level EXCEPT the adapter-internal `kimi-html-retrieval.md` is a single-file registered prompt; and every shared-text alias is declared explicitly in the barrel.
+`../prompt-registry.ts` is the authoritative list of registered prompts; the reading aid over it — every prompt with its shape, endpoint, tools, and role — is [docs/ARCHITECTURE-MAP.md](../../docs/ARCHITECTURE-MAP.md) → "Registered prompts", read on demand. Every folder in `src/prompts/` EXCEPT `onboarding-shared/`, `assistant-shared/` and `optimization-shared/` is exactly one registered prompt; every loose prompt `.md` at this level EXCEPT the adapter-internal `kimi-html-retrieval.md` is a single-file registered prompt; and every shared-text alias is declared explicitly in the barrel.
 
 ### The `-all` twins are NOT duplicates
 

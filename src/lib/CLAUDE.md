@@ -64,6 +64,22 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   carrying no customer content); and each provider's own API base (`isOfficialProviderBase`), built
   on its sub-processor's host where it has one. It imports nothing at runtime, because `config.ts`
   uses it.
+- `brain-usage.ts` reports each completed provider response under a merchant Context-ID to
+  Brain's `POST v2/agents/report-chat-usage`, so Studio chat counts toward the store's monthly AI
+  cap. The body mirrors the route's request model in PascalCase: `RequestGuid`, `PromptName`,
+  `Model`, `InputTokens`, `OutputTokens`, `CacheReadTokens`, `CacheWriteTokens` and
+  `WebSearchRequests`, with the merchant's `X-Personalizer-Context-ID`. The tokens follow Brain's
+  `Pricing.Cost` for the provider. Gemini's entries carry no cache rate, so a Gemini response is
+  reported as Brain's own Gemini client counts one: its whole prompt, cache hits included, as
+  `InputTokens`, its thinking added to `OutputTokens`, and both cache fields 0. Every other provider
+  reports cache reads apart from `InputTokens`, which Brain prices at their own rate, so one that
+  counts them inside its input total has them subtracted. `WebSearchRequests` is 0 because no route
+  offers a web search. Brain owns the prices (`AI:ModelPricing`) and the stored record, so app-ai
+  sends tokens and the model, never a cost; Brain marks use under a LimeSpot staff session as staff
+  and leaves it out of the cap. Each report runs on the request's `runBackground`, after the reply;
+  a refusal or failure is logged and never retried, and a response that reported no token counts
+  sends nothing. Because nothing is retried, Brain's route deploys before a worker that reports to
+  it, and a rollback removes this sender before that route (root `CLAUDE.md` → Hard rules).
 - Client-correctable canonical validation uses `WorkerError` with the Brain
   `ArgumentException` envelope. `InferenceFailure` is reserved for provider or
   provider-protocol failures after a route reaches its adapter.
@@ -287,6 +303,11 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   authority's log sites hand each Seq delivery to its state's `waitUntil`, so a log-only alert is
   attached to the alarm event before its outbox entry settles. Every chat refusal is built by
   `graderChatRefusal`, so its `MessageDetail` vocabulary has one owner.
+- `client-actions.ts` owns `CLIENT_ACTIONS`, the Studio chat directives app-ai teaches only to a
+  client whose `/chat` request lists them in `clientActions`: `requestSupport` and `moveBox`,
+  which a lib build without their handlers would leave undone after telling the owner they
+  happened. `readClientActions` reads the list, ignoring a name it does not gate. The gate is the
+  prompt alone: app-ai neither holds nor rewrites a reply.
 - `grader-chat-output.ts` is the Grader chat's link guard, the one deterministic check on a reply.
   It first finds the buttons block exactly as lib's `parseChatEnvelope` does — the whole reply as
   JSON, else the first fenced block that parses as an object carrying an envelope key, else the span

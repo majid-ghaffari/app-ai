@@ -82,6 +82,20 @@ or changes the inference response.
   answers in the shape the caller's `Accept` negotiated: an SSE `error` event
   under `text/event-stream`, the JSON envelope otherwise. Nothing on that path
   reaches the router's Accept-blind catch.
+- `/chat` reads `clientActions`, the gated Studio chat directives its client carries out
+  (`CLIENT_ACTIONS` in `../lib/client-actions.ts`: `requestSupport` and `moveBox`), before any
+  route resolution. Absent is none, an unknown name is ignored, and anything but an array of
+  strings is refused with 400 `ArgumentException`. On a registry entry with
+  `promptForClientActions`, the Studio chat prompts, the prompt text sent is the one for that set.
+  The list changes nothing else: every reply streams and is delivered as the model wrote it.
+- `/chat` and `/messages` report each completed provider response to Brain for the store's
+  monthly AI cap (`../lib/brain-usage.ts`): `/chat` once per turn of its agent loop when the loop
+  settles, answered or failed, and `/messages` once per registered inference and once per
+  unregistered passthrough, which reports as `unregistered-messages`. A passthrough answer whose
+  usage breaks the token-count contract is answered as the invalid Anthropic response a registered
+  one is (`../inference/CLAUDE.md`), so no answer leaves unreported. A registry entry with
+  `excludedFromStoreAiCap` and an audit session report nothing, and no report delays, changes or
+  refuses the answer.
 - Handlers receive `corsHeaders` from the router and spread them onto every `Response`.
 - The context-ID is already validated by the router before any handler runs.
   The same validation response supplies `AvailableIntegrationParties` and the

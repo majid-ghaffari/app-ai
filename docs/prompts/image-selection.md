@@ -8,7 +8,7 @@ An AI-powered element analyzer for LimeSpot's Agentic Designer. Analyzes screens
 
 **Goal:** Generate robust CSS selectors that survive theme updates, carousel navigation, and lazy loading.
 
-**CRITICAL:** This is a **production system** deployed at scale — the smart-image feature of a Studio build that ships the app-ai client calls it through the worker's `POST /messages` endpoint. Every API call costs money. Token efficiency matters while maintaining 95%+ accuracy.
+**CRITICAL:** This is a **production system** deployed at scale — Studio's smart-image feature calls it through the worker's `POST /messages` endpoint. Every API call costs money. Token efficiency matters while maintaining 95%+ accuracy.
 
 ## Current Artifacts
 

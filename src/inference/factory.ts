@@ -5,6 +5,7 @@ import type {
   FilePolicy,
   InferenceRequest,
   InferenceService,
+  InferenceUsage,
   ModelProfile,
 } from '../lib/inference-types';
 import type {
@@ -129,6 +130,7 @@ export interface UnregisteredSelectorPassthroughService {
     log?: Logger,
   ): Promise<unknown>;
   countTokens(payload: Record<string, unknown>, abortSignal?: AbortSignal): Promise<number | null>;
+  usage(body: unknown): InferenceUsage;
 }
 
 /** Construct the isolated Anthropic passthrough surface. */
@@ -142,6 +144,7 @@ export function createUnregisteredSelectorPassthrough(
         adapter.completePassthrough(payload, signal, log),
       ),
     countTokens: (payload, abortSignal) => adapter.countPassthroughTokens(payload, abortSignal),
+    usage: (body) => adapter.passthroughUsage(body),
   };
 }
 

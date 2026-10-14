@@ -57,6 +57,8 @@ import type {
   ModelProfile,
 } from '../lib/inference-types';
 import { sanitizeRefs, buildReferencedEntitiesBlock } from '../lib/references';
+import { reportChatUsage, type CompletedResponseUsage } from '../lib/brain-usage';
+import { readClientActions } from '../lib/client-actions';
 import { createLoggingRuntime, type Logger, type LoggingRuntime } from '../lib/logger';
 import {
   createDevelopmentInferenceTrace,
@@ -101,6 +103,8 @@ interface ChatRequestBody {
    * route that serves one turn refuses a request naming any.
    */
   tools?: unknown;
+  /** The gated Studio chat directives the client carries out (lib/client-actions.ts). */
+  clientActions?: unknown;
 }
 
 /** The grounding context the client may send (lib CONTRACTS.md §1). */
@@ -178,6 +182,10 @@ export async function handleChat(
     });
     return badRequest('Invalid JSON body', corsHeaders, wantsStream);
   }
+  const clientActions = readClientActions(body.clientActions);
+  if (!clientActions) {
+    return badRequest('clientActions must be an array of action names', corsHeaders, wantsStream);
+  }
 
   // The registry is the single source of truth for per-prompt model / token /
   // tool choices. Unknown selectors retain the compatibility fallback to chat,
@@ -232,6 +240,7 @@ export async function handleChat(
       return earlyError(error, corsHeaders, wantsStream);
     }
   }
+  const prompt = entry.promptForClientActions?.(clientActions) ?? entry.prompt;
   const refusal = statelessRouteRefusal(profile, env, {
     continuation: body.continuation,
     messages: body.messages,
@@ -317,6 +326,7 @@ export async function handleChat(
   // executes them here. Otherwise the usual server toolset (when `usesTools`).
   const inference = createInferenceService(env, tenantScope);
   const runner = (emit: Emit | null) => {
+    const completedResponses: CompletedResponseUsage[] = [];
     const onEvent = async (event: InferenceEvent): Promise<void> => {
       if (event.type === 'agent-turn-start') {
         trace.record('request.forwarded', {
@@ -338,6 +348,14 @@ export async function handleChat(
           data: { id: event.call.id, name: event.call.name, input: event.call.input },
         });
       } else if (event.type === 'complete') {
+        if (entry.excludedFromStoreAiCap !== true) {
+          completedResponses.push({
+            promptName: entry.name,
+            model: profile.model,
+            provider: profile.provider,
+            usage: event.result.usage,
+          });
+        }
         logUsageStats(event.result.usage, log);
         trace.record('response.received', {
           stopReason: event.result.stopReason,
@@ -348,7 +366,7 @@ export async function handleChat(
     };
 
     const common = {
-      prompt: entry.prompt,
+      prompt,
       promptGroup: entry.group,
       modelProfile: profile,
       filePolicy,
@@ -441,7 +459,8 @@ export async function handleChat(
           inference: redactInferenceTraceValue(inferenceFailureTrace(error)),
         });
         throw error;
-      });
+      })
+      .finally(() => reportChatUsage(contextId, completedResponses, env, logging));
   };
 
   if (wantsStream) {
