@@ -68,11 +68,9 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
    workload, or route. Infrastructure changes flow through the committed GitOps configuration, never
    an imperative command. A broad implementation or testing authorization does not override this.
    (`_standards/git-and-approval.md`)
-8. **Code carries no comments.** The one exception is an XML or JSDoc descriptor on a type or a
-   public member, and only where the contract is not evident from the name and signature — never
-   inside a method body, never a change log, never a restatement of the line below it. Everything
-   explanatory belongs in the `CLAUDE.md` files and the `docs/` pages beside them, where a reader
-   finds it without reading the code. (`_standards/documentation-and-comments.md`)
+8. **Comments are short and only where needed:** the why, a gotcha, a tricky block's intent.
+   Architecture and flows go in `docs/`. Never restate the code, write pages of per-class prose, or
+   strip a comment that helps. (`_standards/documentation-and-comments.md`)
 9. **Heavy jobs run one per slot, through the gate.** Several sessions share one machine, and a
    test runner, bundler, compiler or container build is heavy enough that a few at once exhaust
    RAM and take the machine down with swap thrash — which no amount of care after the fact undoes.

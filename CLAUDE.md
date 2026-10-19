@@ -46,7 +46,7 @@ Adding or renaming a `docs/*` file updates this table (propagation rule below).
 
 ## Documentation conventions
 
-Documentation and comment style — current state only, and where a doc comment is permitted — is `../_standards/documentation-and-comments.md`. The app-ai rule on top of it:
+Documentation and comment style — current state only, and short comments only where a reader needs them — is `../_standards/documentation-and-comments.md`. The app-ai rule on top of it:
 
 **CLAUDE.md propagation.** Any code change MUST update the affected folder's `CLAUDE.md` (`src/handlers/CLAUDE.md`, `src/inference/CLAUDE.md`, `src/lib/CLAUDE.md`, `src/toolsets/CLAUDE.md`, `src/prompts/CLAUDE.md`), then propagate the change up to this root file. Adding/renaming a handler, inference module, lib module, toolset, prompt, or route updates the relevant section here AND the matching folder doc. Keep the documentation tree always valid.
 
