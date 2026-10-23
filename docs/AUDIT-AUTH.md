@@ -142,6 +142,23 @@ the link usable and the visitor's current session live. It refuses with 410 `gra
 consuming nothing, while `GRADER_RUNS_VALID_FROM` is still ahead of the moment the run would open,
 because that run would already be revoked.
 
+An activation is consumed by its first exchange, and the session that exchange creates is the
+activation's own. Until that session lands — its first proposal reservation, the write that queues
+its run's `started` event (see Website status mirror) — exchanging the same activation again for the
+same store answers 201 with that same session and writes nothing: the same identifier, expiry and
+chat terms, and a bearer carrying the stored expiry. Once the session has landed, after a newer
+activation superseded it, or when a staff activation names another store, the exchange answers 409
+with `MessageDetail` `audit_activation_consumed`, so a client can tell a used link from a failed
+exchange:
+
+```json
+{
+  "Message": "The activation token has already been used.",
+  "ExceptionType": "AuditActivationConsumedException",
+  "MessageDetail": "audit_activation_consumed"
+}
+```
+
 ### Session status
 
 `GET /audit/session` reads a live session's standing with its own bearer, so the extension can check
@@ -217,8 +234,8 @@ mirrored under the session that admitted it), the status outbox, the consumed ac
 Grader chat's count, replies, answered message identifiers with their stored outcomes, settlements
 and message in flight. The new session starts a fresh first run that
 owns no files, and the superseded session's uploads are deleted once its last lease has run out
-(see [Retention](#retention)). A replayed activation is still refused 409 `AuditActivationConsumedException`, and
-superseding never opens an audit whose public attempts are spent.
+(see [Retention](#retention)). The superseded activation is refused 409 `AuditActivationConsumedException` /
+`audit_activation_consumed`, and superseding never opens an audit whose public attempts are spent.
 
 ## Scope
 

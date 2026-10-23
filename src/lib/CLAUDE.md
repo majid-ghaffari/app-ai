@@ -115,7 +115,14 @@ The per-module map — what each file owns — is [docs/ARCHITECTURE-MAP.md](../
   signing key, the callback signing key, and the activation's allowlisted
   `statusCallbackUrl` — BEFORE it consumes the one-time activation, so a
   deployment error cannot burn an otherwise valid link. Delivery outages belong
-  to the Durable Object outbox, not to the exchange.
+  to the Durable Object outbox, not to the exchange. A repeat exchange of a
+  consumed activation is answered with its session again, writing nothing, while
+  that session is still the audit's for the same store and has not landed — its
+  first proposal reservation, the write that queues its `started` event
+  (`reissuesUnlandedSession`). The bearer then carries the expiry the authority
+  stored, because the authority matches a bearer's expiry exactly. Any other
+  repeat is refused 409 `AuditActivationConsumedException` /
+  `audit_activation_consumed`.
 - Status delivery never runs in a request: exchange, reserve and finalize append
   to the outbox and set the alarm, and only the alarm calls the website.
   `audit-status.ts` classifies each attempt as delivered, retry (no answer,

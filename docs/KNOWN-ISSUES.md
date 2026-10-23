@@ -126,13 +126,14 @@ recovery path: when a cached reference is rejected for any other reason (a rotat
 boundary), Studio ends the review instead of dropping the tile, re-capturing and
 re-uploading. That recovery is a Studio-side change.
 
-### A re-served activation is refused as already used
+### A re-served activation is refused once its session has landed
 
 A reopened Grader supersedes the active session only with a new activation. The limespot.com issuer
 answers a magic link reopened within its first 15 minutes with the activation it already handed out,
-which app-ai has consumed, so that exchange answers 409 `AuditActivationConsumedException` until the
-visitor asks for a fresh link. One-use activations are what keep a copied link from taking over a
-live session.
+which app-ai has consumed. app-ai answers that exchange with the same session until the session's
+first proposal reservation, and with 409 `AuditActivationConsumedException` /
+`audit_activation_consumed` after it, until the visitor asks for a fresh link. Once a session has
+landed, one-use activations keep a copied link from taking over it.
 
 ### A 30-day Grader session depends on the extension and the website
 

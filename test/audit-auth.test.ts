@@ -44,32 +44,116 @@ afterEach(() => {
 });
 
 describe('audit session authorization', () => {
-  it('exchanges an email-verified activation exactly once and scopes a prefixed session', async () => {
-    const env = durableEnv();
-    const token = await activationToken(env, 'activation-one');
-    const request = () =>
-      worker.fetch(
-        new Request('https://app-ai.test/audit/session/exchange', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
-          body: JSON.stringify({ activationToken: token, storeUrl: `${STORE_ORIGIN}/x` }),
-        }),
-        env,
-      );
+  function exchangeRequest(token: string, storeUrl = `${STORE_ORIGIN}/x`): Request {
+    return new Request('https://app-ai.test/audit/session/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
+      body: JSON.stringify({ activationToken: token, storeUrl }),
+    });
+  }
 
-    const first = await request();
+  function proposalUpstream(): void {
+    stubFetch().mockImplementation(async (input) => {
+      if (String(input).endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+  }
+
+  it('answers a repeat exchange of an activation whose session has not landed with that same session, changing nothing', async () => {
+    const env = durableEnv();
+    proposalUpstream();
+    const token = await activationToken(env, 'activation-one');
+
+    const first = await worker.fetch(exchangeRequest(token), env);
     expect(first.status).toBe(201);
-    expect(await first.json()).toMatchObject({
+    const granted = (await first.json()) as Record<string, unknown> & { accessToken: string };
+    expect(granted).toMatchObject({
       sessionIdentifier: expect.any(String),
       accessToken: expect.stringMatching(/^ls_audit_/u),
       expiresAt: expect.any(Number),
     });
+    await uploadTiles(env, granted.accessToken, 1);
+    const before = await storageFor(env, 'audit-activation-one').get('session');
 
-    const second = await request();
-    expect(second.status).toBe(409);
-    expect(await second.json()).toMatchObject({
-      ExceptionType: 'AuditActivationConsumedException',
+    const repeat = await worker.fetch(exchangeRequest(token), env);
+    expect(repeat.status).toBe(201);
+    const regranted = (await repeat.json()) as Record<string, unknown> & { accessToken: string };
+    expect({ ...regranted, accessToken: null }).toEqual({ ...granted, accessToken: null });
+    expect(regranted.accessToken).toMatch(/^ls_audit_/u);
+    expect(await storageFor(env, 'audit-activation-one').get('session')).toEqual(before);
+
+    for (const accessToken of [granted.accessToken, regranted.accessToken]) {
+      expect((await worker.fetch(uploadRequest(accessToken, 'tile.webp'), env)).status).toBe(200);
+    }
+  });
+
+  it('refuses an exchange of an activation whose session has landed as a used activation, from its first proposal reservation on', async () => {
+    const env = durableEnv();
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    let arrived = (): void => {};
+    const inferenceArrived = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    stubFetch().mockImplementation(async (input) => {
+      if (String(input).endsWith('/v1/files')) {
+        return new Response(JSON.stringify(anthropicFileRecord(crypto.randomUUID())), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      arrived();
+      await held;
+      return new Response(
+        JSON.stringify(anthropicMessage([{ type: 'text', text: USABLE_PROPOSAL }])),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const token = await activationToken(env, 'activation-landed');
+    const first = await worker.fetch(exchangeRequest(token), env);
+    expect(first.status).toBe(201);
+    const { accessToken } = (await first.json()) as { accessToken: string };
+    const tiles = await uploadTiles(env, accessToken, 1);
+    const proposal = worker.fetch(messageRequest(accessToken, tiles), env);
+    await inferenceArrived;
+
+    const refusals = [await worker.fetch(exchangeRequest(token), env)];
+    release();
+    expect((await proposal).status).toBe(200);
+    refusals.push(await worker.fetch(exchangeRequest(token), env));
+    for (const refused of refusals) {
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({
+        Message: 'The activation token has already been used.',
+        ExceptionType: 'AuditActivationConsumedException',
+        MessageDetail: 'audit_activation_consumed',
+      });
+    }
+  });
+
+  it('refuses a repeat staff exchange that names another store as a used activation', async () => {
+    const env = durableEnv();
+    const token = await activationToken(
+      env,
+      'staff-repeat',
+      { type: 'limespot-staff-multi-store' },
+      'sales@limespot.com',
+    );
+    expect((await worker.fetch(exchangeRequest(token), env)).status).toBe(201);
+
+    const elsewhere = await worker.fetch(exchangeRequest(token, 'https://another-shop.test'), env);
+    expect(elsewhere.status).toBe(409);
+    expect(await elsewhere.json()).toMatchObject({ MessageDetail: 'audit_activation_consumed' });
   });
 
   it('requires a bounded, bare, signed callback URL whose origin this deployment allowlists', async () => {
@@ -2863,11 +2947,18 @@ describe('audit session record bounds', () => {
     expect(kept).toHaveLength(1024);
     expect(kept?.[0]).toBe('seeded-activation-1');
     expect(kept?.at(-1)).toBe('retention-fresh');
+    const retainedToken = await activationToken(
+      env,
+      'seeded-activation-1',
+      { type: 'store-origin', storeOrigin: STORE_ORIGIN },
+      'merchant@example.com',
+      LONGEST_AUDIT_IDENTIFIER,
+    );
     const replay = await worker.fetch(
       new Request('https://app-ai.test/audit/session/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...EXTENSION_BUILD_HEADERS },
-        body: JSON.stringify({ activationToken: freshToken, storeUrl: `${STORE_ORIGIN}/` }),
+        body: JSON.stringify({ activationToken: retainedToken, storeUrl: `${STORE_ORIGIN}/` }),
       }),
       env,
     );

@@ -340,6 +340,14 @@ export interface AuditAuthorityExchange {
   readonly expiresAt: number;
 }
 
+/** The session an exchange admitted, as the authority recorded it. */
+export interface AuditAuthoritySessionGrant {
+  /** Epoch seconds. A repeat exchange of an unlanded session answers the expiry it first gave. */
+  readonly expiresAt: number;
+  /** Grader chat messages the audit has already been answered. */
+  readonly chatMessages: number;
+}
+
 /** Reservation returned before app-ai performs an upload or inference call. */
 export interface AuditAuthorityReservation {
   readonly auditIdentifier: string;
@@ -350,12 +358,12 @@ export interface AuditAuthorityReservation {
 
 /**
  * Atomically consume an activation and make its session the audit's one active session, superseding
- * any earlier one. Returns the Grader chat messages the audit has already been answered.
+ * any earlier one. A repeat exchange of the activation answers that same session until it lands.
  */
 export async function createAuditAuthoritySession(
   input: AuditAuthorityExchange,
   env: Env,
-): Promise<number> {
+): Promise<AuditAuthoritySessionGrant> {
   const response = await authorityStub(input.auditIdentifier, env).fetch(
     internalRequest(input.storeOrigin, '/exchange', input),
   );
@@ -363,6 +371,7 @@ export async function createAuditAuthoritySession(
     throw new WorkerError('The activation token has already been used.', {
       status: 409,
       exceptionType: 'AuditActivationConsumedException',
+      messageDetail: 'audit_activation_consumed',
     });
   }
   if (response.status === 429) throw quotaError('This public grader has no attempts remaining.');
@@ -373,8 +382,11 @@ export async function createAuditAuthoritySession(
     });
   }
   assertAuthoritySuccess(response);
-  const body = (await response.json()) as { chatMessages?: unknown };
-  return typeof body.chatMessages === 'number' ? body.chatMessages : 0;
+  const body = (await response.json()) as { chatMessages?: unknown; expiresAt?: unknown };
+  return {
+    expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : input.expiresAt,
+    chatMessages: typeof body.chatMessages === 'number' ? body.chatMessages : 0,
+  };
 }
 
 /**
@@ -725,7 +737,13 @@ export class AuditSessionAuthority implements DurableObject {
     const outcome = await this.state.storage.transaction(async (storage) => {
       const existing = await readSession(storage);
       if (existing?.consumedActivationIdentifiers.includes(input.activationIdentifier)) {
-        return { status: 409 } as const;
+        return reissuesUnlandedSession(existing, input)
+          ? ({
+              status: 201,
+              chatMessages: existing.chatMessages ?? 0,
+              expiresAt: existing.expiresAt,
+            } as const)
+          : ({ status: 409 } as const);
       }
       if (
         existing &&
@@ -773,11 +791,16 @@ export class AuditSessionAuthority implements DurableObject {
         statusOutbox: superseded?.statusOutbox ?? [],
       };
       await this.writeSession(storage, session);
-      return { status: 201, chatMessages: session.chatMessages ?? 0 } as const;
+      return {
+        status: 201,
+        chatMessages: session.chatMessages ?? 0,
+        expiresAt: session.expiresAt,
+      } as const;
     });
     if (outcome.status !== 201) return internalResponse(outcome.status);
     await this.scheduleAlarm();
-    return new Response(JSON.stringify({ chatMessages: outcome.chatMessages }), {
+    const { chatMessages, expiresAt } = outcome;
+    return new Response(JSON.stringify({ chatMessages, expiresAt }), {
       status: 201,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -1722,6 +1745,20 @@ function runAnalysisPending(session: SessionRecord): boolean {
 
 function publicAttemptsExhausted(session: SessionRecord): boolean {
   return session.attemptLimit !== null && session.completedAttempts >= session.attemptLimit;
+}
+
+/**
+ * A consumed activation's session is answered again while it is still the audit's session for the
+ * same store and has not landed. It lands on its first proposal reservation, the write that queues
+ * its `started` status event; a later run opens only after one.
+ */
+function reissuesUnlandedSession(session: SessionRecord, input: ExchangeInput): boolean {
+  return (
+    session.sessionIdentifier === input.sessionIdentifier &&
+    session.storeOrigin === input.storeOrigin &&
+    session.run === 1 &&
+    !session.runInferenceStarted
+  );
 }
 
 function startNextRun(session: SessionRecord): SessionRecord {

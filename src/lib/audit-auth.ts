@@ -319,11 +319,22 @@ export async function exchangeAuditActivation(
   const sessionSigningSecret = auditSessionSigningSecret(env);
   auditStatusSigningSecret(env);
   const now = epochSeconds();
-  const expiresAt = now + auditSessionTtlSeconds(env);
   const cutoffs = graderCutoffs(env);
   assertRunOpensAfterCutoff(env, now * 1000);
   const chatOffer = graderChatOffer(planVersion, env);
   const sessionIdentifier = await opaqueSessionIdentifier(activation.tokenIdentifier);
+  const { expiresAt, chatMessages } = await createAuditAuthoritySession(
+    {
+      sessionIdentifier,
+      auditIdentifier: activation.auditIdentifier,
+      activationIdentifier: activation.tokenIdentifier,
+      attemptLimit: activation.attemptLimit,
+      storeOrigin,
+      statusCallbackUrl,
+      expiresAt: now + auditSessionTtlSeconds(env),
+    },
+    env,
+  );
   const claims: AuditSessionClaims = {
     version: TOKEN_VERSION,
     kind: 'audit-session',
@@ -336,18 +347,6 @@ export async function exchangeAuditActivation(
     issuedAt: now,
     expiresAt,
   };
-  const chatMessages = await createAuditAuthoritySession(
-    {
-      sessionIdentifier,
-      auditIdentifier: activation.auditIdentifier,
-      activationIdentifier: activation.tokenIdentifier,
-      attemptLimit: activation.attemptLimit,
-      storeOrigin,
-      statusCallbackUrl,
-      expiresAt,
-    },
-    env,
-  );
   return {
     sessionIdentifier,
     accessToken: `${AUDIT_TOKEN_PREFIX}${await signToken(claims, sessionSigningSecret)}`,
