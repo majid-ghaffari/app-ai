@@ -138,6 +138,39 @@ describe('Studio chat composition', () => {
     expect(chat.startsWith(`${studioIdentity.trim()}\n\n${agentsMasterRules}\n\n`)).toBe(true);
   });
 
+  it('opens every reply with a whole bold lead line and bolds no whole bullet after it', () => {
+    expect(sharedChatFormatting).toContain('Every reply opens the same way:');
+    expect(sharedChatFormatting).toContain('two to four bullets');
+    expect(sharedChatFormatting).toContain(
+      'the bold lead line, a blank line and one sentence are enough.',
+    );
+    expect(sharedChatFormatting).toContain(
+      'Never bold a whole bullet or any sentence after the lead line.',
+    );
+    expect(sharedChatFormatting).not.toContain('Never bold whole sentences.');
+  });
+
+  it('reads the page only when Studio sends it, and never over an agent or conductor chat', () => {
+    expect(studioTeam).toContain('- `page`, when Studio sends it:');
+    expect(studioTeam).toContain(
+      "when `agentChat` or `conductor` is present, the agent's result or the open step is the topic",
+    );
+    expect(studioTeam).toContain('a question such as "why is this low?" is about `page`.');
+    expect(studioTeam).toContain(
+      'When `page` is present and its `notices` is empty, say nothing needs them on that page, and never invent one.',
+    );
+    expect(studioTeam).toContain('When `page` is absent, never guess which page the owner is on.');
+  });
+
+  it('lets a Fresh result win over canRunAgain, and predicts no later run or schedule', () => {
+    expect(studioTeam).toContain(
+      "don't offer to run the agent again, even when the owner asks for newer numbers and even when `canRunAgain` is true.",
+    );
+    expect(studioTeam).toContain('- Otherwise, when its `freshness` is `Stale`');
+    expect(studioTeam).not.toContain('would find the same');
+    expect(studioTeam).not.toContain('on its own schedule');
+  });
+
   it("lets a conductor switch an agent on, connect Google or keep a winner only through Studio's buttons", () => {
     expect(getSystemPrompt('chat', ENV).prompt).toContain(
       "never say an agent is on, a connection is made or a winner is kept until the team data or the step's `plan` says so.",

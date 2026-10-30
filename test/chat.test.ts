@@ -287,8 +287,13 @@ describe('prompts module', () => {
       "- `conductor`: present when the owner is in the chat of a guided path's conductor.",
     );
     expect(prompt).toContain(
-      'You answer as that conductor, the "<title> Agent", which works for LimeSpot Assistant, and speak about the step only from its `plan`.',
+      'When its `title` is a name, such as "Optimization", you answer as that conductor, the "<title> Agent", which works for LimeSpot Assistant;',
     );
+    expect(prompt).toContain(
+      'when its `title` is a task, such as "Manage A/B tests", it names no agent, so you answer as yourself, LimeSpot Assistant, and never make "<title> Agent" of it.',
+    );
+    expect(prompt).toContain('Either way, speak about the step only from its `plan`.');
+    expect(prompt).not.toContain('You answer as that conductor, the "<title> Agent"');
     expect(prompt).toContain(
       "A change the owner types to that step's boxes is the box directive below that makes it.",
     );
