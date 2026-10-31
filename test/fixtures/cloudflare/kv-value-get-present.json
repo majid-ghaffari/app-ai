@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/storage/kv/namespaces/feedfacefeedfacefeedfacefeedface/values/owner%3Aapp-ai%3Ac0ffeec0ffeec0ffeec0ffeec0ffee00",
+    "contentType": null,
+    "body": null
+  },
+  "status": 200,
+  "contentType": "application/octet-stream",
+  "body": "{\"module\": \"app-ai\", \"name\": \"capture-probe\", \"previewId\": \"c0ffeec0ffeec0ffeec0ffeec0ffee00\", \"previewCreatedOnUtc\": \"2026-10-31T15:49:50.469045Z\", \"tagName\": \"preview-capture-probe\", \"commitSha\": \"0000000000000000000000000000000000000000\", \"createdAtUtc\": \"2026-10-31T15:49:51Z\"}"
+}

@@ -13,12 +13,29 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import packageManifest from '../package.json';
 import ciWorkflow from '../.github/workflows/ci.yml?raw';
 import deploymentDocs from '../README.md?raw';
-import { composeWranglerArgs, resolveDevLogPath, resolveShortRev } from '../scripts/dev.mjs';
+import gitIgnore from '../.gitignore?raw';
+import {
+  composeRevisionedPreviewsDefine,
+  composeWranglerArgs,
+  resolveDevLogPath,
+  resolveShortRev,
+} from '../scripts/dev.mjs';
 import * as deployLauncher from '../scripts/deploy.mjs';
 import { isAttributableBuildRevision } from '../src/build-rev';
 
-const { composeWranglerDeployArgs, composeWranglerPreviewArgs, resolveDeployInvocation } =
-  deployLauncher;
+const {
+  PREVIEW_CONFIG_PATH,
+  composePreviewConfig,
+  composeWranglerDeployArgs,
+  composeWranglerPreviewArgs,
+  resolveDeployInvocation,
+} = deployLauncher;
+
+const wranglerFiles = import.meta.glob('../wrangler.toml', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+}) as Record<string, string>;
 
 const workflowModules = import.meta.glob('../.github/workflows/*.{yml,yaml}', {
   eager: true,
@@ -50,15 +67,29 @@ describe('dev launcher — build-rev define composition (F19)', () => {
     ]);
   });
 
-  it('stamps non-production version uploads with the same exact revision', () => {
-    expect(composeWranglerPreviewArgs('abc1234', ['--message', 'preview'])).toEqual([
-      'versions',
-      'upload',
-      '--define',
-      '__APP_AI_REV__:"abc1234"',
-      '--message',
+  it('deploys Worker Previews from the stamped copy of wrangler.toml beside the original', () => {
+    expect(composeWranglerPreviewArgs(['--name', 'majid-chat', '--json'])).toEqual([
       'preview',
+      '--config',
+      PREVIEW_CONFIG_PATH,
+      '--name',
+      'majid-chat',
+      '--json',
     ]);
+    expect(PREVIEW_CONFIG_PATH).toMatch(/[\\/]\.wrangler-preview\.toml$/);
+    expect(gitIgnore).toMatch(/^\.wrangler-preview\.toml$/m);
+  });
+
+  it('stamps Worker Previews with the same exact revision through previews.define', () => {
+    expect(composeRevisionedPreviewsDefine('abc1234')).toBe(
+      '[previews.define]\n__APP_AI_REV__ = "\\"abc1234\\""\n',
+    );
+    const manifest = Object.values(wranglerFiles)[0];
+    if (!manifest) throw new Error('wrangler.toml not found next to test/');
+    const stamped = composePreviewConfig(manifest, 'abc1234');
+    expect(stamped.startsWith(manifest.replace(/\n*$/, '\n'))).toBe(true);
+    expect(stamped.endsWith(`\n${composeRevisionedPreviewsDefine('abc1234')}`)).toBe(true);
+    expect(() => composePreviewConfig(stamped, 'def5678')).toThrow(/\[previews\.define\]/);
   });
 
   it('consumes the launcher-only --preview mode instead of forwarding it to Wrangler', () => {
@@ -106,17 +137,20 @@ describe('repo-controlled deploy entry points', () => {
     expect(packageManifest.scripts['deploy:preview']).toBe('node scripts/deploy.mjs --preview');
     for (const [name, command] of Object.entries(packageManifest.scripts)) {
       expect(command, `package script ${name} must not bypass the revision launcher`).not.toMatch(
-        /(?:^|\s)(?:npx\s+)?wrangler\s+(?:deploy|versions\s+upload)(?:\s|$)/,
+        /(?:^|\s)(?:npx\s+)?wrangler\s+(?:deploy|versions\s+upload|preview(?!\s+(?:delete|secret|base-config)\b))(?:\s|$)/,
       );
     }
   });
 
   it('makes CI use the stamped dry-run entry point and rejects a raw Wrangler bypass', () => {
     expect(ciWorkflow).toContain('run: npm run deploy:dry-run');
+    expect(workflowModules['../.github/workflows/preview-deploy.yml']).toContain(
+      'npm run --silent deploy:preview -- --name "$PREVIEW_ID" --tag "$OWNER_MARKER" --json',
+    );
     for (const [path, workflow] of Object.entries(workflowModules)) {
       expect(path, 'workflow scan must name each source').toMatch(/\.ya?ml$/);
       expect(workflow, `${path}: deploy through a revision-stamping package script`).not.toMatch(
-        /run:\s*(?:[|>][-+]?\s*)?(?:npx\s+)?wrangler\s+(?:deploy|versions\s+upload)/,
+        /(?:^|\s)(?:npx\s+)?wrangler\s+(?:deploy|versions\s+upload|preview(?!\s+(?:delete|secret|base-config)\b))(?:\s|$)/m,
       );
     }
   });

@@ -48,6 +48,14 @@ export function composeRevisionedWranglerArgs(command, rev, extraArgs = []) {
   return [command, '--define', `${APP_AI_REV_DEFINE}:"${rev}"`, ...extraArgs];
 }
 
+/**
+ * The same define as a Wrangler `[previews.define]` table, for `wrangler preview`, which takes no
+ * `--define`. The value is the JavaScript string literal `"<sha>"`, written as a TOML string.
+ */
+export function composeRevisionedPreviewsDefine(rev) {
+  return `[previews.define]\n${APP_AI_REV_DEFINE} = ${JSON.stringify(JSON.stringify(rev))}\n`;
+}
+
 /** Resolve the persistent local log path; callers may place it elsewhere through the dev env. */
 export function resolveDevLogPath(env = process.env) {
   const configured =

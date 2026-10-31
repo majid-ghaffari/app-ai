@@ -511,34 +511,46 @@ function declaredSecretNames(): readonly string[] {
   });
 }
 
-/** The `[vars]` table of wrangler.toml (up to the next `[` table header). */
-function productionVars(): string {
+/** One wrangler.toml table by its exact header line, up to the next `[` table header. */
+function wranglerTable(header: string): string {
   const toml = Object.values(wranglerFiles)[0];
   if (!toml) throw new Error('wrangler.toml not found next to test/');
-  const start = toml.indexOf('\n[vars]\n');
-  if (start === -1) throw new Error('wrangler.toml has no [vars] table');
-  const body = toml.slice(start + '\n[vars]\n'.length);
+  const start = toml.indexOf(`\n${header}\n`);
+  if (start === -1) throw new Error(`wrangler.toml has no ${header} table`);
+  if (toml.indexOf(`\n${header}\n`, start + 1) !== -1) {
+    throw new Error(`wrangler.toml declares ${header} more than once`);
+  }
+  const body = toml.slice(start + header.length + 2);
   const nextTable = body.search(/^\[/m);
   return nextTable === -1 ? body : body.slice(0, nextTable);
 }
 
+/** The `[vars]` table of wrangler.toml: production's values. */
+function productionVars(): string {
+  return wranglerTable('[vars]');
+}
+
 /**
- * The `[vars]` table parsed into the bindings it declares. Every entry is a
+ * A vars table parsed into the bindings it declares. Every entry is a
  * quoted string, so a line that is neither blank, a comment, nor `KEY = "value"`
  * is a parse failure here rather than a binding silently left out of the proof.
  */
-function parsedProductionVars(): ReadonlyMap<string, string> {
+function parsedVars(header: '[vars]' | '[previews.vars]'): ReadonlyMap<string, string> {
   const vars = new Map<string, string>();
-  for (const line of productionVars().split('\n')) {
+  for (const line of wranglerTable(header).split('\n')) {
     const text = line.trim();
     if (text.length === 0 || text.startsWith('#')) continue;
     const match = text.match(/^([A-Z][A-Z0-9_]*) = "(.*)"$/);
     if (!match?.[1] || match[2] === undefined) {
-      throw new Error(`wrangler.toml [vars] line is not a quoted string binding: ${text}`);
+      throw new Error(`wrangler.toml ${header} line is not a quoted string binding: ${text}`);
     }
     vars.set(match[1], match[2]);
   }
   return vars;
+}
+
+function parsedProductionVars(): ReadonlyMap<string, string> {
+  return parsedVars('[vars]');
 }
 
 /** The deployed model-routing bindings over the test fixture's other members. */
@@ -599,6 +611,63 @@ describe('configuration files stay reconciled with the typed Env', () => {
       expect(productionVars()).not.toContain(secret);
       expect(manifest).toContain(secret);
     }
+  });
+});
+
+describe('[previews] — the Worker Preview configuration', () => {
+  /** The one value a preview may hold apart from production, and what it holds instead. */
+  const PREVIEW_ONLY_VALUES: ReadonlyMap<string, string> = new Map([
+    ['PERSONALIZER_API_URL', 'https://preview.personalizer.io'],
+  ]);
+
+  it('repeats every production [vars] value but the Brain origin, which is preview Brain', () => {
+    const production = parsedProductionVars();
+    const preview = parsedVars('[previews.vars]');
+    // A preview inherits nothing from production, so a missing key would fail at its first read.
+    expect([...preview.keys()].sort()).toEqual([...production.keys()].sort());
+    for (const [name, value] of production) {
+      expect(preview.get(name), `[previews.vars] ${name}`).toBe(
+        PREVIEW_ONLY_VALUES.get(name) ?? value,
+      );
+    }
+    expect(production.get('PERSONALIZER_API_URL')).toBe('https://personalizer.io');
+    expect(preview.get('ENVIRONMENT')).toBe('production');
+  });
+
+  /** The quoted value `key` holds in one wrangler.toml table. */
+  function tableValue(header: string, key: string): string {
+    const value = wranglerTable(header).match(new RegExp(`^${key} = "([^"]+)"$`, 'm'))?.[1];
+    if (value === undefined) throw new Error(`wrangler.toml ${header} has no ${key}`);
+    return value;
+  }
+
+  it('binds the preview KV namespace and R2 bucket, Workers AI and its own Durable Object namespace', () => {
+    // Each expectation is read from the production table the Preview copy mirrors, so a production
+    // binding moved to another resource or class without its Preview copy fails here.
+    const kv = '[[kv_namespaces]]';
+    const r2 = '[[r2_buckets]]';
+    const durable = '[[durable_objects.bindings]]';
+    expect(tableValue(kv, 'preview_id')).not.toBe(tableValue(kv, 'id'));
+    expect(tableValue(r2, 'preview_bucket_name')).not.toBe(tableValue(r2, 'bucket_name'));
+    expect(wranglerTable('[[previews.kv_namespaces]]')).toContain(
+      `binding = "${tableValue(kv, 'binding')}"\nid = "${tableValue(kv, 'preview_id')}"`,
+    );
+    expect(wranglerTable('[[previews.r2_buckets]]')).toContain(
+      `binding = "${tableValue(r2, 'binding')}"\nbucket_name = "${tableValue(r2, 'preview_bucket_name')}"`,
+    );
+    expect(wranglerTable('[previews.ai]')).toContain(
+      `binding = "${tableValue('[ai]', 'binding')}"`,
+    );
+    expect(wranglerTable('[[previews.durable_objects.bindings]]')).toContain(
+      `name = "${tableValue(durable, 'name')}"\nclass_name = "${tableValue(durable, 'class_name')}"`,
+    );
+  });
+
+  it('serves previews on workers.dev and leaves previews.define to the preview launcher', () => {
+    const manifest = Object.values(wranglerFiles)[0] ?? '';
+    expect(manifest).toMatch(/^preview_urls = true$/m);
+    expect(manifest).not.toMatch(/^\[previews\.define\]/m);
+    expect(manifest).not.toMatch(/^previews = /m);
   });
 });
 

@@ -1,0 +1,161 @@
+name: Deploy App AI Preview
+
+# A preview-<name> tag publishes that commit as the Cloudflare Worker Preview <name> and registers
+# it in the preview registry, where the admin Chrome extension lists it; moving the tag updates the
+# same Preview and entry. It deploys only to a Preview it created and recorded (README.md,
+# "Previews"). Each credential reaches only the steps that use it; checkout, setup and the install
+# run with none.
+
+on:
+  push:
+    tags:
+      - 'preview-*'
+
+concurrency:
+  group: preview-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse tag
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^preview-([a-z0-9][a-z0-9-]{0,40})$ ]]; then
+            echo "Invalid preview tag '$TAG': expected preview-<name> where <name> matches [a-z0-9][a-z0-9-]{0,40}. Rejecting this deploy." >&2
+            exit 1
+          fi
+          NAME="${BASH_REMATCH[1]}"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "owner=app-ai:${NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying app-ai preview '$NAME'"
+      - uses: actions/checkout@v4
+        with:
+          # The event's commit, which a tag moved since cannot change; the probe holds /health to it.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - name: Install dependencies
+        # No lifecycle scripts: none is needed to bundle or publish, and the tree they would write
+        # runs with the Cloudflare token below.
+        run: npm ci --ignore-scripts
+      - name: Withdraw the registry entry
+        env:
+          PREVIEW_REGISTRY_URL: ${{ vars.PREVIEW_REGISTRY_URL }}
+          PREVIEW_ADMIN_SECRET: ${{ secrets.PREVIEW_ADMIN_SECRET }}
+          PREVIEW_NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PREVIEW_REGISTRY_URL" ]; then
+            echo "Repo variable PREVIEW_REGISTRY_URL is not set (e.g. https://preview-registry.example.com)." >&2; exit 1
+          fi
+          if [ -z "$PREVIEW_ADMIN_SECRET" ]; then
+            echo "Repo secret PREVIEW_ADMIN_SECRET is not set." >&2; exit 1
+          fi
+          # A moved tag replaces the Preview behind the same URL, so the extension stops listing it
+          # before the deploy, and only a deployment that passes both probes is registered again.
+          resp=$(curl -sS --max-time 30 -X DELETE \
+            -H "Authorization: Bearer $PREVIEW_ADMIN_SECRET" \
+            "$PREVIEW_REGISTRY_URL/previews/app-ai/$PREVIEW_NAME")
+          [ "$(echo "$resp" | jq -r '.ok')" = "true" ] || { echo "Registry withdrawal failed: $resp" >&2; exit 1; }
+          echo "Withdrew any registry entry for '$PREVIEW_NAME'"
+      - name: Deploy the Worker Preview
+        id: preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_BASE_URL: https://api.cloudflare.com/client/v4
+          PREVIEW_REGISTRY_KV_NAMESPACE_ID: ${{ vars.PREVIEW_REGISTRY_KV_NAMESPACE_ID }}
+          PREVIEW_NAME: ${{ steps.tag.outputs.name }}
+          OWNER_MARKER: ${{ steps.tag.outputs.owner }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Repo secret CLOUDFLARE_API_TOKEN is not set." >&2; exit 1
+          fi
+          # The ID of a Preview this workflow created and recorded; anything else exits 1 here.
+          PREVIEW_ID=$(node scripts/preview-ownership.mjs claim --name "$PREVIEW_NAME" --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
+          [[ "$PREVIEW_ID" =~ ^[0-9a-f]{32}$ ]] || { echo "The ownership claim printed no Preview ID." >&2; exit 1; }
+          OUT="$RUNNER_TEMP/preview.json"
+          # Wrangler reads --name as an ID, slug or name and creates a Preview when none matches;
+          # the check below registers nothing unless it answered the recorded Preview.
+          npm run --silent deploy:preview -- --name "$PREVIEW_ID" --tag "$OWNER_MARKER" --json > "$OUT"
+          if ! jq -e --arg id "$PREVIEW_ID" --arg name "$PREVIEW_NAME" '.preview.id == $id and .preview.name == $name' "$OUT" > /dev/null; then
+            echo "Wrangler deployed to Preview $(jq -c '.preview | {id, name}' "$OUT" 2>/dev/null || cat "$OUT"), not the recorded $PREVIEW_ID '$PREVIEW_NAME'; nothing is registered." >&2
+            exit 1
+          fi
+          # The owner marker stays on every deployment as a label; ownership is the recorded ID.
+          if ! jq -e --arg owner "$OWNER_MARKER" '.deployment.annotations["workers/tag"] == $owner' "$OUT" > /dev/null; then
+            echo "The Preview deployment is not tagged with the owner marker $OWNER_MARKER: $(jq -c '.deployment.annotations // {}' "$OUT")" >&2
+            exit 1
+          fi
+          # This workflow registers the workers.dev form of the admin Chrome extension's App AI
+          # allowlist, EXTENSION_HOST_RE, so a Preview anywhere else is never registered.
+          EXTENSION_HOST_RE='^[a-z0-9][a-z0-9-]*-app-ai\.floral-rice-85c3\.workers\.dev$'
+          EXPECTED_URL="https://${PREVIEW_NAME}-app-ai.floral-rice-85c3.workers.dev"
+          URL=$(jq -r --arg expected "$EXPECTED_URL" \
+            '[.preview.urls[]? | rtrimstr("/") | select(. == $expected)][0] // empty' "$OUT")
+          if [ -z "$URL" ] || [[ ! "${URL#https://}" =~ $EXTENSION_HOST_RE ]]; then
+            echo "Wrangler returned no Preview URL at $EXPECTED_URL ($(jq -c '.preview.urls // []' "$OUT")). Turn on Preview URLs: wrangler.toml preview_urls = true, applied by the production deploy, or Dashboard → app-ai → Domains → Worker URL → Preview. A different workers.dev subdomain needs the extension's App AI host pattern changed first." >&2
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Preview URL: $URL"
+      - name: Probe the Preview
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          PREVIEW_NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          # /health answers 200 only with every required secret and binding in place and the
+          # revision stamped, since a Preview runs production's readiness checks; its buildRev must
+          # be this run's commit, so the URL serves the deployment just made, not an earlier one.
+          expected=$(git rev-parse --short "$GITHUB_SHA")
+          health=000
+          served=
+          for _ in 1 2 3 4 5; do
+            health=$(curl -sS -o "$RUNNER_TEMP/health.json" -w '%{http_code}' --max-time 20 "$PREVIEW_URL/health" || echo 000)
+            served=$(jq -r '.buildRev // empty' "$RUNNER_TEMP/health.json" 2>/dev/null || true)
+            [ "$health" = "200" ] && [ "$served" = "$expected" ] && break
+            sleep 6
+          done
+          if [ "$health" != "200" ] || [ "$served" != "$expected" ]; then
+            echo "Preview /health answered $health serving revision '${served:-none}', not $expected: $(cat "$RUNNER_TEMP/health.json" 2>/dev/null). Check the Previews Base secrets: npx wrangler preview secret list --name $PREVIEW_NAME" >&2
+            exit 1
+          fi
+          # A dummy Context-ID must come back as preview Brain's own rejection; a 5xx means the
+          # Preview cannot reach Brain.
+          brain=$(curl -sS -o "$RUNNER_TEMP/brain.json" -w '%{http_code}' --max-time 30 \
+            -H 'X-Personalizer-Context-ID: app-ai-preview-probe' "$PREVIEW_URL/prompts" || echo 000)
+          if [[ ! "$brain" =~ ^4[0-9][0-9]$ ]]; then
+            echo "Preview Brain link answered $brain: $(cat "$RUNNER_TEMP/brain.json" 2>/dev/null)" >&2
+            exit 1
+          fi
+          echo "Preview healthy; Brain answered $brain to the probe Context-ID"
+      - name: Register in preview registry
+        env:
+          PREVIEW_REGISTRY_URL: ${{ vars.PREVIEW_REGISTRY_URL }}
+          PREVIEW_ADMIN_SECRET: ${{ secrets.PREVIEW_ADMIN_SECRET }}
+          PREVIEW_NAME: ${{ steps.tag.outputs.name }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        run: |
+          set -euo pipefail
+          body=$(jq -cn \
+            --arg n "$PREVIEW_NAME" \
+            --arg u "$PREVIEW_URL" \
+            --arg s "$GITHUB_SHA" \
+            --arg t "$GITHUB_REF_NAME" \
+            '{module:"app-ai", name:$n, url:$u, commitSha:$s, tagName:$t}')
+          resp=$(curl -sS --max-time 30 -X POST \
+            -H "Authorization: Bearer $PREVIEW_ADMIN_SECRET" \
+            -H "Content-Type: application/json" \
+            -d "$body" "$PREVIEW_REGISTRY_URL/previews")
+          [ "$(echo "$resp" | jq -r '.ok')" = "true" ] || { echo "$resp" >&2; exit 1; }
+          echo "Registered in preview registry"

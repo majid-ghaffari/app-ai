@@ -497,9 +497,9 @@ This project uses Cloudflare's GitHub integration for automatic deployment:
 
 1. Connect repository to Cloudflare via dashboard
 2. Configure branch-to-environment mapping (`main` → `app-ai`)
-3. Under Worker `app-ai` → Settings → Build ([Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)), leave **Build command** blank and set **Deploy command** to exactly `npm run deploy`. If non-production branch builds are enabled, set their
-   command to exactly `npm run deploy:preview`. Cloudflare owns these two Git
-   integration settings in the dashboard and does not read them from
+3. Under Worker `app-ai` → Settings → Build ([Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)), leave **Build command** blank and set **Deploy command** to exactly `npm run deploy`. Leave non-production branch builds
+   off: previews come from `preview-<name>` tags, which run `npm run deploy:preview`. Cloudflare
+   owns these Git integration settings in the dashboard and does not read them from
    `wrangler.toml`; its raw defaults bypass the required revision stamp.
 4. Set the secrets in Cloudflare Dashboard:
    - Workers > app-ai > Settings > Variables > Encrypt
@@ -541,6 +541,60 @@ npm run tail             # read the live worker's logs — read-only
 An operator reaches for the manual publish only when the normal `main` auto-deploy path is
 unavailable — an emergency hotfix, or validating the deploy mechanism itself.
 
+### Previews
+
+Push a `preview-<name>` tag (`<name>` matches `[a-z0-9][a-z0-9-]{0,40}`) to publish that commit as
+the [Cloudflare Worker Preview](https://developers.cloudflare.com/workers/previews/) `<name>` at
+`https://<name>-app-ai.floral-rice-85c3.workers.dev`, the workers.dev host this workflow registers
+and the admin Chrome extension accepts for `app-ai.personalizer.io`, once you pick it in its App AI
+row. `.github/workflows/preview-deploy.yml` withdraws any registry entry of that name, runs
+`npm run deploy:preview`, probes the Brain link and `/health` until it serves the tagged commit, and
+registers the preview again. It acts only on a Preview it created: `scripts/preview-ownership.mjs`
+first requires the repository variable `PREVIEW_REGISTRY_KV_NAMESPACE_ID` to answer as the KV
+namespace titled `preview-registry`, creates an absent Preview through Cloudflare's Create Preview,
+records its ID and `created_on` as `owner:app-ai:<id>` in that namespace, outside the registry's
+`preview:` keys, and Wrangler deploys by that ID. Deleting the tag removes the registry entry, then
+deletes the preview by its recorded ID only. A same-named Preview whose ID is not recorded, or whose
+creation time differs from the record's, including one the workflow created but could not record, is
+refused, for you to check and delete by hand.
+
+**Accepted risk.** Wrangler cannot deploy only to an existing Preview, and Cloudflare reads a
+Preview identifier as an ID, a slug or a name, with no published precedence. So:
+
+- A Preview whose name or slug equals a recorded ID can receive the deploy. The workflow then
+  registers nothing, because Wrangler answered another Preview, but that Preview runs the tagged
+  commit.
+- When the recorded Preview has vanished, the deploy creates an unrecorded Preview named after the
+  ID. The workflow registers nothing, and its log names that Preview's ID.
+- A tag deletion's delete by the recorded ID can delete a Preview whose name or slug equals that ID.
+
+Every deleted Preview leaves its `owner:app-ai:<ID>` record behind. It is inert: a later Preview
+given that ID carries another creation time and is refused.
+
+Cleanup by hand: when a deploy fails with "Wrangler deployed to Preview …, not the recorded …", list
+the app-ai Worker's Previews (the dashboard, or `GET /accounts/<account>/workers/workers/app-ai/previews`).
+Delete a Preview the run created named after the ID, by the ID the log printed, once no other Preview
+is named or slugged with that ID: `npx wrangler preview delete --name <that ID>`. Tell the owner of
+any other Preview that it received the deploy. A stale record goes with
+`npx wrangler kv key delete --remote --namespace-id <PREVIEW_REGISTRY_KV_NAMESPACE_ID> "owner:app-ai:<ID>"`;
+the next tag push then creates and records a new Preview. After a tag deletion, check that the
+Preview `<name>` is gone and that no other Preview went with it.
+
+To redeploy the same preview, list the tag first and move it in place under a lease on the commit
+you listed, so a tag someone else moved since is refused rather than overwritten:
+
+```bash
+tag="preview-<name>"
+remote_sha=$(git ls-remote origin "refs/tags/$tag" | cut -f1)
+git tag -f "$tag" <commit>
+git push --force-with-lease="refs/tags/$tag:$remote_sha" origin "refs/tags/$tag"
+```
+
+The workflows need the repository secrets `CLOUDFLARE_API_TOKEN` and `PREVIEW_ADMIN_SECRET` and the
+repository variables `PREVIEW_REGISTRY_URL` and `PREVIEW_REGISTRY_KV_NAMESPACE_ID`. A new preview
+takes its secrets from the Previews Base configuration
+(`npx wrangler preview base-config secret put <NAME>`), set once for every preview.
+
 ### Environments
 
 All configured in [wrangler.toml](wrangler.toml):
@@ -557,6 +611,12 @@ All configured in [wrangler.toml](wrangler.toml):
   - Secrets: Cloudflare Dashboard (encrypted)
   - Personalizer API: `https://personalizer.io`
   - Auto-deploys from `main` branch
+
+- **Preview** (a `preview-<name>` tag, see Previews above): `https://<name>-app-ai.floral-rice-85c3.workers.dev`
+  - Config: `wrangler.toml` `[previews.vars]`, production's values but the Personalizer API, and the
+    `previews` bindings: the preview KV namespace and R2 bucket, and its own Durable Object namespace
+  - Secrets: the Previews Base configuration
+  - Personalizer API: `https://preview.personalizer.io`
 
 Every environment provides the full variable set — `ENVIRONMENT`,
 `PERSONALIZER_API_URL`, `ANTHROPIC_API_BASE`, `OPENAI_API_BASE`, `MOONSHOT_API_BASE`,
@@ -699,7 +759,7 @@ npm run deploy:dry-run   # Build the revision-stamped bundle without deploying
 
 # Deployment (operator only — see "Manual deployment")
 npm run deploy           # PUBLISHES TO PRODUCTION
-npm run deploy:preview   # Upload a revision-stamped non-production version
+npm run deploy:preview   # Publish a revision-stamped Worker Preview (the preview-<name> tag workflow)
 
 # Monitoring (read-only)
 npm run tail             # View production logs

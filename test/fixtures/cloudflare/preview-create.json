@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/workers/workers/app-ai/previews",
+    "contentType": "application/json",
+    "body": "{\"name\": \"capture-probe\"}"
+  },
+  "status": 200,
+  "contentType": "application/json; charset=UTF-8",
+  "body": "{\n  \"result\": {\n    \"id\": \"c0ffeec0ffeec0ffeec0ffeec0ffee00\",\n    \"slug\": \"capture-probe\",\n    \"name\": \"capture-probe\",\n    \"tags\": [],\n    \"observability\": {\n      \"enabled\": false,\n      \"head_sampling_rate\": 1,\n      \"redact_query_string\": false,\n      \"logs\": {\n        \"enabled\": false,\n        \"head_sampling_rate\": 1,\n        \"invocation_logs\": true,\n        \"persist\": true,\n        \"destinations\": []\n      },\n      \"traces\": {\n        \"enabled\": false,\n        \"head_sampling_rate\": 1,\n        \"persist\": true,\n        \"destinations\": []\n      }\n    },\n    \"logpush\": false,\n    \"tail_consumers\": [],\n    \"urls\": [\n      \"https://capture-probe-app-ai.example-subdomain.workers.dev\"\n    ],\n    \"created_on\": \"2026-10-31T15:49:50.469045Z\",\n    \"updated_on\": \"2026-10-31T15:49:50.469045Z\",\n    \"deployed_on\": null\n  },\n  \"success\": true,\n  \"errors\": [],\n  \"messages\": []\n}\n"
+}

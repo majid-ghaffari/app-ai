@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/workers/workers/app-ai/previews/c0ffeec0ffeec0ffeec0ffeec0ffee00",
+    "contentType": null,
+    "body": null
+  },
+  "status": 200,
+  "contentType": "application/json; charset=UTF-8",
+  "body": "{\n  \"result\": null,\n  \"success\": true,\n  \"errors\": [],\n  \"messages\": []\n}\n"
+}

@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/workers/workers/app-ai/previews/capture-absent-probe",
+    "contentType": null,
+    "body": null
+  },
+  "status": 404,
+  "contentType": "application/json; charset=UTF-8",
+  "body": "{\n  \"result\": null,\n  \"success\": false,\n  \"errors\": [\n    {\n      \"code\": 10025,\n      \"message\": \"Preview not found.\"\n    }\n  ],\n  \"messages\": []\n}\n"
+}

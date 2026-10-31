@@ -134,8 +134,10 @@ production, so **pushing `main` is a production deploy**. There is no staging
 environment and no manual deploy step in the normal flow. Commit locally;
 docs/test-only changes are deploy-safe, but any push is live. Workers Builds
 leaves its build command blank, sets its deploy command to `npm run deploy`, and
-uses `npm run deploy:preview` when previews are enabled. Those dashboard-owned settings cannot
-be encoded in Wrangler configuration. `npm run deploy:dry-run` builds the same
+builds no other branch. Those dashboard-owned settings cannot be encoded in Wrangler
+configuration. A preview comes from a `preview-<name>` tag instead: `npm run deploy:preview`
+publishes it as a Cloudflare Worker Preview, because Cloudflare gives no Version URL to a Worker
+that implements a Durable Object, and a Worker Preview gets its own Durable Object namespace. `npm run deploy:dry-run` builds the same
 revision-stamped bundle (verifying imports + the Text rule) without deploying.
 Production health fails with 503 when a raw, define-less build bypasses the
 launcher, so an unattributable worker cannot report healthy.

@@ -22,6 +22,10 @@ compatibility_flags = []
 # Account ID
 account_id = "771ea33ba0e0d2d42b93212bd535509d"
 
+# Serve each Worker Preview at <preview-name>-app-ai.floral-rice-85c3.workers.dev, a host the
+# admin Chrome extension routes app-ai.personalizer.io to. The production deploy applies it.
+preview_urls = true
+
 # Worker limits
 [limits]
 cpu_ms = 50000
@@ -37,7 +41,8 @@ local_protocol = "http"
 # Wrangler configuration cannot encode those settings. Required commands:
 #   Build command:                        (blank)
 #   Deploy command:                       npm run deploy
-#   Non-production branch deploy command: npm run deploy:preview
+#   Non-production branch builds:         off; previews come from preview-<name> tags
+#     (.github/workflows/preview-deploy.yml), which run npm run deploy:preview.
 # Both repository launchers inject the exact Git revision consumed by /health.
 #
 # [vars] below is grouped by the same concerns, in the same order, as
@@ -248,3 +253,71 @@ new_sqlite_classes = ["DemoSessionAuthority"]
 [[migrations]]
 tag = "audit-sessions-v2"
 renamed_classes = [{ from = "DemoSessionAuthority", to = "AuditSessionAuthority" }]
+
+# ── Worker Previews (npm run deploy:preview; docs/DECISIONS.md #6) ──
+# A Preview inherits nothing from production. [previews.vars] repeats every [vars] value but one:
+# a preview calls preview Brain. ENVIRONMENT stays "production", so a preview keeps production's
+# fail-closed checks. The bindings below point at the preview KV namespace and R2 bucket, and each
+# Preview gets its own Durable Object namespace and storage. Secrets come from the Previews Base
+# configuration. test/config.test.ts holds this block to [vars] and the bindings above.
+[previews.vars]
+ENVIRONMENT = "production"
+PERSONALIZER_API_URL = "https://preview.personalizer.io"
+CREDENTIALED_ORIGINS = "https://local-app.limespot.com,http://localhost:4200,http://localhost:3000"
+MASTER_SUBSCRIBER_ID = "1"
+MESSAGES_KEEP_ALIVE_INTERVAL_MILLISECONDS = "15000"
+MODEL_FAST = "claude-haiku-4-5"
+MODEL_BALANCED = "claude-sonnet-5"
+MODEL_FRONTIER = "claude-opus-4-8"
+MODEL_OVERRIDES = "free-render-verification=@cf/qwen/qwen3.8-27b"
+FREE_VISUAL_VERIFY_ENABLED = "true"
+FREE_VISUAL_VERIFY_DAILY_LIMIT = "8"
+FREE_VISUAL_VERIFY_ACCEPTANCE_RESERVE = "4"
+INFERENCE_QUOTA_INTERNAL_ORIGIN = "https://inference-quota.internal"
+ANTHROPIC_API_BASE = "https://api.anthropic.com"
+OPENAI_API_BASE = "https://api.openai.com"
+MOONSHOT_API_BASE = "https://api.moonshot.ai"
+KIMI_API_BASE = "https://api.kimi.com/coding"
+KIMI_EVIDENCE_MAX_BYTES = "8000000"
+KIMI_EVIDENCE_MAX_TOTAL_BYTES = "64000000"
+KIMI_EVIDENCE_MAX_TEXT_BYTES = "16000000"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+AUDIT_STATUS_ORIGINS = "https://limespot.com"
+AUDIT_SESSION_TTL_SECONDS = "2592000"
+AUDIT_MAX_RUNS = "4"
+AUDIT_RUN_HEADROOM = "2"
+AUDIT_MAX_UPLOAD_BYTES = "8000000"
+AUDIT_MAX_MESSAGE_BYTES = "1000000"
+GRADER_CHAT_ENABLED = "true"
+GRADER_CHAT_MESSAGES_PER_AUDIT = "25"
+GRADER_CHAT_MESSAGES_PER_VISITOR_PER_DAY = "50"
+GRADER_CHAT_MESSAGES_PER_DAY = "10000"
+GRADER_CHAT_MAX_INPUT_CHARACTERS = "500"
+GRADER_CHAT_MAX_REPLY_TOKENS = "600"
+GRADER_CHAT_EFFORT = "low"
+GRADER_CHAT_BOOKLET_VERSION = "3"
+GRADER_CHAT_ALERT_EVERY = "500"
+GRADER_RUNS_VALID_FROM = "2026-01-01T00:00:00Z"
+GRADER_EXTENSION_BUILT_AFTER = "2026-01-01T00:00:00Z"
+LOG_TARGETS_TRACE = "ignore"
+LOG_TARGETS_DEBUG = "ignore"
+LOG_TARGETS_INFO = "seq"
+LOG_TARGETS_WARN = "seq"
+LOG_TARGETS_ERROR = "seq"
+LOG_TARGETS_FATAL = "seq"
+LOG_SEQ_INGEST_URL = "https://log.limespot.net/ingest/clef"
+
+[[previews.kv_namespaces]]
+binding = "FILES_KV"
+id = "b524e2d6d53d482ead49f7ea60881dbd"
+
+[[previews.r2_buckets]]
+binding = "INLINE_EVIDENCE_R2"
+bucket_name = "app-ai-inline-evidence-preview"
+
+[previews.ai]
+binding = "AI"
+
+[[previews.durable_objects.bindings]]
+name = "AUDIT_SESSIONS"
+class_name = "AuditSessionAuthority"

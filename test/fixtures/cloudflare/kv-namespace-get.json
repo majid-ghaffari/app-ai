@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/storage/kv/namespaces/feedfacefeedfacefeedfacefeedface",
+    "contentType": null,
+    "body": null
+  },
+  "status": 200,
+  "contentType": "application/json; charset=UTF-8",
+  "body": "{\"result\":{\"id\":\"feedfacefeedfacefeedfacefeedface\",\"title\":\"preview-registry\",\"supports_url_encoding\":true},\"errors\":[],\"messages\":[],\"success\":true}"
+}

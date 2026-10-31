@@ -172,23 +172,24 @@ The visitor's daily chat allowance is keyed by a pseudonym of `CF-Connecting-IP`
 sets on every production request. A request that reaches the worker without it — a local tool
 calling the worker directly — counts against one shared bucket.
 
-### Grey-clouded `preview.personalizer.io` origin → "Too many redirects" (500)
+### Grey-clouded Personalizer origin → "Too many redirects" (500)
 
-Production is not subject to this. `wrangler.toml [vars] PERSONALIZER_API_URL` points at
-`https://personalizer.io`, which is Cloudflare-fronted end to end, so the worker's
-server-side subrequest reaches Personalizer over real HTTPS with no redirect loop.
+Production and previews are not subject to this. `wrangler.toml [vars] PERSONALIZER_API_URL`
+points at `https://personalizer.io`, and `[previews.vars]` at `https://preview.personalizer.io`;
+both are Cloudflare-fronted end to end, so the worker's server-side subrequest reaches
+Personalizer over real HTTPS with no redirect loop. The preview tag workflow probes that link
+before it registers a preview.
 
-The loop only appears when the worker's `PERSONALIZER_API_URL` targets the grey-clouded
-preview Azure origin (`https://preview.personalizer.io`): the `personalizer.io`
-Cloudflare zone's SSL/TLS mode is **"Flexible"**, so Cloudflare connects to that
-origin over **HTTP** even when the Worker's `fetch` asks for HTTPS. The preview
-Azure app has **HTTPS-Only** on → it 308-redirects HTTP→HTTPS to the same URL →
-the Worker follows → still HTTP → 308 → loops until "Too many redirects", which
+The loop appears only when `PERSONALIZER_API_URL` targets a grey-clouded (DNS-only)
+origin that redirects HTTP to HTTPS: the `personalizer.io` Cloudflare zone's SSL/TLS
+mode is **"Flexible"**, so Cloudflare connects to that origin over **HTTP** even when
+the Worker's `fetch` asks for HTTPS. The origin 308-redirects HTTP→HTTPS to the same
+URL → the Worker follows → still HTTP → 308 → loops until "Too many redirects", which
 `lib/auth.ts`'s throw-to-500 maps to HTTP 500. Browsers/curl reach the CF edge as
 real HTTPS → 200, so only the server-side Worker subrequest loops. The clean fix
-for a preview target is a **"Full"** zone SSL/TLS mode, or dropping the preview
-app's `HTTPS-Only` / `UseHttpsRedirection()`. Pointing at the raw Azure hostname
-is a dead end — the cert is for `preview.personalizer.io`.
+for such a target is a **"Full"** zone SSL/TLS mode, or dropping the origin's
+HTTPS-only redirect (`UseHttpsRedirection()`). Pointing at a raw origin hostname
+is a dead end — the certificate names the `personalizer.io` hostname.
 
 For fully-local development the worker talks to Personalizer over plain HTTP
 (`.dev.vars`: `PERSONALIZER_API_URL=http://127.0.0.1:5000`) — see lib
