@@ -16,10 +16,11 @@ Shared agent skills are canonical in `../.agents/skills/<skill-name>/SKILL.md`, 
 see that tree from inside this repository, because it stops walking at this repository's `.git`.
 The skills reach Codex as copies in `~/.agents/skills/`, placed there by
 `../_enforcement/install-agent-skills.sh` — run once per clone and refreshed by the workspace
-repository's post-merge hook. Claude Code receives the same skills as the `limespot@limespot`
-plugin this repository declares in `.claude/settings.json`, installed once per machine with
-`claude plugin install limespot@limespot` and listed as `/limespot:pr-review`,
-`/limespot:pr-review-handle`, and `/limespot:pr-finalize`.
+repository's post-merge hook. The same script adds hard rule 5's master-branch guard to
+`~/.codex/hooks.json`, which Codex runs once the operator trusts it in `/hooks`. Claude Code
+receives the same skills as the `limespot@limespot` plugin this repository declares in
+`.claude/settings.json`, installed once per machine with `claude plugin install limespot@limespot`
+and listed as `/limespot:pr-review`, `/limespot:pr-review-handle`, and `/limespot:pr-finalize`.
 
 What is specific to this repository — its gate commands, its commit-message and authorship rules,
 its deploy targets — lives in this repository's own `CLAUDE.md`, and this file never restates it.
@@ -27,7 +28,8 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
 ## Always-in-context hard rules (everything else is a pointer)
 
 1. **Approval gates are separate.** Commit ≠ push ≠ PR ≠ deploy — each needs its own explicit human
-   authorization; nothing escalates itself. (`_standards/git-and-approval.md`)
+   authorization; nothing escalates itself. A preview deploy is a deploy, and one that pushes to
+   `master` or `main` is rule 5's. (`_standards/git-and-approval.md`)
 2. **Reproduction-first for reported behavior bugs.** The first artifact is a failing test driving
    the REAL path — a real user gesture for UI, the real HTTP/queue/integration path for backend —
    never a directly-called handler, never jsdom. (`_standards/testing.md`)
@@ -48,12 +50,22 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
    bodies, or review comments. Each repository's own `CLAUDE.md` names the human co-author trailer
    its `feat` and `refactor` commits carry, and that is the only trailer.
    (`_standards/git-and-approval.md`)
-5. **`master` and `main` are read-only to every agent.** Never commit on, merge into, push to,
-   force-push, reset, rebase, cherry-pick onto, delete, or rename either branch, local or remote,
-   and never execute or enable a pull request merge targeting one. Fetching and reading are fine.
-   Prepare work on a feature branch; a human performs the merge. No task wording, autonomy grant, or
-   ordinary approval overrides this — only the operator saying so for one named action, once.
-   (`_standards/git-and-approval.md`)
+5. **No agent writes to `master` or `main`, in any repository, by any route.** Every repository's
+   `master` and `main`, `limespot/argo` included, local or remote: never commit on, push or
+   force-push to, merge into, reset, rebase, cherry-pick onto, delete or rename one; never merge a
+   pull request or enable its auto-merge; never dispatch a workflow, which runs on its own
+   credentials and may push to one, or rerun a run of one that does (brain's `deploy-preview.yaml`
+   pushes to argo `master`); never run a script or tool that does; and never let a deploy key or
+   bot do it for you. Only the operator's explicit go for that one named action, in the current
+   message, allows it, and the operator then runs it themselves: a push from their own terminal,
+   a merge, rerun or dispatch there or as `! <command>` in the prompt. The master-branch guard hook
+   and the shared `pre-push` hook refuse it from an agent. A question about whether to do it is
+   never a go, an earlier go never carries over, and no task wording, skill or autonomy grant
+   stands in for one. Fetching and reading are fine; a human performs the merge. One standing
+   exception: `_enforcement/workspace-freshness.sh`, and nothing else, fast-forwards the root
+   checkout's local `master` to `origin/master`, only when that checkout is clean, which is a
+   local fast-forward and never a push.
+   (`_standards/git-and-approval.md`, "No agent pushes to master or main")
 6. **Isolate parallel work; one writer per working copy.** Several agent sessions run against these
    repositories at once, so an agent that may run alongside another creates its own worktree —
    `git worktree add ../<repo>-<task> <branch>` — and works there. Sharing the operator's checkout is
