@@ -16,7 +16,10 @@ import {
   freeVisualVerifyAcceptanceReserve,
   freeVisualVerifyDailyLimit,
   freeVisualVerifyEnabled,
+  auditActivationSigningSecret,
   auditSessionAuthority,
+  auditSessionSigningSecret,
+  auditStatusSigningSecret,
   graderChatAlertEvery,
   graderChatAlertSlackWebhookUrl,
   graderChatEffort,
@@ -37,6 +40,7 @@ import {
   validateModelRouting,
   validateProviderConfiguration,
 } from '../prompt-registry';
+import { assertSealingSecretUsable } from '../inference/token-sealing';
 import { graderChatMessageAllowance } from '../lib/audit-plan';
 import { graderChatRoute } from './grader-chat';
 
@@ -90,6 +94,11 @@ function productionReadinessFailure(env: Env): Error | null {
     return new Error(`Required secrets are not set: ${missingSecrets.join(', ')}`);
   }
   try {
+    // Set is not enough: a secret that is set but malformed fails every request that uses it.
+    assertSealingSecretUsable(env);
+    auditActivationSigningSecret(env);
+    auditSessionSigningSecret(env);
+    auditStatusSigningSecret(env);
     validateModelRouting(env);
     validateProviderConfiguration(env);
     graderRunsValidFrom(env);

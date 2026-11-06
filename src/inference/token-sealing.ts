@@ -92,6 +92,11 @@ export async function openToken(prefix: string, key: CryptoKey, token: string): 
   return new TextDecoder().decode(plaintext);
 }
 
+/** Throws `SecretConfigurationError` unless the shared secret is usable; the readiness check calls it. */
+export function assertSealingSecretUsable(env: Env): void {
+  sealingSecretBytes(env);
+}
+
 /** The shared secret's bytes, validated. */
 function sealingSecretBytes(env: Env): Uint8Array {
   const encoded = tokenEncryptionSecret(env);

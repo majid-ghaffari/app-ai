@@ -114,7 +114,7 @@ jobs:
           PREVIEW_NAME: ${{ steps.tag.outputs.name }}
         run: |
           set -euo pipefail
-          # /health answers 200 only with every required secret and binding in place and the
+          # /health answers 200 only with every required secret set and usable, every binding in place and the
           # revision stamped, since a Preview runs production's readiness checks; its buildRev must
           # be this run's commit, so the URL serves the deployment just made, not an earlier one.
           expected=$(git rev-parse --short "$GITHUB_SHA")

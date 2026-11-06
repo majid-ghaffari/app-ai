@@ -103,7 +103,8 @@ or changes the inference response.
   An absent or unsupported `AiToolsContractVersion` supplies no Brain data tools.
 - `GET /health` (`health.ts`) stays unauthenticated and keeps its success
   shape. In production it is also readiness: a required secret not set (a
-  provider's key counting only while a resolved route uses that provider) or
+  provider's key counting only while a resolved route uses that provider), a set
+  `TOKEN_ENCRYPTION_SECRET` that is not base64 of 32 bytes, an audit signing secret under 32 bytes, or
   model bindings that do not route every prompt answer 503 with a status-only
   envelope — no secret name, binding, or model id. Provider-specific bindings and configuration
   required by a resolved route are validated there too; the protected Workers AI route checks its

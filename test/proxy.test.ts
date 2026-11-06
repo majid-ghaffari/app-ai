@@ -695,6 +695,23 @@ describe('handleHealth', () => {
     ).toBe(200);
   });
 
+  it('fails production health closed on a set but unusable secret, naming nothing', async () => {
+    for (const broken of [
+      { ...ENV, TOKEN_ENCRYPTION_SECRET: 'not-valid-base64!' },
+      { ...ENV, TOKEN_ENCRYPTION_SECRET: 'c2hvcnQ=' },
+      { ...ENV, AUDIT_SESSION_SIGNING_SECRET: 'too-short' },
+    ]) {
+      const res = handleHealth(
+        CORS,
+        { ...broken, ENVIRONMENT: 'production' },
+        undefined,
+        'fc00704',
+      );
+      expect(res.status).toBe(503);
+      expect(JSON.stringify(await res.json())).not.toMatch(/SECRET|base64|bytes/);
+    }
+  });
+
   it('fails production health closed when the model bindings do not route, naming no id', async () => {
     for (const broken of [
       { ...ENV, ENVIRONMENT: 'production', MODEL_FAST: 'mistral-large-3' },
