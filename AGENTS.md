@@ -120,3 +120,11 @@ its deploy targets — lives in this repository's own `CLAUDE.md`, and this file
     traffic on a shared live target; after an incomplete protected run, restore and verify clean state
     before the next dispatch. Never report focused green as full green. (`_standards/testing.md`,
     "Differential-first validation for expensive suites")
+12. **Agent shell commands stay plain, so no session stops for approval.** Claude Code asks a person
+    before a shell command it cannot parse with certainty, even under bypass permissions, and the
+    run waits for the answer. So every Bash call is a plain command with literal arguments, chained
+    only with `&&`, `|` or `;`: no `$(…)`, backticks, `( … )` subshells, `eval`, `bash -c`,
+    here-strings, process substitution, or a variable as a command or in an `rm` path. A jq program
+    sits in single quotes with its values passed by `--arg`; a loop, a condition or a computed value
+    goes in a script written to the scratch directory and run as `bash <file>`. Every brief repeats
+    this rule. (`_standards/engineering.md`, "Agent shell commands")
