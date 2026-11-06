@@ -29,14 +29,44 @@ fi
 # 'type(scope): subject' form on every commit message in THIS repository:
 # export LIMESPOT_ENFORCE_COMMIT_FORMAT=1
 
-"$shared_gate" "$@"
+# Git passes the pushed refs on stdin and the shared gate reads them to the end, so they are kept
+# here for the checks below and handed to the gate unchanged.
+pushed_refs="$(cat)"
+
+if [ -n "$pushed_refs" ]; then printf '%s\n' "$pushed_refs"; fi | "$shared_gate" "$@"
 
 # ---- repo-specific checks below this line ----------------------------------
+
+# Every branch push is gated, because main auto-deploys and a feature branch is what becomes main.
+# Tags and deletions carry no code to check.
+updates_branch=""
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/*)
+      case "$local_sha" in
+        *[!0]*) updates_branch=1 ;;
+      esac ;;
+  esac
+done <<REFS
+$pushed_refs
+REFS
+
+if [ -z "$updates_branch" ]; then
+  echo "› pre-push: this push updates no branch (tags or deletions only) — nothing to typecheck or lint." >&2
+  exit 0
+fi
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "› pre-push: npm not on PATH — skipping local typecheck/lint (CI still gates)." >&2
   exit 0
 fi
+
+for tool in tsc eslint; do
+  if [ ! -x "$repo_root/node_modules/.bin/$tool" ]; then
+    echo "✗ pre-push blocked: $tool is not installed in this checkout. Run npm ci, then push again." >&2
+    exit 1
+  fi
+done
 
 echo "› pre-push: typecheck + lint (main auto-deploys, gating locally)…"
 

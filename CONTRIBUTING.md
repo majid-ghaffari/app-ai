@@ -45,6 +45,10 @@ npm run lint            # ESLint over the whole repo (must be 0)
 npm run typecheck       # tsc --noEmit (strict; must be 0)
 ```
 
+The pre-push hook runs the typecheck and the linter on every push that updates a branch. A push of
+tags or deletions only skips both, and a checkout whose packages are not installed is refused until
+`npm ci` has run.
+
 A test runs locally only for an exception `../_standards/testing.md` → Local gates names: a
 reported bug's reproduction, visual evidence for a UI change, a suite CI does not run, reproducing
 a red exact-head CI test, or a vacuity probe.
