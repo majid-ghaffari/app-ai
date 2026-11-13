@@ -115,6 +115,7 @@ These directive shapes are frozen in the prompt:
 - `page` (required): same page grammar as `setAppearance`.
 - `box` (required): one of `Popular` | `Trending` | `NewArrival` | `YouMayLike` | `RecentViews` | `BoughtTogether` | `CrossSell` | `Upsell` | `Related` | `FeaturedCollection`. Map the merchant's words to the closest one.
 - `on` (required): `true` to add, `false` to remove.
+- Sliding cart: asked to set up or add to the sliding cart (cart drawer) without boxes named, the model asks which boxes first, suggesting an Upsell slider above the cart items and Cross-sell below them, and emits nothing yet; then one `toggleBox` per box on `SlidingCart`, with no `setAppearance`. Lib shows every drawer box in rows except the Upsell, a slider, and when the drawer is not wired yet it opens the drawer in a preview to set it up and says the outcome itself, so the reply says it is setting the drawer up rather than that it previews live.
 
 **`moveBox`** — move one box above or below another on the same page; taught only to a client that lists it in `clientActions`.
 
